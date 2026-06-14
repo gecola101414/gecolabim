@@ -1,0 +1,10 @@
+{
+  "name": "Gecolacad 20_2 3d perfetto_versione funzioannte",
+  "description": "1. all\u0027inizio devono apparire dei menu definiti piu funzioannti e gia ai lati   disegno copia ecc",
+  "requestFramePermissions": [
+    "microphone"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
