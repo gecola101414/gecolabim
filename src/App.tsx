@@ -5,7 +5,7 @@
 
 import React, { useState, useRef, useEffect } from "react";
 import { Document, Page, pdfjs } from 'react-pdf';
-import { CADCanvas } from "./components/CADCanvas";
+import { CADCanvas, getPaperSizeMm } from "./components/CADCanvas";
 import { CanvasPDFPreview } from "./components/CanvasPDFPreview";
 
 pdfjs.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.mjs`;
@@ -4305,6 +4305,147 @@ const MASONRY_TYPES = [
                               <option value="mm">Mm (mm)</option>
                             </select>
                           </div>
+                        </div>
+
+                        {/* Opzioni Retino / Griglia di Supporto */}
+                        <div className="mt-3 border-t border-neutral-200/60 pt-2.5 space-y-2">
+                          <div className="flex justify-between items-center">
+                            <span className="block text-[9px] font-black text-indigo-700 uppercase tracking-widest font-mono">
+                              📏 RETINO DI SUPPORTO (GRIGLIA)
+                            </span>
+                            
+                            {/* Attiva/Disattiva Toggle Switch */}
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const isGridActive = tav.gridType && tav.gridType !== "none";
+                                const nextGrid = isGridActive ? "none" : (localStorage.getItem('lastGridType') as any || "10cm");
+                                setTavole(tavole.map(t => t.id === tav.id ? { ...t, gridType: nextGrid } : t));
+                              }}
+                              className={`px-2 py-0.5 rounded text-[8.5px] font-black uppercase transition-all flex items-center gap-1 cursor-pointer ${
+                                tav.gridType && tav.gridType !== "none"
+                                  ? "bg-emerald-600 text-white shadow-sm ring-1 ring-emerald-400"
+                                  : "bg-neutral-200 text-neutral-650 hover:bg-neutral-300"
+                              }`}
+                            >
+                              <span className={`w-1.5 h-1.5 rounded-full ${tav.gridType && tav.gridType !== "none" ? "bg-white animate-ping" : "bg-neutral-450"}`}></span>
+                              {tav.gridType && tav.gridType !== "none" ? "Retino Attivo" : "Retino Disattivato"}
+                            </button>
+                          </div>
+
+                          <div className="grid grid-cols-2 gap-2">
+                            <div>
+                              <label className="block text-[8px] text-neutral-500 font-bold uppercase mb-1">Passo Retino</label>
+                              <select
+                                value={tav.gridType || "none"}
+                                onChange={(e) => {
+                                  const val = e.target.value;
+                                  if (val !== "none") {
+                                    localStorage.setItem('lastGridType', val);
+                                  }
+                                  setTavole(tavole.map(t => t.id === tav.id ? { ...t, gridType: val as any } : t));
+                                }}
+                                className="w-full bg-white border border-neutral-300 text-[10px] rounded p-1 font-semibold"
+                              >
+                                <option value="none">Nessun Retino (Spento)</option>
+                                <option value="1cm">Ogni 1 cm</option>
+                                <option value="10cm">Ogni 10 cm</option>
+                                <option value="100cm">Ogni 100 cm (1m)</option>
+                              </select>
+                            </div>
+                            
+                            <div>
+                              <label className="block text-[8px] text-neutral-500 font-bold uppercase mb-1">Colore Retino</label>
+                              <select
+                                value={tav.gridColor || "rgba(99, 102, 241, 0.15)"}
+                                onChange={(e) => {
+                                  setTavole(tavole.map(t => t.id === tav.id ? { ...t, gridColor: e.target.value } : t));
+                                }}
+                                className="w-full bg-white border border-neutral-300 text-[10px] rounded p-1 font-semibold"
+                              >
+                                <option value="rgba(99, 102, 241, 0.15)">🔵 Viola Cobalto</option>
+                                <option value="rgba(6, 182, 212, 0.18)">🌐 Cyan Grigio</option>
+                                <option value="rgba(249, 115, 22, 0.15)">🟠 Arancione</option>
+                                <option value="rgba(0, 0, 0, 0.1)">⚫ Grigio Trasparente</option>
+                                <option value="rgba(239, 68, 68, 0.15)">🔴 Rosso Snapping</option>
+                              </select>
+                            </div>
+                          </div>
+                          
+                          {tav.gridType && tav.gridType !== "none" && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const paper = getPaperSizeMm(tav.format);
+                                let factor = 1000;
+                                if (tav.unit === 'cm') factor = 10;
+                                if (tav.unit === 'mm') factor = 1;
+                                const scale = tav.scale || 100;
+                                const w = paper.w * (scale / factor);
+                                const h = paper.h * (scale / factor);
+                                
+                                let spacingVal = 10;
+                                if (tav.gridType === '1cm') {
+                                  if (tav.unit === 'm') spacingVal = 0.01;
+                                  else if (tav.unit === 'cm') spacingVal = 1;
+                                  else if (tav.unit === 'mm') spacingVal = 10;
+                                } else if (tav.gridType === '10cm') {
+                                  if (tav.unit === 'm') spacingVal = 0.1;
+                                  else if (tav.unit === 'cm') spacingVal = 10;
+                                  else if (tav.unit === 'mm') spacingVal = 100;
+                                } else if (tav.gridType === '100cm') {
+                                  if (tav.unit === 'm') spacingVal = 1.0;
+                                  else if (tav.unit === 'cm') spacingVal = 100;
+                                  else if (tav.unit === 'mm') spacingVal = 1000;
+                                }
+                                
+                                const startX = Math.floor(tav.position.x / spacingVal) * spacingVal;
+                                const endX = Math.ceil((tav.position.x + w) / spacingVal) * spacingVal;
+                                const startY = Math.floor(tav.position.y / spacingVal) * spacingVal;
+                                const endY = Math.ceil((tav.position.y + h) / spacingVal) * spacingVal;
+                                
+                                const newEntities: any[] = [];
+                                const timestamp = Date.now();
+                                
+                                // Vertical lines
+                                for (let x = startX; x <= endX; x += spacingVal) {
+                                  if (x >= tav.position.x && x <= tav.position.x + w) {
+                                    newEntities.push({
+                                      id: `grid-v-${x}-${timestamp}-${Math.random()}`,
+                                      type: 'line',
+                                      start: { x: x, y: tav.position.y },
+                                      end: { x: x, y: tav.position.y + h },
+                                      color: '#94a3b8',
+                                      lineWidth: 1,
+                                      layer: 'Hatch',
+                                      dashed: true
+                                    });
+                                  }
+                                }
+                                // Horizontal lines
+                                for (let y = startY; y <= endY; y += spacingVal) {
+                                  if (y >= tav.position.y && y <= tav.position.y + h) {
+                                    newEntities.push({
+                                      id: `grid-h-${y}-${timestamp}-${Math.random()}`,
+                                      type: 'line',
+                                      start: { x: tav.position.x, y: y },
+                                      end: { x: tav.position.x + w, y: y },
+                                      color: '#94a3b8',
+                                      lineWidth: 1,
+                                      layer: 'Hatch',
+                                      dashed: true
+                                    });
+                                  }
+                                }
+                                
+                                setEntities(prev => [...prev, ...newEntities]);
+                              }}
+                              className="w-full bg-neutral-100 hover:bg-neutral-200 active:bg-neutral-300 text-neutral-800 font-extrabold py-1 px-2 rounded border border-neutral-300 text-[9px] transition-all flex items-center justify-center gap-1 uppercase tracking-wide cursor-pointer"
+                            >
+                              <Plus size={10} />
+                              Disegna Griglia sul Foglio (CAD Hatch)
+                            </button>
+                          )}
                         </div>
 
                         {/* Action buttons (printable preview) */}

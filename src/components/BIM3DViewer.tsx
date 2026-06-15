@@ -1702,6 +1702,22 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
                         {selectedEntity.type === 'bim-csg' ? ((selectedEntity as any).bimVolume || 0).toFixed(2) : (getRoomAreaMq((selectedEntity as any).bimPoints || (selectedEntity as any).points) * (((selectedEntity as any).bimHeight || (selectedEntity as any).height || 270) / 100)).toFixed(2)} mc
                       </span>
                     </div>
+                    {selectedEntity.type !== 'bim-csg' && (
+                      <div className="flex justify-between items-center px-2 py-1 bg-amber-500/5 rounded border border-amber-500/15 mt-1">
+                        <span className="text-[10px] font-bold text-amber-800 uppercase tracking-widest flex items-center gap-1">
+                          🏗️ Casseri (Armat.)
+                        </span>
+                        <span className="text-[13px] font-black text-amber-700">
+                          {(() => {
+                            const pts = (selectedEntity as any).bimPoints || (selectedEntity as any).points;
+                            const area = getRoomAreaMq(pts);
+                            const per = getRoomPerimeterM(pts);
+                            const h = ((selectedEntity as any).bimHeight || (selectedEntity as any).height || 270) / 100;
+                            return (area + (per * h)).toFixed(2);
+                          })()} mq
+                        </span>
+                      </div>
+                    )}
                   </>
                 )}
               </div>

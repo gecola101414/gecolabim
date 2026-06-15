@@ -1,22 +1,9 @@
 import React, { useEffect, useRef } from 'react';
-import { Entity } from '../types';
+import { Entity, Tavola } from '../types';
 
 interface CanvasPDFPreviewProps {
   entities: Entity[];
-  tavola: {
-    id: string;
-    name: string;
-    format: 'A0' | 'A1' | 'A2' | 'A3' | 'A4';
-    scale: number;
-    unit: 'm' | 'cm' | 'mm';
-    position: { x: number; y: number };
-    datiCartiglio: {
-      progetto?: string;
-      titolo?: string;
-      autore?: string;
-      data?: string;
-    };
-  };
+  tavola: Tavola;
 }
 
 export const CanvasPDFPreview: React.FC<CanvasPDFPreviewProps> = ({ entities, tavola }) => {
@@ -499,6 +486,60 @@ export const CanvasPDFPreview: React.FC<CanvasPDFPreviewProps> = ({ entities, ta
     ctx.scale(cadToMm, cadToMm);
     // Translate origin of world to the sheet template standard coordinate positioning
     ctx.translate(-tavola.position.x, -tavola.position.y);
+
+    // Support printable grid overlay (retino) in PDF export
+    if (tavola.gridType && tavola.gridType !== 'none') {
+      let spacingVal = 10;
+      if (tavola.gridType === '1cm') {
+        if (tavola.unit === 'm') spacingVal = 0.01;
+        else if (tavola.unit === 'cm') spacingVal = 1;
+        else if (tavola.unit === 'mm') spacingVal = 10;
+      } else if (tavola.gridType === '10cm') {
+        if (tavola.unit === 'm') spacingVal = 0.1;
+        else if (tavola.unit === 'cm') spacingVal = 10;
+        else if (tavola.unit === 'mm') spacingVal = 100;
+      } else if (tavola.gridType === '100cm') {
+        if (tavola.unit === 'm') spacingVal = 1.0;
+        else if (tavola.unit === 'cm') spacingVal = 100;
+        else if (tavola.unit === 'mm') spacingVal = 1000;
+      }
+
+      ctx.save();
+      
+      const pSizeGrid = getPaperSizeMm(tavola.format);
+      const wVal = pSizeGrid.w / cadToMm;
+      const hVal = pSizeGrid.h / cadToMm;
+
+      // Clip grid inside the sheet boundaries
+      ctx.beginPath();
+      ctx.rect(tavola.position.x, tavola.position.y, wVal, hVal);
+      ctx.clip();
+
+      ctx.strokeStyle = tavola.gridColor || 'rgba(99, 102, 241, 0.15)';
+      ctx.lineWidth = 0.08 / cadToMm; // Very thin, elegant printable line width
+      ctx.setLineDash([]);
+
+      const startX = Math.floor(tavola.position.x / spacingVal) * spacingVal;
+      const endX = Math.ceil((tavola.position.x + wVal) / spacingVal) * spacingVal;
+      const startY = Math.floor(tavola.position.y / spacingVal) * spacingVal;
+      const endY = Math.ceil((tavola.position.y + hVal) / spacingVal) * spacingVal;
+
+      ctx.beginPath();
+      for (let x = startX; x <= endX; x += spacingVal) {
+        if (x >= tavola.position.x && x <= tavola.position.x + wVal) {
+          ctx.moveTo(x, tavola.position.y);
+          ctx.lineTo(x, tavola.position.y + hVal);
+        }
+      }
+      for (let y = startY; y <= endY; y += spacingVal) {
+        if (y >= tavola.position.y && y <= tavola.position.y + hVal) {
+          ctx.moveTo(tavola.position.x, y);
+          ctx.lineTo(tavola.position.x + wVal, y);
+        }
+      }
+      ctx.stroke();
+      ctx.restore();
+    }
 
     // Set basic rendering configurations
     ctx.lineCap = 'round';

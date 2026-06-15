@@ -5728,6 +5728,56 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
           ctx.lineWidth = 1.5 / view.zoom;
           ctx.setLineDash([5 / view.zoom, 4 / view.zoom]);
           ctx.strokeRect(tav.position.x, tav.position.y, w, h);
+
+          // Support overlay grid (retino in sovraimpressione) inside the sheet boundaries
+          if (tav.gridType && tav.gridType !== 'none') {
+            let spacingVal = 10;
+            if (tav.gridType === '1cm') {
+              if (tav.unit === 'm') spacingVal = 0.01;
+              else if (tav.unit === 'cm') spacingVal = 1;
+              else if (tav.unit === 'mm') spacingVal = 10;
+            } else if (tav.gridType === '10cm') {
+              if (tav.unit === 'm') spacingVal = 0.1;
+              else if (tav.unit === 'cm') spacingVal = 10;
+              else if (tav.unit === 'mm') spacingVal = 100;
+            } else if (tav.gridType === '100cm') {
+              if (tav.unit === 'm') spacingVal = 1.0;
+              else if (tav.unit === 'cm') spacingVal = 100;
+              else if (tav.unit === 'mm') spacingVal = 1000;
+            }
+
+            ctx.save();
+            ctx.beginPath();
+            ctx.rect(tav.position.x, tav.position.y, w, h);
+            ctx.clip();
+
+            ctx.strokeStyle = tav.gridColor || 'rgba(99, 102, 241, 0.15)';
+            ctx.lineWidth = 0.5 / view.zoom;
+            ctx.setLineDash([]); // Draw subtle solid lines
+
+            const startX = Math.floor(tav.position.x / spacingVal) * spacingVal;
+            const endX = Math.ceil((tav.position.x + w) / spacingVal) * spacingVal;
+            const startY = Math.floor(tav.position.y / spacingVal) * spacingVal;
+            const endY = Math.ceil((tav.position.y + h) / spacingVal) * spacingVal;
+
+            ctx.beginPath();
+            // Vertical lines
+            for (let x = startX; x <= endX; x += spacingVal) {
+              if (x >= tav.position.x && x <= tav.position.x + w) {
+                ctx.moveTo(x, tav.position.y);
+                ctx.lineTo(x, tav.position.y + h);
+              }
+            }
+            // Horizontal lines
+            for (let y = startY; y <= endY; y += spacingVal) {
+              if (y >= tav.position.y && y <= tav.position.y + h) {
+                ctx.moveTo(tav.position.x, y);
+                ctx.lineTo(tav.position.x + w, y);
+              }
+            }
+            ctx.stroke();
+            ctx.restore();
+          }
           
           // Draw printable margin (5mm offset standard frame border)
           let mFactor = 5;

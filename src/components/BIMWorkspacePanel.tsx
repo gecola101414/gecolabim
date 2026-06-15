@@ -643,20 +643,24 @@ export function BIMWorkspacePanel({
     report += `Generato automaticamente da GE-COLA CAD BIM AI          \n`;
     report += `========================================================\n\n`;
 
-    report += `1. RILIEVO E STIMA DELLE SUPERFICI (STANTE)\n`;
+    report += `1. RILIEVO E STIMA DELLE SUPERFICI & CASSERI (STANTE)\n`;
     report += `--------------------------------------------------------\n`;
-    report += `ID\tNome Locale\tAltezza (m)\tArea (mq)\tPerimetro (m)\tVolume (mc)\n`;
+    report += `ID\tNome Locale\tAltezza (m)\tArea (mq)\tPerimetro (m)\tVolume (mc)\tCasseri (mq)\n`;
+    let totalCasseri = 0;
     bimRooms.forEach((r, idx) => {
       const pts = (r as any).bimPoints || (r as any).points;
       const area = getRoomAreaMq(pts);
       const per = getRoomPerimeterM(pts);
       const h = r.bimHeight || 2.70;
       const vol = area * h;
-      report += `${r.id.substring(0, 5)}\t${r.bimName || 'Unlabeled'}\t${h.toFixed(2)}\t${area.toFixed(2)}\t${per.toFixed(2)}\t${vol.toFixed(1)}\n`;
+      const cass = area + (per * h);
+      totalCasseri += cass;
+      report += `${r.id.substring(0, 5)}\t${r.bimName || 'Unlabeled'}\t${h.toFixed(2)}\t${area.toFixed(2)}\t${per.toFixed(2)}\t${vol.toFixed(1)}\t${cass.toFixed(2)}\n`;
     });
     report += `--------------------------------------------------------\n`;
     report += `Totale Locali Rilevati: ${bimRooms.length}\n`;
-    report += `Superficie Calpestabile Totale: ${totalRoomArea.toFixed(2)} mq\n\n`;
+    report += `Superficie Calpestabile Totale: ${totalRoomArea.toFixed(2)} mq\n`;
+    report += `Superficie Totale Casseri C.A.: ${totalCasseri.toFixed(2)} mq\n\n`;
 
     report += `2. ELEMENTI BIM RILEVATI SUI LAYER DEDICATI\n`;
     report += `--------------------------------------------------------\n`;
@@ -831,20 +835,48 @@ export function BIMWorkspacePanel({
             </div>
 
             {selectedEntity.bimType === 'room' && (
-              <div className="grid grid-cols-2 gap-2">
-                <div>
-                  <label className="text-[10px] text-slate-500 block mb-0.5 font-bold">
-                    Altezza Interpiano (m)
-                  </label>
-                  <input
-                    type="number"
-                    step="0.05"
-                    min="1.0"
-                    max="6.0"
-                    value={selectedEntity.bimHeight || 2.70}
-                    onChange={(e) => updateSelectedBIMField("bimHeight", parseFloat(e.target.value) || 2.70)}
-                    className="w-full border rounded px-1.5 py-1 text-xs bg-white"
-                  />
+              <div className="space-y-2">
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <label className="text-[10px] text-slate-500 block mb-0.5 font-bold">
+                      Altezza Interpiano (m)
+                    </label>
+                    <input
+                      type="number"
+                      step="0.05"
+                      min="1.0"
+                      max="6.0"
+                      value={selectedEntity.bimHeight || 2.70}
+                      onChange={(e) => updateSelectedBIMField("bimHeight", parseFloat(e.target.value) || 2.70)}
+                      className="w-full border rounded px-1.5 py-1 text-xs bg-white font-semibold"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[10px] text-slate-500 block mb-0.5 font-bold text-amber-800">
+                      📐 Casseri (mq)
+                    </label>
+                    <div className="w-full border rounded px-1.5 py-1 text-xs bg-amber-50 text-amber-900 border-amber-200 font-black">
+                      {(() => {
+                        const pts = (selectedEntity as any).bimPoints || (selectedEntity as any).points;
+                        const area = getRoomAreaMq(pts);
+                        const per = getRoomPerimeterM(pts);
+                        const h = (selectedEntity as any).bimHeight || 2.70;
+                        return (area + (per * h)).toFixed(2);
+                      })()} mq
+                    </div>
+                  </div>
+                </div>
+
+                <div className="text-[8px] leading-tight text-amber-900 bg-amber-100/40 p-1.5 uppercase tracking-wider font-extrabold rounded border border-dashed border-amber-300">
+                  🏗️ Formula Cassero: Area Base ({(() => {
+                    const pts = (selectedEntity as any).bimPoints || (selectedEntity as any).points;
+                    return getRoomAreaMq(pts).toFixed(1);
+                  })()} mq) + Spalla Pareti ({(() => {
+                    const pts = (selectedEntity as any).bimPoints || (selectedEntity as any).points;
+                    const per = getRoomPerimeterM(pts);
+                    const h = (selectedEntity as any).bimHeight || 2.70;
+                    return (per * h).toFixed(1);
+                  })()} mq). Spalla superiore esclusa.
                 </div>
               </div>
             )}
@@ -1047,7 +1079,7 @@ export function BIMWorkspacePanel({
 
       {/* BIM STATS QUANTITA SUMMARY */}
       <div className="space-y-3">
-        <span className="text-[10px] font-black uppercase tracking-wider text-slate-400 block border-b pb-1 font-mono">
+        <span className="text-[10px] font-black uppercase tracking-wider text-slate-450 block border-b pb-1 font-mono">
           Rilievo Quantità & Computo
         </span>
 
@@ -1075,6 +1107,33 @@ export function BIMWorkspacePanel({
             </div>
             <span className="text-[7.5px] text-cyan-600 mt-1 leading-none italic font-medium block">
               Escluso varchi (-{totalDoorsWidthM.toFixed(1)}m)
+            </span>
+          </div>
+        </div>
+
+        {/* 🏗️ Master Casseri Card */}
+        <div className="bg-amber-500/10 border border-amber-500/20 p-3 rounded-lg flex flex-col justify-between transition-all hover:bg-amber-500/15">
+          <div className="flex justify-between items-center mb-1">
+            <span className="text-[8.5px] uppercase tracking-wider text-amber-800 font-black block">
+              🏗️ Totale Casseri (Cassaforma Getto C.A.)
+            </span>
+            <span className="text-[7px] bg-amber-500/20 text-amber-900 border border-amber-500/30 px-1 py-0.2 rounded font-black uppercase">Cemento Armato</span>
+          </div>
+          <div className="flex justify-between items-baseline">
+            <div>
+              <span className="text-xl font-black text-slate-900">
+                {bimRooms.reduce((acc, r) => {
+                  const pts = (r as any).bimPoints || (r as any).points;
+                  const area = getRoomAreaMq(pts);
+                  const per = getRoomPerimeterM(pts);
+                  const h = r.bimHeight || 2.70;
+                  return acc + area + (per * h);
+                }, 0).toFixed(2)}
+              </span>
+              <span className="text-[11px] font-bold text-amber-800 pl-1">mq</span>
+            </div>
+            <span className="text-[8.5px] text-amber-700/85 font-black italic text-right uppercase tracking-wider">
+              Esclusa testa superiore
             </span>
           </div>
         </div>

@@ -173,4 +173,6 @@ export interface Tavola {
   visible: boolean;
   datiCartiglio: TavolaData;
   measuredCalibrationMm?: number;
+  gridType?: 'none' | '1cm' | '10cm' | '100cm';
+  gridColor?: string;
 }
