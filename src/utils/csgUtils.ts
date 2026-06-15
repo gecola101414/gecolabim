@@ -200,11 +200,10 @@ export const performCSG = (entityA: Entity, entityB: Entity, operation: 'union' 
   return {
     type: 'bim-csg',
     isBIM: true,
+    lineWidth: 1,
     id: `csg_${Date.now()}_${Math.random().toString(36).substring(2,5)}`,
     layer: entityA.layer, 
     color: entityA.color,
-    lineWidth: 1,
-    mode: "CAD" as "2H" | "HB" | "CAD",
     bimName: baseName,
     bimType: bimType,
     bimVolume: volume,

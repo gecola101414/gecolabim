@@ -508,37 +508,24 @@ const SceneCameraController = ({
 
     let newPos = new THREE.Vector3();
 
-    switch (preset) {
-      case 'TOP':
-        newPos.set(center.x, center.y + offset, center.z);
-        break;
-      case 'BOTTOM':
-        newPos.set(center.x, center.y - offset, center.z);
-        break;
-      case 'FRONT':
-        newPos.set(center.x, center.y, center.z + offset);
-        break;
-      case 'BACK':
-        newPos.set(center.x, center.y, center.z - offset);
-        break;
-      case 'RIGHT':
-        newPos.set(center.x + offset, center.y, center.z);
-        break;
-      case 'LEFT':
-        newPos.set(center.x - offset, center.y, center.z);
-        break;
-      case 'ISO':
-      default:
-        newPos.set(center.x + offset * 0.8, center.y + offset * 0.8, center.z + offset * 0.8);
-        break;
-    }
-
     // Set up vector orientation per preset to avoid lookAt lock/flip
     camera.up.set(0, 1, 0);
     if (preset === 'TOP') {
       camera.up.set(0, 0, -1);
+      newPos.set(center.x, center.y + offset, center.z);
     } else if (preset === 'BOTTOM') {
       camera.up.set(0, 0, 1);
+      newPos.set(center.x, center.y - offset, center.z);
+    } else if (preset === 'FRONT') {
+      newPos.set(center.x, center.y, center.z + offset);
+    } else if (preset === 'BACK') {
+      newPos.set(center.x, center.y, center.z - offset);
+    } else if (preset === 'RIGHT') {
+      newPos.set(center.x + offset, center.y, center.z);
+    } else if (preset === 'LEFT') {
+      newPos.set(center.x - offset, center.y, center.z);
+    } else {
+      newPos.set(center.x + offset * 0.8, center.y + offset * 0.8, center.z + offset * 0.8);
     }
 
     camera.position.copy(newPos);
@@ -546,6 +533,11 @@ const SceneCameraController = ({
 
     if (controls) {
       (controls as any).target.copy(center);
+    }
+
+    // Force snap to top/bottom rotation for TOP/BOTTOM
+    if (preset === 'TOP' || preset === 'BOTTOM') {
+      (controls as any).reset(); 
     }
 
     // Set zoom dynamically for Orthographic projections to fit model boundaries
@@ -595,6 +587,12 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
   // Camera Presets
   const [cameraPreset, setCameraPreset] = useState<'FRONT' | 'BACK' | 'LEFT' | 'RIGHT' | 'TOP' | 'BOTTOM' | 'ISO' | null>(null);
   const [cameraViewMode, setCameraViewMode] = useState<'FRONT' | 'BACK' | 'LEFT' | 'RIGHT' | 'TOP' | 'BOTTOM' | 'ISO'>('ISO');
+  const [flashingId, setFlashingId] = useState<string | null>(null);
+  
+  const flashEntity = (id: string) => {
+    setFlashingId(id);
+    setTimeout(() => setFlashingId(null), 500); // Flash for 500ms
+  };
 
   // Rotation Tools
   const [isRotationMode, setIsRotationMode] = useState(false);
@@ -1334,6 +1332,14 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
         </button>
         <div className="w-px h-8 bg-slate-200 mx-1" />
         
+        <div className="flex items-center gap-1">
+          <button className="p-1 rounded hover:bg-slate-100 text-slate-500" title="Muri"><Box size={16} /></button>
+          <button className="p-1 rounded hover:bg-slate-100 text-slate-500" title="Porte"><Edit size={16} /></button>
+          <button className="p-1 rounded hover:bg-slate-100 text-slate-500" title="Finestre"><Maximize size={16} /></button>
+        </div>
+        
+        <div className="w-px h-8 bg-slate-200 mx-1" />
+
         <button 
           onClick={resetCamera}
           className="p-3 hover:bg-slate-100 rounded-xl text-slate-400 hover:text-cyan-600 transition-all active:scale-95"
@@ -1514,9 +1520,7 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
           Sotto
         </button>
 
-        <div className="w-px h-5 bg-slate-200/60 mx-1" />
-
-        {/* FRONT VIEW */}
+        {/* MEASURE TOOL - REMOVED */}
         <button
           onClick={() => { setViewMode('PERSPECTIVE'); setCameraViewMode('FRONT'); setCameraPreset('FRONT'); }}
           className={`flex items-center gap-2 px-3 py-1.5 rounded-2xl text-[10.5px] font-black uppercase transition-all duration-300 active:scale-95 cursor-pointer ${
@@ -2041,27 +2045,6 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
         </div>
       </div>
 
-      {/* Model Stats Panel */}
-      <div className="absolute top-24 left-8 z-50 p-6 bg-white/90 backdrop-blur-xl rounded-[2rem] shadow-xl border border-slate-100 w-64 pointer-events-auto">
-        <div className="flex items-center gap-3 mb-5 pb-3 border-b border-slate-50">
-          <div className="p-2 bg-slate-100 rounded-lg text-slate-500">
-            <Layers size={16} />
-          </div>
-          <span className="text-xs font-black text-slate-800 tracking-tight uppercase">Statistiche BIM</span>
-        </div>
-        
-        <div className="space-y-4">
-          <div className="flex justify-between items-baseline">
-            <span className="text-[10px] font-bold text-slate-400 uppercase">Oggetti Totali</span>
-            <span className="text-lg font-black text-slate-800">{bimEntities.length}</span>
-          </div>
-          <div className="flex justify-between items-baseline">
-            <span className="text-[10px] font-bold text-slate-400 uppercase">Muri / Volume</span>
-            <span className="text-lg font-black text-cyan-500">{bimEntities.filter(e => e.bimType === 'wall').length}</span>
-          </div>
-        </div>
-      </div>
-
       {/* Navigation Help */}
       <div className="absolute bottom-8 right-8 z-50 flex items-center gap-4 bg-white/80 backdrop-blur-xl p-3 px-6 rounded-full border border-slate-200 shadow-lg pointer-events-auto">
         <div className="flex items-center gap-2 text-[10px] font-bold text-slate-500">
@@ -2224,7 +2207,8 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
               const isMuro = entity.bimType === 'wall' || (entity as any).bimAreaType === 'muro';
               const isSelected = selectedEntity?.id === entity.id;
               const isHovered = hoveredId === entity.id;
-              const color = isSelected ? '#06b6d4' : (entity.color || (isMuro ? '#f8fafc' : '#3b82f6'));
+              const isFlashing = flashingId === entity.id;
+              const color = isFlashing ? '#22c55e' : (isSelected ? '#06b6d4' : (entity.color || (isMuro ? '#f8fafc' : '#3b82f6')));
               const entityOpacity = (entity as any).hideIn2D ? 0.08 : (transparentEntities.has(entity.id) ? 0.3 : 1);
 
               const e = entity as any;
@@ -2245,14 +2229,14 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
               return (
                 <group 
                   key={entity.id} 
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    if (e.shiftKey) {
-                      handleSelectSecondary(entity);
-                    } else {
-                      handleSelect(entity);
-                    }
-                  }}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      if (e.shiftKey) {
+                        handleSelectSecondary(entity);
+                      } else {
+                        handleSelect(entity);
+                      }
+                    }}
                   onDoubleClick={(e) => {
                     e.stopPropagation();
                     handleSelect(entity);

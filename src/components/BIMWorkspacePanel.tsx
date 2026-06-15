@@ -895,6 +895,18 @@ export function BIMWorkspacePanel({
               </div>
 
               <div className="pt-2">
+                <label className="text-[10px] text-slate-500 font-bold block mb-1">
+                  Colore Elemento
+                </label>
+                <input
+                  type="color"
+                  value={selectedEntity.color || '#3b82f6'}
+                  onChange={(e) => updateSelectedBIMField("color", e.target.value)}
+                  className="w-full h-8 border rounded px-1 bg-white cursor-pointer"
+                />
+              </div>
+
+              <div className="pt-2">
                 <button
                   onClick={() => updateSelectedBIMField("hideIn2D", !(selectedEntity as any).hideIn2D)}
                   className={`w-full py-1.5 px-2 rounded font-bold text-[10px] transition-colors border ${

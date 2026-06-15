@@ -1419,28 +1419,27 @@ const findBoundaryPolygon = (
 
   // multiPoly.coordinates is [ Polygon, Polygon, ... ]
   // Each Polygon is [ Ring, Ring, ... ] where the first Ring is outer and subsequent are holes
+  // We'll take the first non-empty MultiPolygon part
   
   let bestPoints: Point[] = [];
   let bestHoles: Point[][] = [];
-  let maxArea = -1;
 
-  // Find the largest polygon by area (since it's a single connected flood-fill, the largest is the main area)
+  // Find the polygon that contains our click point (there should be only one since it's a connected component)
   for (const polygon of multiPoly.coordinates) {
-    if (!polygon[0] || polygon[0].length < 3) continue;
-    
     const outerRing = polygon[0].map((p: any) => ({ x: p[0], y: p[1] }));
-    
-    // Calculate area
-    let area = 0;
-    for (let i = 0, j = outerRing.length - 1; i < outerRing.length; j = i++) {
-      area += (outerRing[j].x + outerRing[i].x) * (outerRing[j].y - outerRing[i].y);
-    }
-    area = Math.abs(area / 2);
-
-    if (area > maxArea) {
-      maxArea = area;
+    if (isPointInPolygon(clickPoint, outerRing)) {
       bestPoints = outerRing;
       bestHoles = polygon.slice(1).map((ring: any) => ring.map((p: any) => ({ x: p[0], y: p[1] })));
+      break;
+    }
+  }
+
+  // Fallback: if no polygon matched explicitly due to point-in-polygon boundary check precision, take the first one
+  if (bestPoints.length < 3 && multiPoly.coordinates.length > 0) {
+    const firstPoly = multiPoly.coordinates[0];
+    if (firstPoly && firstPoly[0] && firstPoly[0].length >= 3) {
+      bestPoints = firstPoly[0].map((p: any) => ({ x: p[0], y: p[1] }));
+      bestHoles = firstPoly.slice(1).map((ring: any) => ring.map((p: any) => ({ x: p[0], y: p[1] })));
     }
   }
 
@@ -2259,6 +2258,10 @@ interface CADCanvasProps {
   bimSymbolScale?: number;
   defaultTextStyle?: { fontFamily: string, fontSize: number, fontWeight: string, textAlign: 'left' | 'center' | 'right' | 'justify' };
   raccordoConfig?: { type: 'curvo' | 'rettilineo' | 'taglia'; value: number };
+  dimensionScale?: number;
+  dimensionMode?: 'two-points' | 'chain';
+  dimensionStyle?: 'linear' | 'aligned';
+  selectionMode?: 'manual' | 'object';
   onEditRaccordo?: (raccordoEntity: Entity) => void;
   onActionStart?: () => void;
   defaultHatchStyle?: {
@@ -2276,7 +2279,7 @@ interface CADCanvasProps {
   bimWallType?: string;
 }
 
-export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entities, activeTool, setActiveTool, setEntities, setEntitiesSilent, onCommitHistory, onSelect, onContextMenu, activeLayerId, layers, defaultLineStyle, setDefaultLineStyle, defaultHatchStyle, defaultTextStyle = { fontFamily: 'sans-serif', fontSize: 14, fontWeight: 'normal', textAlign: 'left' }, eraserRadius, setEraserRadius, eraserType = 'pencil', setEraserType, onMouseMovePosition, rulerStyle = 'tecnigrafo', orthoMode = false, setOrthoMode, isContinuousMode = false, cancelTrigger = 0, parallelTrigger = 0, tavole, onUpdateTavole, onDoubleClickTavola, selectedTemplateId, selectedEntityId, selectedBIMSymbolType, setSelectedBIMSymbolType, bimSymbolScale = 1, raccordoConfig, onEditRaccordo, onActionStart, onAreaDetected, highlightedPoints, bimWallHeight = 270, bimDoorHeight = 210, bimWindowHeight = 140, bimWallThickness = 15, bimWallType = 'Forati (Laterizio)' }, ref) => {
+export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entities, activeTool, setActiveTool, setEntities, setEntitiesSilent, onCommitHistory, onSelect, onContextMenu, activeLayerId, layers, defaultLineStyle, setDefaultLineStyle, defaultHatchStyle, defaultTextStyle = { fontFamily: 'sans-serif', fontSize: 14, fontWeight: 'normal', textAlign: 'left' }, eraserRadius, setEraserRadius, eraserType = 'pencil', setEraserType, onMouseMovePosition, rulerStyle = 'tecnigrafo', orthoMode = false, setOrthoMode, isContinuousMode = false, cancelTrigger = 0, parallelTrigger = 0, tavole, onUpdateTavole, onDoubleClickTavola, selectedTemplateId, selectedEntityId, selectedBIMSymbolType, setSelectedBIMSymbolType, bimSymbolScale = 1, raccordoConfig, dimensionScale = 1, dimensionMode = 'two-points', dimensionStyle = 'linear', selectionMode = 'manual', onEditRaccordo, onActionStart, onAreaDetected, highlightedPoints, bimWallHeight = 270, bimDoorHeight = 210, bimWindowHeight = 140, bimWallThickness = 15, bimWallType = 'Forati (Laterizio)' }, ref) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const entitiesRef = useRef(entities);
   useEffect(() => {
@@ -3756,52 +3759,26 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
     const intersectY = ((x1 * y2 - y1 * x2) * (y3 - y4) - (y1 - y2) * (x3 * y4 - y3 * x4)) / denom;
     const I = { x: intersectX, y: intersectY };
 
-    // 2. Determine ray directions V1 and V2 starting from I exactly along the lines, towards the click points
-    const L1x = line1.end.x - line1.start.x;
-    const L1y = line1.end.y - line1.start.y;
-    const lenL1 = Math.sqrt(L1x * L1x + L1y * L1y);
-    const dir1x = L1x / lenL1;
-    const dir1y = L1y / lenL1;
-    
-    let dot1 = dir1x * (clickPt1.x - I.x) + dir1y * (clickPt1.y - I.y);
-    if (Math.abs(dot1) < 1e-6) {
-      const dS = dir1x * (line1.start.x - I.x) + dir1y * (line1.start.y - I.y);
-      const dE = dir1x * (line1.end.x - I.x) + dir1y * (line1.end.y - I.y);
-      dot1 = Math.abs(dS) > Math.abs(dE) ? dS : dE;
-    }
-    const V1 = { x: dot1 > 0 ? dir1x : -dir1x, y: dot1 > 0 ? dir1y : -dir1y };
+    // 2. Determine ray directions V1 and V2 starting from I along the lines, away from I
+    const dStart1 = Math.sqrt((line1.start.x - I.x) ** 2 + (line1.start.y - I.y) ** 2);
+    const dEnd1 = Math.sqrt((line1.end.x - I.x) ** 2 + (line1.end.y - I.y) ** 2);
+    const farEndpoint1 = dStart1 > dEnd1 ? line1.start : line1.end;
+    const len1 = Math.max(dStart1, dEnd1);
 
-    const L2x = line2.end.x - line2.start.x;
-    const L2y = line2.end.y - line2.start.y;
-    const lenL2 = Math.sqrt(L2x * L2x + L2y * L2y);
-    const dir2x = L2x / lenL2;
-    const dir2y = L2y / lenL2;
-    
-    let dot2 = dir2x * (clickPt2.x - I.x) + dir2y * (clickPt2.y - I.y);
-    if (Math.abs(dot2) < 1e-6) {
-      const dS = dir2x * (line2.start.x - I.x) + dir2y * (line2.start.y - I.y);
-      const dE = dir2x * (line2.end.x - I.x) + dir2y * (line2.end.y - I.y);
-      dot2 = Math.abs(dS) > Math.abs(dE) ? dS : dE;
-    }
-    const V2 = { x: dot2 > 0 ? dir2x : -dir2x, y: dot2 > 0 ? dir2y : -dir2y };
+    const dStart2 = Math.sqrt((line2.start.x - I.x) ** 2 + (line2.start.y - I.y) ** 2);
+    const dEnd2 = Math.sqrt((line2.end.x - I.x) ** 2 + (line2.end.y - I.y) ** 2);
+    const farEndpoint2 = dStart2 > dEnd2 ? line2.start : line2.end;
+    const len2 = Math.max(dStart2, dEnd2);
 
-    // Find the endpoint of the original line that is on the positive side of V1 relative to I
-    const dotS1 = (line1.start.x - I.x) * V1.x + (line1.start.y - I.y) * V1.y;
-    const dotE1 = (line1.end.x - I.x) * V1.x + (line1.end.y - I.y) * V1.y;
-    const farEndpoint1 = dotS1 > dotE1 ? line1.start : line1.end;
-    const maxLen1 = Math.max(dotS1, dotE1);
-
-    const dotS2 = (line2.start.x - I.x) * V2.x + (line2.start.y - I.y) * V2.y;
-    const dotE2 = (line2.end.x - I.x) * V2.x + (line2.end.y - I.y) * V2.y;
-    const farEndpoint2 = dotS2 > dotE2 ? line2.start : line2.end;
-    const maxLen2 = Math.max(dotS2, dotE2);
-
-    if (maxLen1 < 1e-3 || maxLen2 < 1e-3) {
+    if (len1 < 1e-3 || len2 < 1e-3) {
       if (!existingRaccordoId) {
         alert("Geometria di uno dei segmenti non valida.");
       }
       return;
     }
+
+    const V1 = { x: (farEndpoint1.x - I.x) / len1, y: (farEndpoint1.y - I.y) / len1 };
+    const V2 = { x: (farEndpoint2.x - I.x) / len2, y: (farEndpoint2.y - I.y) / len2 };
 
     // 3. Compute angle theta between V1 and V2
     const cosTheta = Math.max(-1, Math.min(1, V1.x * V2.x + V1.y * V2.y));
@@ -3827,6 +3804,17 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
     } else {
       T = pVal;
     }
+
+    // 4. Determine endpoints that lie on the rays pointing away from I
+    const dot1 = (x1 - I.x) * V1.x + (y1 - I.y) * V1.y;
+    const dot2 = (x2 - I.x) * V1.x + (y2 - I.y) * V1.y;
+    const farEndpoint1_proj = dot1 > dot2 ? line1.start : line1.end;
+    const maxLen1 = Math.max(dot1, dot2);
+
+    const dot3 = (x3 - I.x) * V2.x + (y3 - I.y) * V2.y;
+    const dot4 = (x4 - I.x) * V2.x + (y4 - I.y) * V2.y;
+    const farEndpoint2_proj = dot3 > dot4 ? line2.start : line2.end;
+    const maxLen2 = Math.max(dot3, dot4);
 
     // Check if configuration parameter is too large
     if (T > maxLen1 || T > maxLen2) {
@@ -3977,6 +3965,45 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
       const shouldAddConnector = !isBothWalls && T > 0.001;
       return (shouldAddConnector ? updated.concat(newConnector) : updated) as Entity[];
     });
+
+    // Smooth cinematic camera transition to the focal point of the raccordo
+    const canvas = canvasRef.current;
+    if (canvas) {
+      // Calculate a target zoom that puts the intersection point comfortably in view
+      // We aim for a zoom level that feels like a "macro" shot of the detail
+      const targetZoom = Math.min(2.5, 1.2); 
+      const targetPan = {
+          x: (canvas.width / 2) - I.x * targetZoom,
+          y: (canvas.height / 2) - I.y * targetZoom
+      };
+      
+      const startZoom = view.zoom;
+      const startPan = { ...view.pan };
+      const duration = 850; // Elegant, deliberate transition
+      const startTime = performance.now();
+      
+      const animate = (time: number) => {
+        const elapsed = time - startTime;
+        const progress = Math.min(elapsed / duration, 1);
+        
+        // Cinematic Ease Out Quint for smooth landing
+        const ease = 1 - Math.pow(1 - progress, 5);
+        
+        const currentZoom = startZoom + (targetZoom - startZoom) * ease;
+        const currentPan = {
+          x: startPan.x + (targetPan.x - startPan.x) * ease,
+          y: startPan.y + (targetPan.y - startPan.y) * ease
+        };
+        
+        setView({ zoom: currentZoom, pan: currentPan });
+        
+        if (progress < 1) {
+          requestAnimationFrame(animate);
+        }
+      };
+      
+      requestAnimationFrame(animate);
+    }
 
     // Automatically trigger edit if it's a new raccordo or has onEditRaccordo
     if (onEditRaccordo) {
@@ -4564,7 +4591,7 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
             const p2 = { x: entity.end.x + nx * entity.offset, y: entity.end.y + ny * entity.offset };
             
             // Define a fixed scale factor equivalent to a 200 unit length dimension
-            const scaleFactor = 2.0;
+            const scaleFactor = Math.max(0.5, Math.min(5.0, (L / 500) * dimensionScale));
 
             // Thinner line for dimensions
             ctx.lineWidth = (0.5 / view.zoom) * (Math.max(1, scaleFactor * 0.5));
@@ -9140,11 +9167,84 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
         }
     } else if (activeTool === 'Dimension') {
         const clickedEntity = getEntityAtPoint(rawPoint);
-        if (clickedEntity && clickedEntity.type === 'dimension') {
-            setPositioningDimId(clickedEntity.id);
+        
+        if (selectionMode === 'object') {
+            if (clickedEntity) {
+                let startPoint: Point | null = null;
+                let endPoint: Point | null = null;
+                
+                if (clickedEntity.type === 'line') {
+                    startPoint = clickedEntity.start;
+                    endPoint = clickedEntity.end;
+                } else if (clickedEntity.type === 'rectangle') {
+                    const r = clickedEntity as any;
+                    const A = { x: r.x, y: r.y };
+                    const B = { x: r.x + r.width, y: r.y };
+                    const C = { x: r.x + r.width, y: r.y + r.height };
+                    const D = { x: r.x, y: r.y + r.height };
+                    
+                    const segments = [
+                        { s: A, e: B },
+                        { s: B, e: C },
+                        { s: C, e: D },
+                        { s: D, e: A }
+                    ];
+                    
+                    let minD = Infinity;
+                    let bestSeg = segments[0];
+                    for (const seg of segments) {
+                        const dist = distanceToSegment(rawPoint, seg.s, seg.e);
+                        if (dist < minD) {
+                            minD = dist;
+                            bestSeg = seg;
+                        }
+                    }
+                    startPoint = bestSeg.s;
+                    endPoint = bestSeg.e;
+                }
+                
+                if (startPoint && endPoint) {
+                    // Visual feedback: green flash the clicked entity
+                    setFlashIds([clickedEntity.id]);
+                    
+                    setTimeout(() => {
+                        setFlashIds([]);
+                        
+                        const newDim: Entity = {
+                            id: Date.now().toString(),
+                            type: 'dimension',
+                            color: defaultLineStyle.color || '#3b82f6',
+                            lineWidth: 1,
+                            mode: 'ink',
+                            start: startPoint!,
+                            end: endPoint!,
+                            offset: 20 * (dimensionScale || 1),
+                            style: dimensionStyle === 'aligned' ? 2 : 1,
+                            layer: 'Misure'
+                        };
+                        
+                        setEntities(prev => {
+                            onCommitHistory?.(prev);
+                            return [...prev, newDim];
+                        });
+                        
+                        // Immediately allow interactive offset drag placement
+                        setPositioningDimId(newDim.id);
+                    }, 450);
+                    return;
+                }
+            }
         } else {
-            if (isContinuousMode) {
+            // SelectionMode === 'manual' - double points & chain logic
+            if (clickedEntity && clickedEntity.type === 'dimension' && !drawing) {
+                setPositioningDimId(clickedEntity.id);
+            } else {
                 if (!drawing) {
+                    // First Point Click
+                    if (snapped.refEntityId) {
+                        setFlashIds([snapped.refEntityId]);
+                        setTimeout(() => setFlashIds([]), 400);
+                    }
                     setDrawing({
                         start: snapped.point,
                         current: snapped.point,
@@ -9159,9 +9259,16 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
                         isVirtual: false
                     });
                 } else {
+                    // Second Point Click
                     const snappedResult = getSnappedPoint(rawPoint, entities, activeTool, drawing as any);
+                    if (snappedResult.refEntityId) {
+                        setFlashIds([snappedResult.refEntityId]);
+                        setTimeout(() => setFlashIds([]), 400);
+                    }
                     let finalEndPoint = snappedResult.point;
 
+                    const isChainMode = dimensionMode === 'chain';
+                    
                     const newDim: Entity = {
                         id: Date.now().toString(),
                         type: 'dimension',
@@ -9170,46 +9277,28 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
                         mode: 'ink',
                         start: drawing.start,
                         end: finalEndPoint,
-                        offset: 0,
-                        style: 1,
+                        offset: isChainMode ? 20 * (dimensionScale || 1) : 0,
+                        style: dimensionStyle === 'aligned' ? 2 : 1,
                         layer: 'Misure'
                     };
+                    
                     setEntities(prev => {
                         onCommitHistory?.(prev);
                         return [...prev, newDim];
                     });
-                    setPositioningDimId(newDim.id);
-                    setDrawing(null);
-                }
-            } else {
-                const found = getLineAtPoint(rawPoint);
-                if (found && found.type === 'line') {
-                    const existingDim = entities.find(e => 
-                        e.type === 'dimension' && 
-                        ((e.start.x === found.start.x && e.start.y === found.start.y && e.end.x === found.end.x && e.end.y === found.end.y) ||
-                         (e.start.x === found.end.x && e.start.y === found.end.y && e.end.x === found.start.x && e.end.y === found.start.y))
-                    );
 
-                    if (existingDim) {
-                        setPositioningDimId(existingDim.id);
+                    if (isChainMode) {
+                        // For chain mode, align measurements side-by-side: automatically place offset
+                        // and continue drawing from the endpoint
+                        setDrawing(prev => ({
+                            ...(prev as any),
+                            start: finalEndPoint,
+                            current: finalEndPoint
+                        }));
                     } else {
-                        const newDim: Entity = {
-                            id: Date.now().toString(),
-                            type: 'dimension',
-                            color: found.color || defaultLineStyle.color,
-                            lineWidth: 1,
-                            mode: 'ink',
-                            start: found.start,
-                            end: found.end,
-                            offset: 0,
-                            style: 1,
-                            layer: 'Misure'
-                        };
-                        setEntities(prev => {
-                            onCommitHistory?.(prev);
-                            return [...prev, newDim];
-                        });
+                        // Two points mode: allow interactive drag-offset positioning
                         setPositioningDimId(newDim.id);
+                        setDrawing(null);
                     }
                 }
             }

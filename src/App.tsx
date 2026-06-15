@@ -10,6 +10,7 @@ import { CanvasPDFPreview } from "./components/CanvasPDFPreview";
 
 pdfjs.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.mjs`;
 import { DimensionStyleDialog } from "./components/DimensionStyleDialog";
+import { DimensionSettingsDialog } from "./components/DimensionSettingsDialog";
 import { RaccordoDialog } from "./components/RaccordoDialog";
 import { DXFTextReaderDialog } from "./components/DXFTextReaderDialog";
 import { TemplatePreview } from "./components/TemplatePreview";
@@ -72,7 +73,9 @@ import {
   Zap,
   ChevronDown,
   ArrowDown,
-  Clipboard
+  Clipboard,
+  Target,
+  Settings2
 } from "lucide-react";
 
 const ParallelIcon = ({ size = 16 }: { size?: number }) => (
@@ -217,8 +220,9 @@ export default function App() {
       }
     }
     return [
-      { id: "fav-left", tools: ["Line", "Raccordo", "Orto", "Tecnigrafo", "Polilinea"], x: 10, y: 150, isDocked: 'left' },
-      { id: "fav-right", tools: ["Trim", "Eraser", "Cancella", "Move", "Copy", "Join"], x: 1200, y: 150, isDocked: 'right' }
+      { id: "fav-left", tools: ["Orto", "Tecnigrafo", "Polilinea"], x: 10, y: 150, isDocked: 'left' },
+      { id: "fav-right", tools: ["Trim", "Eraser", "Cancella", "Move", "Copy", "Join"], x: 1200, y: 150, isDocked: 'right' },
+      { id: "fav-top", tools: ["Specchio", "Hatch", "Raccordo"], x: 450, y: 80, isDocked: 'top' }
     ];
   });
   const [activeDraggingId, setActiveDraggingId] = useState<string | null>(null);
@@ -229,6 +233,18 @@ export default function App() {
   const [isRaccordoDialogOpen, setIsRaccordoDialogOpen] = useState(false);
   const [isDXFTextReaderOpen, setIsDXFTextReaderOpen] = useState(false);
   const [selectedBIMSymbolType, setSelectedBIMSymbolType] = useState<string | null>(null);
+  const [dimensionScale, setDimensionScale] = useState(() => parseFloat(localStorage.getItem('dimensionScale') || '1.0'));
+  const [dimensionMode, setDimensionMode] = useState<'two-points' | 'chain'>(() => (localStorage.getItem('dimensionMode') as 'two-points' | 'chain') || 'two-points');
+  const [dimensionStyle, setDimensionStyle] = useState<'linear' | 'aligned'>(() => (localStorage.getItem('dimensionStyle') as 'linear' | 'aligned') || 'linear');
+  const [selectionMode, setSelectionMode] = useState<'manual' | 'object'>(() => (localStorage.getItem('selectionMode') as 'manual' | 'object') || 'manual');
+  const [isDimensionScaleDialogOpen, setIsDimensionScaleDialogOpen] = useState(false);
+
+  useEffect(() => {
+    localStorage.setItem('dimensionScale', dimensionScale.toString());
+    localStorage.setItem('dimensionMode', dimensionMode);
+    localStorage.setItem('dimensionStyle', dimensionStyle);
+    localStorage.setItem('selectionMode', selectionMode);
+  }, [dimensionScale, dimensionMode, dimensionStyle, selectionMode]);
 
   // BIM dedicated dialog states
   const [isBIMPorteOpen, setIsBIMPorteOpen] = useState(false);
@@ -352,6 +368,9 @@ const MASONRY_TYPES = [
   // UI Persistence Effects
   useEffect(() => {
     localStorage.setItem('selectedTool', selectedTool || '');
+    if (selectedTool === 'Dimension') {
+      setShowProperties(true);
+    }
   }, [selectedTool]);
 
   useEffect(() => {
@@ -2121,6 +2140,10 @@ const MASONRY_TYPES = [
             setDefaultLineStyle={setDefaultLineStyle}
             eraserRadius={eraserRadius}
             setEraserRadius={setEraserRadius}
+            dimensionScale={dimensionScale}
+            dimensionMode={dimensionMode}
+            dimensionStyle={dimensionStyle}
+            selectionMode={selectionMode}
             eraserType={eraserType}
             setEraserType={setEraserType}
             rulerStyle={rulerStyle}
@@ -2637,27 +2660,173 @@ const MASONRY_TYPES = [
 
         {/* Properties Panel (Drawer) */}
         {showProperties && (
-          <div className="w-80 bg-white border-l border-neutral-300 p-4 transition-all overflow-y-auto overflow-x-hidden flex flex-col h-full">
-            <h3 className="font-bold mb-4 flex justify-between items-center text-neutral-800 border-b border-neutral-100 pb-2">
-              <span className="text-xs font-black uppercase tracking-wider font-mono">
-                {activeSidebarTab === "tavole" ? "Gestione Tavole" 
-                  : activeSidebarTab === "layers" ? "Gestione Layers" 
-                  : activeSidebarTab === "maschere" ? "Archivio Maschere" 
-                  : activeSidebarTab === "testo" ? "Impostazioni Testo"
-                  : activeSidebarTab === "gemini" ? "Disegno Gemini AI"
-                  : activeSidebarTab === "bim" ? "Tecnologia BIM / I.A."
-                  : "Mazzo Penne & Stili"}
+          <div className={`w-80 border-l transition-all overflow-y-auto overflow-x-hidden flex flex-col h-full p-4 ${
+            selectedTool === 'Dimension' 
+              ? 'bg-slate-950 border-slate-800 text-slate-100 shadow-[2px_0_24px_rgba(0,0,0,0.5)]' 
+              : 'bg-white border-neutral-300 text-neutral-800'
+          }`}>
+            <h3 className={`font-bold mb-4 flex justify-between items-center border-b pb-2 ${
+              selectedTool === 'Dimension' 
+                ? 'text-slate-200 border-slate-800' 
+                : 'text-neutral-800 border-neutral-100'
+            }`}>
+              <span className="text-xs font-black uppercase tracking-wider font-mono flex items-center gap-2">
+                {selectedTool === 'Dimension' ? (
+                  <>
+                    <Settings2 className="w-4 h-4 text-emerald-400 animate-pulse" />
+                    <span>Configurazione Misura</span>
+                  </>
+                ) : (
+                  <span>
+                    {activeSidebarTab === "tavole" ? "Gestione Tavole" 
+                      : activeSidebarTab === "layers" ? "Gestione Layers" 
+                      : activeSidebarTab === "maschere" ? "Archivio Maschere" 
+                      : activeSidebarTab === "testo" ? "Impostazioni Testo"
+                      : activeSidebarTab === "gemini" ? "Disegno Gemini AI"
+                      : activeSidebarTab === "bim" ? "Tecnologia BIM / I.A."
+                      : "Mazzo Penne & Stili"}
+                  </span>
+                )}
               </span>
               <button 
-                onClick={() => setShowProperties(false)} 
-                className="text-neutral-400 hover:text-neutral-600 font-bold font-mono text-sm p-1"
+                onClick={() => {
+                  if (selectedTool === 'Dimension') setSelectedTool('Select');
+                  setShowProperties(false);
+                }} 
+                className={`font-bold font-mono text-sm p-1 transition-colors ${
+                  selectedTool === 'Dimension' 
+                    ? 'text-slate-500 hover:text-slate-300' 
+                    : 'text-neutral-400 hover:text-neutral-600'
+                }`}
               >
                 ✕
               </button>
             </h3>
 
             <div className="space-y-4 flex-1">
-              {activeSidebarTab === "bim" ? (
+              {selectedTool === 'Dimension' ? (
+                <div className="space-y-6">
+                  <div className="bg-slate-900 border border-slate-800 p-3.5 rounded-xl shadow-[0_4px_20px_rgba(0,0,0,0.3)]">
+                    <p className="text-[11px] text-slate-300 leading-normal font-sans">
+                      <span className="font-bold text-emerald-400">📊 STRUMENTO MISURE:</span> Configura i parametri di quotatura. Seleziona un metodo di immissione e clicca sul disegno.
+                    </p>
+                  </div>
+
+                  <div className="space-y-5">
+                    {/* SELEZIONE MODE: MANUAL VS OBJECT */}
+                    <div className="space-y-2">
+                      <label className="text-[10px] font-black uppercase text-slate-400 tracking-widest flex items-center gap-2">
+                        <Target className="w-3.5 h-3.5 text-emerald-400" />
+                        Metodo Selezione
+                      </label>
+                      <div className="flex bg-slate-900 p-1 rounded-xl border border-slate-800">
+                        <button
+                          onClick={() => setSelectionMode('manual')}
+                          className={`flex-1 py-2 text-xs font-bold rounded-lg transition-all flex items-center justify-center gap-1.5 ${
+                            selectionMode === 'manual'
+                              ? 'bg-emerald-500 text-slate-950 shadow-md font-black'
+                              : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/40'
+                          }`}
+                        >
+                          <Ruler className="w-3.5 h-3.5" />
+                          2p / Manuale
+                        </button>
+                        <button
+                          onClick={() => setSelectionMode('object')}
+                          className={`flex-1 py-2 text-xs font-bold rounded-lg transition-all flex items-center justify-center gap-1.5 relative ${
+                            selectionMode === 'object'
+                              ? 'bg-emerald-500 text-slate-950 shadow-md font-black'
+                              : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/40'
+                          }`}
+                        >
+                          <Target className="w-3.5 h-3.5" />
+                          Ad Oggetto
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* SCALE FACTOR */}
+                    <div className="space-y-2">
+                      <div className="flex justify-between items-center">
+                        <label className="text-[10px] font-black uppercase text-slate-400 tracking-widest flex items-center gap-2">
+                          <Settings2 className="w-3.5 h-3.5 text-emerald-400" />
+                          Scala Dimensioni
+                        </label>
+                        <span className="font-mono text-emerald-400 text-xs font-black bg-slate-900/80 border border-slate-800 px-2 py-0.5 rounded">
+                          {dimensionScale.toFixed(2)}x
+                        </span>
+                      </div>
+                      <input
+                        type="range"
+                        min="0.1"
+                        max="5.0"
+                        step="0.1"
+                        value={dimensionScale}
+                        onChange={(e) => setDimensionScale(parseFloat(e.target.value))}
+                        className="w-full accent-emerald-500 h-1.5 bg-slate-800 rounded-lg appearance-none cursor-pointer"
+                      />
+                    </div>
+
+                    {/* SELECTS ROW */}
+                    <div className="grid grid-cols-2 gap-3.5">
+                      {/* DIMENSION MODE */}
+                      <div className="space-y-1.5">
+                        <label className="text-[10px] font-black uppercase text-slate-400 tracking-widest block">
+                          Modalità
+                        </label>
+                        <select
+                          value={dimensionMode}
+                          onChange={(e) => setDimensionMode(e.target.value as 'two-points' | 'chain')}
+                          className="w-full bg-slate-900 border border-slate-800 rounded-lg p-2.5 text-xs font-bold text-slate-200 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none"
+                        >
+                          <option value="two-points" className="bg-slate-950 text-slate-200">2 Punti</option>
+                          <option value="chain" className="bg-slate-950 text-slate-200">Catena</option>
+                        </select>
+                      </div>
+
+                      {/* DIMENSION STYLE */}
+                      <div className="space-y-1.5">
+                        <label className="text-[10px] font-black uppercase text-slate-400 tracking-widest block">
+                          Tipo
+                        </label>
+                        <select
+                          value={dimensionStyle}
+                          onChange={(e) => setDimensionStyle(e.target.value as 'linear' | 'aligned')}
+                          className="w-full bg-slate-900 border border-slate-800 rounded-lg p-2.5 text-xs font-bold text-slate-200 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none"
+                        >
+                          <option value="linear" className="bg-slate-950 text-slate-200">Lineare</option>
+                          <option value="aligned" className="bg-slate-950 text-slate-200">Allineata</option>
+                        </select>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* INFO FEEDBACK ACCORDING TO SELECTION MODE */}
+                  <div className="p-3 bg-emerald-950/20 border border-emerald-900/30 rounded-xl space-y-1.5 text-xs">
+                    <span className="font-bold text-emerald-400 block tracking-wide uppercase text-[10px]">
+                      {selectionMode === 'manual' ? "📌 GUIDA 2 PUNTI" : "🎯 GUIDA AD OGGETTO"}
+                    </span>
+                    <p className="text-slate-400 leading-relaxed text-[11px]">
+                      {selectionMode === 'manual' 
+                        ? (dimensionMode === 'chain' 
+                           ? "Clicca il primo punto, poi il secondo per tracciare la prima misura. Successivamente clicca altri punti per posizionare le altre misure in catena adiacente."
+                           : "Traccia la linea di misura facendo clic sul primo punto e poi sul secondo. Sposta il cursore per regolare l'altezza dell'allineamento e fai clic per fissarla.")
+                        : "Sposta il mouse e fai clic su un segmento/linea o sul lato di un rettangolo. Il segmento selezionato lampeggerà in verde, poi potrai muovere il mouse per posizionare la misura."
+                      }
+                    </p>
+                  </div>
+
+                  <button
+                    onClick={() => {
+                      setSelectedTool('Select');
+                      setShowProperties(false);
+                    }}
+                    className="w-full py-2.5 bg-slate-900 hover:bg-slate-800 border border-slate-800 text-slate-200 hover:text-white font-bold text-xs uppercase tracking-widest rounded-xl transition-all shadow-md active:scale-95"
+                  >
+                    Chiudi Configurazione
+                  </button>
+                </div>
+              ) : activeSidebarTab === "bim" ? (
                 <BIMWorkspacePanel
                   entities={entities}
                   selectedTool={selectedTool}
@@ -4316,7 +4485,7 @@ const MASONRY_TYPES = [
         </div>
       )}
 
-      {/* Raccordo configuration dialog */}
+
       <RaccordoDialog
         key={editingRaccordo ? `edit-${editingRaccordo.id}` : 'new-raccordo'}
         isOpen={isRaccordoDialogOpen}
