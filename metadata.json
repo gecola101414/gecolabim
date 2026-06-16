@@ -1,6 +1,6 @@
 {
-  "name": "Gecolacad 20_4 sposto con il drop i pulsanti nel\u0027ambito dell menu cioe cmabio ordine",
-  "description": "1. all\u0027inizio devono apparire dei menu definiti piu funzioannti e gia ai lati   disegno copia ecc",
+  "name": "Remix: Gecolacad 20_5 infissi 3d",
+  "description": "devo riusciread impostare le fienstre e le porte in 3d cosi completiamo ",
   "requestFramePermissions": [
     "microphone"
   ],

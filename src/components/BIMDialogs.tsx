@@ -374,7 +374,22 @@ interface FinestreDialogProps {
   onClose: () => void;
   lastWindowWidth: number;
   lastWindowHeight: number;
-  onConfirmWindow: (width: number, height: number, type: string, trasmittanza: number, prezzario: string) => void;
+  lastWindowZElevation?: number;
+  lastWindowType?: string;
+  lastWindowFlipLeft?: boolean;
+  lastWindowFlipSide?: boolean;
+  lastWindowRotation?: number;
+  onConfirmWindow: (
+    width: number, 
+    height: number, 
+    type: string, 
+    trasmittanza: number, 
+    prezzario: string, 
+    zElevation: number, 
+    flipLeft: boolean, 
+    flipSide: boolean, 
+    rotation: number
+  ) => void;
   onDelete?: () => void;
 }
 export const FinestreDialog: React.FC<FinestreDialogProps> = ({
@@ -382,13 +397,22 @@ export const FinestreDialog: React.FC<FinestreDialogProps> = ({
   onClose,
   lastWindowWidth,
   lastWindowHeight,
+  lastWindowZElevation = 100,
+  lastWindowType = 'singola',
+  lastWindowFlipLeft = false,
+  lastWindowFlipSide = false,
+  lastWindowRotation = 0,
   onConfirmWindow,
   onDelete
 }) => {
   const { position, handlePointerDown, handlePointerMove, handlePointerUp } = useDraggableDialog(isOpen, { x: 300, y: 120 });
   const [width, setWidth] = useState<number>(lastWindowWidth || 120);
   const [height, setHeight] = useState<number>(lastWindowHeight || 140);
-  const [winType, setWinType] = useState<string>('singola');
+  const [zElevation, setZElevation] = useState<number>(lastWindowZElevation || 100);
+  const [winType, setWinType] = useState<string>(lastWindowType || 'singola');
+  const [flipLeft, setFlipLeft] = useState<boolean>(lastWindowFlipLeft);
+  const [flipSide, setFlipSide] = useState<boolean>(lastWindowFlipSide);
+  const [rotation, setRotation] = useState<number>(lastWindowRotation);
 
   const [trasmittanza, setTrasmittanza] = useState<number>(0.0);
   const [prezzario, setPrezzario] = useState<string>('');
@@ -397,7 +421,7 @@ export const FinestreDialog: React.FC<FinestreDialogProps> = ({
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    onConfirmWindow(width, height, winType, trasmittanza, prezzario);
+    onConfirmWindow(width, height, winType, trasmittanza, prezzario, zElevation, flipLeft, flipSide, rotation);
   };
 
   const presetMisure = [80, 100, 120, 140, 180, 240];
@@ -416,39 +440,39 @@ export const FinestreDialog: React.FC<FinestreDialogProps> = ({
       >
         <h3 className="text-xs font-black uppercase text-blue-400 tracking-wider font-mono flex items-center gap-2 pointer-events-none">
           <Maximize2 size={14} className="text-blue-500" />
-          <span>🪟 Sottomenu Finestre BIM</span>
+          <span>🪟 Proprietà Infisso BIM</span>
         </h3>
         <button type="button" onClick={onClose} className="text-slate-500 hover:text-white font-mono text-xs font-bold leading-none p-1">✕</button>
       </div>
 
       <form onSubmit={handleSubmit} className="space-y-4 overflow-y-auto pr-2 pb-2">
-        <div>
-          <label className="block text-[10px] text-slate-400 font-bold uppercase tracking-wider mb-1.5">Larghezza Infisso (cm)</label>
-          <div className="grid grid-cols-6 gap-1 mb-2">
-            {presetMisure.map(w => (
-              <button
-                type="button"
-                key={w}
-                onClick={() => setWidth(w)}
-                className={`py-1 px-1 rounded font-mono text-[9.5px] font-bold border transition ${
-                  width === w ? 'bg-blue-500/10 border-blue-500 text-blue-400' : 'bg-slate-900 border-slate-800 text-slate-400 hover:border-slate-700'
-                }`}
-              >
-                {w}
-              </button>
-            ))}
+        <div className="grid grid-cols-2 gap-4">
+          <div className="col-span-2">
+            <label className="block text-[10px] text-slate-400 font-bold uppercase tracking-wider mb-1.5">Larghezza Infisso (cm)</label>
+            <div className="grid grid-cols-6 gap-1 mb-2">
+              {presetMisure.map(w => (
+                <button
+                  type="button"
+                  key={w}
+                  onClick={() => setWidth(w)}
+                  className={`py-1 px-1 rounded font-mono text-[9.5px] font-bold border transition ${
+                    width === w ? 'bg-blue-500/10 border-blue-500 text-blue-400' : 'bg-slate-900 border-slate-800 text-slate-400 hover:border-slate-700'
+                  }`}
+                >
+                  {w}
+                </button>
+              ))}
+            </div>
+            <input
+              type="number"
+              min="30"
+              max="400"
+              value={width}
+              onChange={(e) => setWidth(parseInt(e.target.value) || 120)}
+              className="w-full bg-slate-900 border border-slate-800 text-white rounded p-2 text-xs font-mono focus:outline-none"
+            />
           </div>
-          <input
-            type="number"
-            min="30"
-            max="400"
-            value={width}
-            onChange={(e) => setWidth(parseInt(e.target.value) || 120)}
-            className="w-full bg-slate-900 border border-slate-800 text-white rounded p-2 text-xs font-mono focus:outline-none"
-          />
-        </div>
 
-        <div className="grid grid-cols-2 gap-2">
           <div>
             <label className="block text-[9px] text-slate-400 font-bold uppercase tracking-wider mb-1">Altezza (cm)</label>
             <input
@@ -457,9 +481,33 @@ export const FinestreDialog: React.FC<FinestreDialogProps> = ({
               max="250"
               value={height}
               onChange={(e) => setHeight(parseInt(e.target.value) || 140)}
-              className="w-full bg-slate-900 border border-slate-800 text-white p-1.5 rounded text-xs font-mono"
+              className="w-full bg-slate-900 border border-slate-800 text-white p-1.5 rounded text-xs font-mono focus:border-blue-500 focus:outline-none"
             />
           </div>
+          <div>
+            <label className="block text-[9px] text-slate-400 font-bold uppercase tracking-wider mb-1">Quota Z (Soglia)</label>
+            <input
+              type="number"
+              min="0"
+              max="200"
+              value={zElevation}
+              onChange={(e) => setZElevation(parseInt(e.target.value) || 100)}
+              className="w-full bg-slate-900 border border-slate-800 text-white p-1.5 rounded text-xs font-mono focus:border-blue-500 focus:outline-none"
+            />
+          </div>
+
+          <div>
+            <label className="block text-[9px] text-slate-400 font-bold uppercase tracking-wider mb-1">Rotazione (°)</label>
+            <input
+              type="number"
+              min="0"
+              max="360"
+              value={rotation}
+              onChange={(e) => setRotation(parseInt(e.target.value) ?? 0)}
+              className="w-full bg-slate-900 border border-slate-800 text-white p-1.5 rounded text-xs font-mono border-blue-500/30 focus:border-blue-500 focus:outline-none"
+            />
+          </div>
+
           <div>
             <label className="block text-[9px] text-slate-400 font-bold uppercase tracking-wider mb-1">Tipologia</label>
             <select
@@ -467,14 +515,16 @@ export const FinestreDialog: React.FC<FinestreDialogProps> = ({
               onChange={(e: any) => setWinType(e.target.value)}
               className="w-full bg-slate-900 border border-slate-800 text-white p-1.5 rounded text-xs focus:outline-none focus:border-blue-400"
             >
-              <option value="singola">Singolo Battente</option>
+              <option value="singola">Battente Singola</option>
               <option value="doppia">Doppio Battente</option>
-              <option value="portafinestra">Portafinestra (H.220)</option>
+              <option value="portafinestra">Portafinestra</option>
               <option value="vasistas">Basi / Vasistas</option>
+              <option value="vetrata">Vetrata Fissa</option>
             </select>
           </div>
+
           <div>
-            <label className="block text-[9px] text-slate-400 font-bold uppercase tracking-wider mb-1">Trasmittanza (W/m²K)</label>
+            <label className="block text-[9px] text-slate-400 font-bold uppercase tracking-wider mb-1">Trasmittanza</label>
             <input
               type="number"
               step="0.01"
@@ -483,16 +533,50 @@ export const FinestreDialog: React.FC<FinestreDialogProps> = ({
               className="w-full bg-slate-900 border border-slate-800 text-white p-1.5 rounded text-xs font-mono"
             />
           </div>
-          <div className="col-span-2">
-            <label className="block text-[9px] text-slate-400 font-bold uppercase tracking-wider mb-1">Voce Prezzario</label>
+
+          <div>
+            <label className="block text-[9px] text-slate-400 font-bold uppercase tracking-wider mb-1">Prezzario</label>
             <input
               type="text"
               value={prezzario}
               onChange={(e) => setPrezzario(e.target.value)}
               className="w-full bg-slate-900 border border-slate-800 text-white p-1.5 rounded text-xs font-mono"
-              placeholder="Codice o voce..."
+              placeholder="Voce..."
             />
           </div>
+
+          {(winType !== 'vetrata' && winType !== 'vasistas') && (
+            <>
+              <div className="col-span-2 flex items-center justify-between bg-slate-900 border border-slate-800 p-2 rounded">
+                <label className="text-[9px] text-slate-400 font-bold uppercase tracking-wider">Apertura (Sinistra / Destra)</label>
+                <div className="flex items-center gap-2">
+                  <span className={`text-[10px] ${!flipLeft ? 'text-blue-400 font-bold' : 'text-slate-500'}`}>Sx</span>
+                  <button
+                    type="button"
+                    onClick={() => setFlipLeft(!flipLeft)}
+                    className={`w-10 h-5 rounded-full relative transition-colors ${flipLeft ? 'bg-blue-600' : 'bg-slate-700'}`}
+                  >
+                    <div className={`w-3 h-3 bg-white rounded-full absolute top-1 transition-transform ${flipLeft ? 'translate-x-6' : 'translate-x-1'}`} />
+                  </button>
+                  <span className={`text-[10px] ${flipLeft ? 'text-blue-400 font-bold' : 'text-slate-500'}`}>Dx</span>
+                </div>
+              </div>
+              <div className="col-span-2 flex items-center justify-between bg-slate-900 border border-slate-800 p-2 rounded">
+                <label className="text-[9px] text-slate-400 font-bold uppercase tracking-wider">Verso Apertura (Interno / Esterno)</label>
+                <div className="flex items-center gap-2">
+                  <span className={`text-[10px] ${!flipSide ? 'text-blue-400 font-bold' : 'text-slate-500'}`}>Int</span>
+                  <button
+                    type="button"
+                    onClick={() => setFlipSide(!flipSide)}
+                    className={`w-10 h-5 rounded-full relative transition-colors ${flipSide ? 'bg-blue-600' : 'bg-slate-700'}`}
+                  >
+                    <div className={`w-3 h-3 bg-white rounded-full absolute top-1 transition-transform ${flipSide ? 'translate-x-6' : 'translate-x-1'}`} />
+                  </button>
+                  <span className={`text-[10px] ${flipSide ? 'text-blue-400 font-bold' : 'text-slate-500'}`}>Est</span>
+                </div>
+              </div>
+            </>
+          )}
         </div>
 
         <div className="flex gap-2">

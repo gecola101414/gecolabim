@@ -33,7 +33,16 @@ export interface CADCanvasAPI {
     originalLine2: any
   ) => void;
   autoScanBIM: () => void;
-  setBIMDefaults: (width: number, height: number | undefined, type: 'door' | 'window' | 'wall') => void;
+  setBIMDefaults: (
+    width: number, 
+    height: number | undefined, 
+    type: 'door' | 'window' | 'wall', 
+    zElevation?: number, 
+    windowType?: string, 
+    flipLeft?: boolean, 
+    flipSide?: boolean, 
+    rotation?: number
+  ) => void;
 }
 
 export type DrawingState = {
@@ -2438,6 +2447,7 @@ interface CADCanvasProps {
   selectionMode?: 'manual' | 'object';
   onEditRaccordo?: (raccordoEntity: Entity) => void;
   onDoubleClickDimension?: (entity: DimensionEntity) => void;
+  onDoubleClickBIMElement?: (entity: Entity) => void;
   onActionStart?: () => void;
   defaultHatchStyle?: {
     pattern: string;
@@ -2454,7 +2464,7 @@ interface CADCanvasProps {
   bimWallType?: string;
 }
 
-export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entities, activeTool, setActiveTool, setEntities, setEntitiesSilent, onCommitHistory, onSelect, onContextMenu, activeLayerId, layers, defaultLineStyle, setDefaultLineStyle, defaultHatchStyle, defaultTextStyle = { fontFamily: 'sans-serif', fontSize: 14, fontWeight: 'normal', textAlign: 'left' }, eraserRadius, setEraserRadius, eraserType = 'pencil', setEraserType, eraserIntensity = 55, setEraserIntensity, onMouseMovePosition, rulerStyle = 'tecnigrafo', orthoMode = false, setOrthoMode, isContinuousMode = false, cancelTrigger = 0, parallelTrigger = 0, tavole, onUpdateTavole, onDoubleClickTavola, selectedTemplateId, selectedEntityId, selectedBIMSymbolType, setSelectedBIMSymbolType, bimSymbolScale = 1, raccordoConfig, dimensionScale = 1, dimensionDecimals = 2, dimensionMode = 'two-points', dimensionStyle = 'linear', selectionMode = 'manual', onEditRaccordo, onDoubleClickDimension, onActionStart, onAreaDetected, highlightedPoints, bimWallHeight = 270, bimDoorHeight = 210, bimWindowHeight = 140, bimWallThickness = 15, bimWallType = 'Forati (Laterizio)' }, ref) => {
+export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entities, activeTool, setActiveTool, setEntities, setEntitiesSilent, onCommitHistory, onSelect, onContextMenu, activeLayerId, layers, defaultLineStyle, setDefaultLineStyle, defaultHatchStyle, defaultTextStyle = { fontFamily: 'sans-serif', fontSize: 14, fontWeight: 'normal', textAlign: 'left' }, eraserRadius, setEraserRadius, eraserType = 'pencil', setEraserType, eraserIntensity = 55, setEraserIntensity, onMouseMovePosition, rulerStyle = 'tecnigrafo', orthoMode = false, setOrthoMode, isContinuousMode = false, cancelTrigger = 0, parallelTrigger = 0, tavole, onUpdateTavole, onDoubleClickTavola, selectedTemplateId, selectedEntityId, selectedBIMSymbolType, setSelectedBIMSymbolType, bimSymbolScale = 1, raccordoConfig, dimensionScale = 1, dimensionDecimals = 2, dimensionMode = 'two-points', dimensionStyle = 'linear', selectionMode = 'manual', onEditRaccordo, onDoubleClickDimension, onDoubleClickBIMElement, onActionStart, onAreaDetected, highlightedPoints, bimWallHeight = 270, bimDoorHeight = 210, bimWindowHeight = 140, bimWallThickness = 15, bimWallType = 'Forati (Laterizio)' }, ref) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const entitiesRef = useRef(entities);
   useEffect(() => {
@@ -2708,6 +2718,9 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
   const [lastDoorHeight, setLastDoorHeight] = useState(() => parseFloat(localStorage.getItem('lastDoorHeight') || '210'));
   const [lastWindowWidth, setLastWindowWidth] = useState(() => parseFloat(localStorage.getItem('lastWindowWidth') || '120'));
   const [lastWindowHeight, setLastWindowHeight] = useState(() => parseFloat(localStorage.getItem('lastWindowHeight') || '140'));
+  const [lastWindowZElevation, setLastWindowZElevation] = useState(() => parseFloat(localStorage.getItem('lastWindowZElevation') || '100'));
+  const [lastWindowType, setLastWindowType] = useState(() => localStorage.getItem('lastWindowType') || 'singola');
+  const [lastWindowFlip, setLastWindowFlip] = useState(() => localStorage.getItem('lastWindowFlip') === 'true');
   const [bubblePosition, setBubblePosition] = useState<Point | null>(null);
 
   interface TextDialogState {
@@ -2982,7 +2995,16 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
     ) => {
       applyRaccordo(id1, id2, clickPt1, clickPt2, existingRaccordoId, config, { originalLine1, originalLine2 });
     },
-    setBIMDefaults: (width: number, height: number | undefined, type: 'door' | 'window' | 'wall') => {
+    setBIMDefaults: (
+      width: number, 
+      height: number | undefined, 
+      type: 'door' | 'window' | 'wall', 
+      zElevation?: number, 
+      windowType?: string, 
+      flipLeft?: boolean, 
+      flipSide?: boolean, 
+      rotation?: number
+    ) => {
       if (type === 'door') {
         setLastDoorWidth(width);
         if (height !== undefined) {
@@ -2995,6 +3017,24 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
         if (height !== undefined) {
           setLastWindowHeight(height);
           localStorage.setItem('lastWindowHeight', height.toString());
+        }
+        if (zElevation !== undefined) {
+          setLastWindowZElevation(zElevation);
+          localStorage.setItem('lastWindowZElevation', zElevation.toString());
+        }
+        if (windowType) {
+          setLastWindowType(windowType);
+          localStorage.setItem('lastWindowType', windowType);
+        }
+        if (flipLeft !== undefined) {
+          setLastWindowFlip(flipLeft); // Compatibility with existing field
+          localStorage.setItem('lastWindowFlip', flipLeft.toString());
+        }
+        if (flipSide !== undefined) {
+          localStorage.setItem('lastWindowFlipSide', flipSide.toString());
+        }
+        if (rotation !== undefined) {
+          localStorage.setItem('lastWindowRotation', rotation.toString());
         }
         localStorage.setItem('lastWindowWidth', width.toString());
       } else if (type === 'wall') {
@@ -3402,8 +3442,8 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
     const layerMapForVisible = new Map<string, Layer>(layers.map(l => [l.id, l]));
     const visibleEntities = projectedEntities.filter(ent => {
         const layer = layerMapForVisible.get(ent.layer);
-        // Exclude BIM doors and windows from snap references to avoid interference as requested
-        const isBIMDoorWindow = ent.isBIM && (ent.bimType === 'door' || ent.bimType === 'window');
+        // Exclude BIM doors (but keep windows so we can snap to their axes)
+        const isBIMDoorWindow = ent.isBIM && ent.bimType === 'door';
         return !(layer && (!layer.visible || layer.frozen)) && !isBIMDoorWindow && !ent.hideIn2D;
     });
 
@@ -3488,6 +3528,24 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
                 snaps.push({ point: cp, type: 'CAD', refPoint: cp, refEntityId: line.id });
                 keyPoints.push(cp);
             });
+        }
+        if (line.isBIM && line.bimType === 'window') {
+            const wWidth = line.bimWidth || 120;
+            const axisLen = wWidth + 120;
+            const cx = (line.start.x + line.end.x) / 2;
+            const cy = (line.start.y + line.end.y) / 2;
+            const dx = line.end.x - line.start.x;
+            const dy = line.end.y - line.start.y;
+            const len = Math.sqrt(dx * dx + dy * dy);
+            const nx = len > 0 ? -dy / len : 0;
+            const ny = len > 0 ? dx / len : 0;
+            
+            const ax1 = { x: cx - nx * axisLen/2, y: cy - ny * axisLen/2 };
+            const ax2 = { x: cx + nx * axisLen/2, y: cy + ny * axisLen/2 };
+            snaps.push({ point: ax1, type: 'CAD', refPoint: ax1, refEntityId: line.id });
+            snaps.push({ point: ax2, type: 'CAD', refPoint: ax2, refEntityId: line.id });
+            keyPoints.push(ax1);
+            keyPoints.push(ax2);
         }
         snaps.push({point: entity.start, type: 'CAD', refPoint: entity.start});
         snaps.push({point: entity.end, type: 'CAD', refPoint: entity.end});
@@ -6361,7 +6419,6 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
 
         // Draw Window
         if (entity.bimType === 'window') {
-          console.log("Drawing window:", entity);
           const entAsAny = (entity as any);
           const start = entAsAny.start || entAsAny.p1;
           const end = entAsAny.end || entAsAny.p2;
@@ -6372,22 +6429,154 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
             const len = Math.sqrt(dx * dx + dy * dy);
             const nx = len > 0 ? -dy / len : 0;
             const ny = len > 0 ? dx / len : 0;
-            const wWidth = 10;
+            const ux = len > 0 ? dx / len : 0;
+            const uy = len > 0 ? dy / len : 0;
+            
+            const wThickness = 12; // Standard frame thickness in 2D
 
+            // Window Frame
             ctx.strokeStyle = '#2563eb';
-            ctx.lineWidth = 1.5 / view.zoom;
+            ctx.fillStyle = 'rgba(37, 99, 235, 0.05)';
+            ctx.lineWidth = 1.8 / view.zoom;
             ctx.beginPath();
-            ctx.moveTo(start.x, start.y);
-            ctx.lineTo(end.x, end.y);
-            ctx.moveTo(start.x + nx * wWidth/2, start.y + ny * wWidth/2);
-            ctx.lineTo(end.x + nx * wWidth/2, end.y + ny * wWidth/2);
-            ctx.moveTo(start.x - nx * wWidth/2, start.y - ny * wWidth/2);
-            ctx.lineTo(end.x - nx * wWidth/2, end.y - ny * wWidth/2);
-            ctx.moveTo(start.x - nx * wWidth/2, start.y - ny * wWidth/2);
-            ctx.lineTo(start.x + nx * wWidth/2, start.y + ny * wWidth/2);
-            ctx.moveTo(end.x - nx * wWidth/2, end.y - ny * wWidth/2);
-            ctx.lineTo(end.x + nx * wWidth/2, end.y + ny * wWidth/2);
+            // Outer frame
+            ctx.moveTo(start.x + nx * wThickness/2, start.y + ny * wThickness/2);
+            ctx.lineTo(end.x + nx * wThickness/2, end.y + ny * wThickness/2);
+            ctx.lineTo(end.x - nx * wThickness/2, end.y - ny * wThickness/2);
+            ctx.lineTo(start.x - nx * wThickness/2, start.y - ny * wThickness/2);
+            ctx.closePath();
+            ctx.fill();
             ctx.stroke();
+            
+            // Glass pane (two lines for standard look)
+            ctx.lineWidth = 0.6 / view.zoom;
+            ctx.strokeStyle = '#93c5fd';
+            ctx.beginPath();
+            ctx.moveTo(start.x + nx * 1.5, start.y + ny * 1.5);
+            ctx.lineTo(end.x + nx * 1.5, end.y + ny * 1.5);
+            ctx.moveTo(start.x - nx * 1.5, start.y - ny * 1.5);
+            ctx.lineTo(end.x - nx * 1.5, end.y - ny * 1.5);
+            ctx.stroke();
+
+            // Handle & Opening Direction logic
+            const windowType = entAsAny.bimWindowType || 'singola';
+            const isFlipLeft = !!entAsAny.bimFlipLeft; // true = Left hinge, handle on Right
+            const isFlipSide = !!entAsAny.bimFlipSide; // true = Opens Inward (verso l'interno)
+            const cx = (start.x + end.x) / 2;
+            const cy = (start.y + end.y) / 2;
+
+            if (windowType !== 'vetrata' && windowType !== 'vasistas') {
+                // If double, we have ONE handle on the center mullion. 
+                // If single, one handle on the side.
+                const sides = (windowType === 'doppia') ? ['center'] : [isFlipLeft ? 'right' : 'left'];
+                
+                sides.forEach(side => {
+                    let hPosX = cx;
+                    let hPosY = cy;
+                    let hingeX = cx;
+                    let hingeY = cy;
+
+                    if (windowType === 'doppia' || side === 'center') {
+                        // Handle perfectly centered on the width axis (meeting style)
+                        hPosX = cx; 
+                        hPosY = cy;
+                        hingeX = start.x; 
+                        hingeY = start.y;
+                    } else {
+                        // Single sash
+                        if (isFlipLeft) {
+                            hPosX = end.x - ux * 5;
+                            hPosY = end.y - uy * 5;
+                            hingeX = start.x;
+                            hingeY = start.y;
+                        } else {
+                            hPosX = start.x + ux * 5;
+                            hPosY = start.y + uy * 5;
+                            hingeX = end.x;
+                            hingeY = end.y;
+                        }
+                    }
+
+                    // Handle Base (Circular)
+                    // Offset based on flipSide (Inward/Outward)
+                    const sideDir = isFlipSide ? 1 : -1; // 1 = inside (nx/ny), -1 = outside (-nx/-ny)
+                    const hOff = (wThickness / 2 + 1.2);
+                    const baseCenter = {
+                        x: hPosX + nx * hOff * sideDir,
+                        y: hPosY + ny * hOff * sideDir
+                    };
+
+                    ctx.fillStyle = '#1d4ed8';
+                    ctx.beginPath();
+                    ctx.arc(baseCenter.x, baseCenter.y, 2.2 / view.zoom, 0, Math.PI * 2);
+                    ctx.fill();
+
+                    // Handle lever
+                    const leverLen = 9 / view.zoom;
+                    const leverDir = (side === 'left' || (!isFlipLeft && windowType !== 'doppia')) ? 1 : -1;
+                    ctx.beginPath();
+                    ctx.lineWidth = 2.5 / view.zoom;
+                    ctx.strokeStyle = '#2563eb';
+                    ctx.lineCap = 'round';
+                    ctx.moveTo(baseCenter.x, baseCenter.y);
+                    ctx.lineTo(baseCenter.x + ux * leverLen * leverDir, baseCenter.y + uy * leverLen * leverDir);
+                    ctx.stroke();
+
+                    // Opening Triangle (dashed lines) - Professional CAD style
+                    ctx.save();
+                    ctx.setLineDash([3 / view.zoom, 3 / view.zoom]);
+                    ctx.strokeStyle = '#94a3b8';
+                    ctx.lineWidth = 0.8 / view.zoom;
+                    ctx.beginPath();
+                    
+                    // Apex of triangle on the handle side, protruding
+                    const apex = {
+                        x: hPosX + nx * (wThickness + 15) * sideDir,
+                        y: hPosY + ny * (wThickness + 15) * sideDir
+                    };
+                    
+                    if (windowType === 'doppia') {
+                        ctx.moveTo(hingeX, hingeY);
+                        ctx.lineTo(apex.x, apex.y);
+                        // Back to center mullion area
+                        ctx.lineTo(cx, cy);
+                    } else {
+                        ctx.moveTo(hingeX, hingeY);
+                        ctx.lineTo(apex.x, apex.y);
+                        // Back to opposite corner of sash
+                        const sashEnd = (isFlipLeft) ? end : start;
+                        ctx.lineTo(sashEnd.x, sashEnd.y);
+                    }
+                    ctx.stroke();
+                    ctx.restore();
+                });
+            }
+
+            // BIM Annotations
+            const w = entAsAny.bimWidth || Math.round(len);
+            const h = entAsAny.bimWindowHeight || 140;
+
+            const axisLen = wThickness + 120;
+            ctx.beginPath();
+            ctx.setLineDash([8 / view.zoom, 4 / view.zoom, 2 / view.zoom, 4 / view.zoom]);
+            ctx.moveTo(cx - nx * axisLen/2, cy - ny * axisLen/2);
+            ctx.lineTo(cx + nx * axisLen/2, cy + ny * axisLen/2);
+            ctx.strokeStyle = '#ef4444';
+            ctx.lineWidth = 1 / view.zoom;
+            ctx.stroke();
+            ctx.setLineDash([]);
+
+            // Dimensions Text
+            ctx.font = `bold ${12 / view.zoom}px monospace`;
+            ctx.fillStyle = '#ef4444';
+            ctx.save();
+            ctx.translate(cx + nx * (axisLen/2 + 5), cy + ny * (axisLen/2 + 5));
+            let angle = Math.atan2(dy, dx);
+            if (angle > Math.PI / 2 || angle < -Math.PI / 2) angle += Math.PI;
+            ctx.rotate(angle);
+            ctx.textAlign = "center";
+            ctx.fillText(`${w} x ${h}`, 0, 0);
+            ctx.restore();
 
             ctx.restore();
           }
@@ -8308,6 +8497,15 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
             lastClickTimeRef.current = 0; // reset
 
             const clickedText = getEntityAtPoint(rawPoint);
+            if (clickedText && clickedText.isBIM && (clickedText.bimType === 'door' || clickedText.bimType === 'window' || clickedText.bimAreaType)) {
+                setDragEntityId(null);
+                dragEntityIdRef.current = null;
+                if (onDoubleClickBIMElement) {
+                    onDoubleClickBIMElement(clickedText);
+                }
+                return;
+            }
+
             if (clickedText && clickedText.type === 'text') {
                 setDragEntityId(null);
                 dragEntityIdRef.current = null;
@@ -8575,7 +8773,9 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
                     });
                     return next;
                 });
-                return;
+                
+                // Do not return here! We want it to activate movement below!
+                // We just proceed to the next block which activates movement.
             }
 
             // Click activates movement for BIM/Arredo immediately (always movable)
@@ -9039,15 +9239,119 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
     } else if (activeTool === 'BIM_Porta' || activeTool === 'BIM_Finestra' || activeTool === 'BIM_Muro' || activeTool === 'Muro') {
         const found = getEntityAtPoint(rawPoint);
         if (found && found.isBIM && (found.bimType === 'door' || found.bimType === 'window')) {
-            onSelect(found.id);
+            // Seleziona se non lo è
+            if (found.id !== selectedEntityId) {
+                onSelect(found.id);
+                if (drawing) setDrawing(null);
+                
+                // Entra in modalità spostamento (anche al primo click)
+                setPositioningEntityId(found.id);
+                setPositioningEntityStartPos(rawPoint);
+                setActiveTool?.('Select'); // Convertiamo in strumento Select per facilitare la rotazione ai click successivi
+                return;
+            }
+
+            // Se è già selezionato, RUOTA DI 90 GRADI
+            const entAsAny = found as any;
+            let anchor: Point = rawPoint;
+            if (entAsAny.start && entAsAny.end) {
+                anchor = { x: (entAsAny.start.x + entAsAny.end.x) / 2, y: (entAsAny.start.y + entAsAny.end.y) / 2 };
+            }
+            
+            const rotatePt = (p: Point): Point => ({
+                x: anchor.x - (p.y - anchor.y),
+                y: anchor.y + (p.x - anchor.x)
+            });
+
+            setEntities(prev => {
+                return prev.map(ent => {
+                    if (ent.id === found.id) {
+                        const currentAngle = (ent as any).angle || 0;
+                        return { 
+                            ...ent, 
+                            start: rotatePt(ent.start), 
+                            end: rotatePt(ent.end),
+                            angle: (currentAngle + 90) % 360
+                        };
+                    }
+                    return ent;
+                });
+            });
+
+            // E avvia lo spostamento automatico
+            setPositioningEntityId(found.id);
+            setPositioningEntityStartPos(rawPoint);
+            setActiveTool?.('Select');
             if (drawing) setDrawing(null);
+            return;
+        }
+
+        if (activeTool === 'BIM_Porta' || activeTool === 'BIM_Finestra') {
+            const isDoor = activeTool === 'BIM_Porta';
+            const w = isDoor ? lastDoorWidth : lastWindowWidth;
+            const h = isDoor ? lastDoorHeight : lastWindowHeight;
+            
+            // Trova muro più vicino per allineamento
+            let angle = isDoor ? 0 : parseFloat(localStorage.getItem('lastWindowRotation') || '0');
+            let bestWall: any = null;
+            let minDist = Infinity;
+            for (const e of entities) {
+                if (e.type === 'line' && e.isBIM && e.bimType === 'wall' && e.start && e.end) {
+                    const dist = distanceToSegment(snapped.point, e.start, e.end);
+                    if (dist < minDist && dist < 30 / view.zoom) {
+                        minDist = dist;
+                        bestWall = e;
+                    }
+                }
+            }
+            if (bestWall) {
+                // Se c'è un muro, calcola l'angolo del muro e aggiungi la rotazione desiderata dell'infisso
+                const wallAngle = Math.atan2(bestWall.end.y - bestWall.start.y, bestWall.end.x - bestWall.start.x);
+                angle = (wallAngle * 180 / Math.PI) + (isDoor ? 0 : parseFloat(localStorage.getItem('lastWindowRotation') || '0'));
+                angle = (angle * Math.PI / 180); // torna in radianti
+            } else {
+                angle = (angle * Math.PI / 180); // gradi da storage a radianti
+            }
+
+            const dx = Math.cos(angle) * (w / 2);
+            const dy = Math.sin(angle) * (w / 2);
+
+            const startPoint = { x: snapped.point.x - dx, y: snapped.point.y - dy };
+            const endPoint = { x: snapped.point.x + dx, y: snapped.point.y + dy };
+
+            const newElem = {
+                id: Date.now().toString(),
+                type: 'line',
+                isBIM: true,
+                bimType: isDoor ? 'door' : 'window',
+                bimName: isDoor ? `Porta ${w}` : `Finestra ${w}x${h}`,
+                bimWidth: w,
+                bimWindowHeight: isDoor ? undefined : h,
+                bimZElevation: isDoor ? undefined : lastWindowZElevation,
+                bimWindowType: isDoor ? undefined : lastWindowType,
+                bimFlipLeft: isDoor ? false : (lastWindowFlip), // Manteniamo flip Left/Right
+                bimFlipSide: isDoor ? false : (localStorage.getItem('lastWindowFlipSide') === 'true'), // Inward/Outward
+                angle: isDoor ? 0 : parseFloat(localStorage.getItem('lastWindowRotation') || '0'),
+                start: startPoint,
+                end: endPoint,
+                color: isDoor ? '#dc2626' : '#2563eb',
+                lineWidth: 2,
+                mode: 'ink',
+                layer: isDoor ? 'BIM_Porte' : 'BIM_Finestre'
+            } as any;
+
+            setEntities(prev => {
+                const next = [...prev, newElem];
+                onCommitHistory?.(next);
+                return next;
+            });
             return;
         }
 
         if (!drawing) {
             setDrawing({ start: snapped.point, current: snapped.point });
         } else {
-            const isLineLikeTool = (activeTool as string) === 'Line' || (activeTool as string) === 'BIM_Porta' || (activeTool as string) === 'BIM_Finestra' || (activeTool as string) === 'BIM_Muro' || (activeTool as string) === 'Muro';
+            const isLineLikeTool = (activeTool as string) === 'Line' || (activeTool as string) === 'BIM_Muro' || (activeTool as string) === 'Muro';
             const effectiveOrthoMode = isLineLikeTool && (orthoMode ? !isShiftPressedRef.current : isShiftPressedRef.current);
             const isOrthoHorizontal = isLineLikeTool && effectiveOrthoMode && 
                   Math.abs(snapped.point.x - drawing.start.x) >= Math.abs(snapped.point.y - drawing.start.y);
@@ -9076,7 +9380,6 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
                     onCommitHistory?.(next);
                     return next;
                 });
-                // Make wall segments continuous, exactly like the continuous line tool!
                 setDrawing({
                     start: endPoint,
                     current: endPoint,
@@ -9084,31 +9387,6 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
                     startSnapped: true,
                     isVirtual: false
                 });
-            } else {
-                const doorWidth = Math.round(Math.sqrt((endPoint.x - drawing.start.x)**2 + (endPoint.y - drawing.start.y)**2));
-                const isDoor = (activeTool as string) === 'BIM_Porta';
-                const h = isDoor ? lastDoorHeight : lastWindowHeight;
-                const newElem: Entity = {
-                    id: Date.now().toString(),
-                    type: 'line',
-                    isBIM: true,
-                    bimType: isDoor ? 'door' : 'window',
-                    bimName: isDoor ? `Porta ${doorWidth}` : `Finestra ${doorWidth}x${h}`,
-                    bimWidth: doorWidth,
-                    bimWindowHeight: isDoor ? undefined : h,
-                    start: drawing.start,
-                    end: endPoint,
-                    color: isDoor ? '#dc2626' : '#2563eb',
-                    lineWidth: 2,
-                    mode: 'ink',
-                    layer: isDoor ? 'BIM_Porte' : 'BIM_Finestre'
-                } as any;
-                setEntities(prev => {
-                    const next = [...prev, newElem];
-                    onCommitHistory?.(next);
-                    return next;
-                });
-                setDrawing(null);
             }
         }
     } else if (activeTool === 'Line' || activeTool === 'Circle' || activeTool === 'Rectangle' || activeTool === 'Point' || activeTool === 'Arc' || activeTool === 'Testo') {

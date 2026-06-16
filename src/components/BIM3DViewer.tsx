@@ -269,8 +269,32 @@ const Room = ({ points, holes, height, color, name, areaType, baseZ, clippingPla
 };
 
 const BIMSymbol = ({ entity, onPointerOver, onPointerOut, clippingPlanes = [], opacity = 1 }: { entity: any, onPointerOver?: () => void, onPointerOut?: () => void, clippingPlanes?: THREE.Plane[], opacity?: number }) => {
-  const { bimType, bimZPlane = 0, bimZElevation = 0, points, point, bimHeight = 210, bimWidth = 90, bimWindowHeight = 120, isHovered } = entity;
-  const p = point || (points && points[0]);
+  const { 
+    bimType, 
+    bimWindowType, 
+    bimZPlane = 0, 
+    bimZElevation = 0, 
+    points, 
+    point, 
+    start, 
+    end, 
+    bimHeight = 210, 
+    bimWidth = 90, 
+    bimWindowHeight = 120, 
+    isHovered,
+    bimFlipLeft = false,
+    bimFlipSide = false 
+  } = entity;
+  
+  // Determine center point
+  let p = point || (points && points[0]);
+  let angle = (entity.angle || 0) * (Math.PI / 180);
+
+  if (!p && start && end) {
+      p = { x: (start.x + end.x) / 2, y: (start.y + end.y) / 2 };
+      angle = -Math.atan2(end.y - start.y, end.x - start.x);
+  }
+
   if (!p) return null;
 
   const color = entity.color || (bimType === 'door' ? '#ef4444' : '#3b82f6');
@@ -280,27 +304,194 @@ const BIMSymbol = ({ entity, onPointerOver, onPointerOut, clippingPlanes = [], o
   const zPos = zBase + h / 2;
   const pos: [number, number, number] = [p.x / 100, zPos, -p.y / 100];
   
+  const depth = 0.15; 
+  if (bimType === 'door') {
+    return (
+      <mesh 
+        position={pos} 
+        rotation={[0, angle, 0]}
+        castShadow 
+        onPointerOver={(e) => { e.stopPropagation(); onPointerOver?.(); }}
+        onPointerOut={(e) => { e.stopPropagation(); onPointerOut?.(); }}
+      >
+        <boxGeometry args={[w, h, depth]} />
+        <meshStandardMaterial 
+          color={color} 
+          transparent 
+          opacity={(isHovered ? 0.9 : 0.6) * opacity} 
+          metalness={0.4} 
+          roughness={0.3} 
+          emissive={isHovered ? color : '#000000'}
+          emissiveIntensity={isHovered ? 0.2 : 0}
+          clippingPlanes={clippingPlanes}
+          clipShadows={true}
+        />
+        <Edges color={isHovered ? "cyan" : "white"} />
+      </mesh>
+    );
+  }
+
+  // Window: render frame and glass
+  const ft = 0.05; 
+  const fw = 0.05; 
+  
+  const frameColor = '#8B5A2B'; 
+  const glassColor = '#93c5fd'; 
+  
+  const drawGlass = (gw: number, gh: number, xOffset: number) => {
+    if (gw <= 0 || gh <= 0) return null;
+    return (
+      <group position={[xOffset, 0, 0]}>
+        {/* Main Glass Plane */}
+        <mesh castShadow>
+          <boxGeometry args={[gw, gh, 0.015]} />
+          <meshPhysicalMaterial 
+            color={glassColor} 
+            transparent 
+            opacity={0.4} 
+            roughness={0.1}
+            metalness={0.1}
+            transmission={0.8}
+            ior={1.5}
+            clippingPlanes={clippingPlanes.length > 0 ? clippingPlanes : undefined}
+            clipShadows={true}
+          />
+        </mesh>
+        {/* Inner Frame / Cornice (Bordo vetro) */}
+        <mesh position={[0, 0, 0.008]}>
+          <boxGeometry args={[gw, gh, 0.02]} />
+          <Edges color="#523215" threshold={15} />
+        </mesh>
+      </group>
+    );
+  };
+
+  const drawFramePart = (width: number, height: number, depth: number, x: number, y: number) => (
+    <mesh position={[x, y, 0]} castShadow>
+      <boxGeometry args={[width, height, depth]} />
+      <meshStandardMaterial 
+        color={isHovered ? '#eab308' : frameColor}
+        transparent={opacity < 1}
+        opacity={opacity}
+        clippingPlanes={clippingPlanes.length > 0 ? clippingPlanes : undefined}
+        clipShadows={true}
+      />
+      <Edges color="#3a230d" threshold={20} />
+    </mesh>
+  );
+
+  const innerH = h - ft * 2;
+  const isRightHand = bimFlipLeft;
+  const sideFactor = bimFlipSide ? -1 : 1; 
+
+  const handleMaterial = <meshStandardMaterial color="#9ca3af" metalness={0.8} roughness={0.2} clippingPlanes={clippingPlanes.length > 0 ? clippingPlanes : undefined} />;
+  const handleZ = (depth / 2 + 0.005) * sideFactor;
+
+  const drawHandle = (x: number, y: number, flipLever: boolean) => (
+    <group position={[x, y, 0]}>
+      {/* Handle Base (Circular) */}
+      <mesh position={[0, 0, handleZ]} rotation={[Math.PI / 2, 0, 0]}>
+        <cylinderGeometry args={[0.02, 0.02, 0.015, 16]} />
+        {handleMaterial}
+      </mesh>
+      {/* Neck */}
+      <mesh position={[0, 0, handleZ + (0.01 * sideFactor)]} rotation={[Math.PI / 2, 0, 0]}>
+        <cylinderGeometry args={[0.008, 0.008, 0.02, 12]} />
+        {handleMaterial}
+      </mesh>
+      {/* Handle Lever */}
+      <mesh position={[flipLever ? -0.045 : 0.045, 0, handleZ + (0.02 * sideFactor)]}>
+        <boxGeometry args={[0.09, 0.016, 0.01]} />
+        {handleMaterial}
+      </mesh>
+    </group>
+  );
+
+  const drawHinge = (x: number, y: number) => (
+    <mesh position={[x, y, (depth / 2 + 0.005) * sideFactor]} rotation={[Math.PI / 2, 0, 0]}>
+      <cylinderGeometry args={[0.008, 0.008, 0.04, 8]} />
+      <meshStandardMaterial color="#4b5563" metalness={0.6} clippingPlanes={clippingPlanes.length > 0 ? clippingPlanes : undefined} />
+    </mesh>
+  );
+
+  const drawRealisticFrame = (partW: number, partH: number, px: number, py: number) => (
+    <group position={[px, py, 0]}>
+      {drawFramePart(partW, partH, depth, 0, 0)}
+      {/* Offset (Sfalsamento) */}
+      {drawFramePart(partW, partH, depth * 0.4, 0, (depth * 0.2 + 0.005) * sideFactor)}
+    </group>
+  );
+
   return (
-    <mesh 
+    <group 
       position={pos} 
-      castShadow 
+      rotation={[0, angle, 0]}
       onPointerOver={(e) => { e.stopPropagation(); onPointerOver?.(); }}
       onPointerOut={(e) => { e.stopPropagation(); onPointerOut?.(); }}
     >
-      <boxGeometry args={[w, h, 0.1]} />
-      <meshStandardMaterial 
-        color={color} 
-        transparent 
-        opacity={(isHovered ? 0.9 : 0.6) * opacity} 
-        metalness={0.4} 
-        roughness={0.3} 
-        emissive={isHovered ? color : '#000000'}
-        emissiveIntensity={isHovered ? 0.2 : 0}
-        clippingPlanes={clippingPlanes}
-        clipShadows={true}
-      />
-      <Edges color={isHovered ? "cyan" : "white"} />
-    </mesh>
+      {/* External Frame */}
+      {drawRealisticFrame(w, ft, 0, h/2 - ft/2)}
+      {drawRealisticFrame(w, ft, 0, -h/2 + ft/2)}
+      {drawRealisticFrame(fw, innerH, -w/2 + fw/2, 0)}
+      {drawRealisticFrame(fw, innerH, w/2 - fw/2, 0)}
+
+      {/* Middle Frame logic */}
+      {bimWindowType === 'doppia' ? (
+        <>
+          {/* Central Sash Mullion */}
+          {drawFramePart(fw, innerH, depth * 0.8, 0, 0)}
+          
+          {/* Glass panes reaching the frames (W - 3*fw) / 2 */}
+          {(() => {
+            const sashW = (w - fw * 3) / 2;
+            return (
+              <>
+                {drawGlass(sashW, innerH, -w/4 + fw/4)}
+                {drawGlass(sashW, innerH, w/4 - fw/4)}
+              </>
+            );
+          })()}
+          
+          {/* Hinges and Handle */}
+          {drawHinge(-w/2 + fw, h/2 - ft - 0.2)}
+          {drawHinge(-w/2 + fw, -h/2 + ft + 0.2)}
+          {drawHinge(w/2 - fw, h/2 - ft - 0.2)}
+          {drawHinge(w/2 - fw, -h/2 + ft + 0.2)}
+
+          {/* SINGLE Handle on central Mullion face */}
+          {drawHandle(0, 0, true)}
+        </>
+      ) : (
+        <>
+          {/* Full Glasspane */}
+          {drawGlass(w - fw*2, innerH, 0)}
+          
+          {/* Handle and Hinges for single window */}
+          {bimWindowType !== 'vetrata' && bimWindowType !== 'vasistas' && (
+            <>
+              {drawHandle(isRightHand ? (w/2 - fw - 0.025) : -(w/2 - fw - 0.025), 0, isRightHand)}
+              {(() => {
+                const hx = isRightHand ? -(w/2 - fw) : (w/2 - fw);
+                return (
+                  <>
+                    {drawHinge(hx, h/2 - ft - 0.15)}
+                    {drawHinge(hx, h/2 - ft - 0.45)}
+                    {drawHinge(hx, -h/2 + ft + 0.45)}
+                    {drawHinge(hx, -h/2 + ft + 0.15)}
+                  </>
+                );
+              })()}
+            </>
+          )}
+        </>
+      )}
+      {isHovered && (
+         <mesh position={[0,0,0]}>
+           <boxGeometry args={[w, h, depth * 1.1]} />
+           <meshBasicMaterial color="#3b82f6" transparent opacity={0.1} wireframe={true} />
+         </mesh>
+      )}
+    </group>
   );
 };
 
@@ -1177,7 +1368,7 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
     setEditingEntityId(null);
   };
 
-  const handleConfirmWindowEdit = (width: number, height: number, type: string, trasmittanza: number, prezzario: string) => {
+  const handleConfirmWindowEdit = (width: number, height: number, type: string, trasmittanza: number, prezzario: string, zElevation: number, flip: boolean) => {
     if (!editingEntityId) return;
     setEntities(prev => prev.map(e => {
       if (e.id === editingEntityId) {
@@ -1204,7 +1395,9 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
           bimWindowType: type,
           end: nextEnd,
           bimTrasmittanza: trasmittanza,
-          bimPrezzario: prezzario
+          bimPrezzario: prezzario,
+          bimZElevation: zElevation,
+          bimFlip: flip
         };
       }
       return e;
@@ -1218,7 +1411,8 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
       height: height,
       bimWindowType: type,
       bimTrasmittanza: trasmittanza,
-      bimPrezzario: prezzario
+      bimPrezzario: prezzario,
+      bimZElevation: zElevation
     } : prev);
 
     setIsWindowEditOpen(false);
@@ -2349,6 +2543,9 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
           }}
           lastWindowWidth={(selectedEntity as any).bimWidth || 120}
           lastWindowHeight={(selectedEntity as any).bimWindowHeight || (selectedEntity as any).height || 140}
+          lastWindowZElevation={(selectedEntity as any).bimZElevation ?? 100}
+          lastWindowType={(selectedEntity as any).bimWindowType || 'singola'}
+          lastWindowFlip={!!(selectedEntity as any).bimFlip}
           onConfirmWindow={handleConfirmWindowEdit}
           onDelete={() => handleDeleteEntity(selectedEntity.id)}
         />

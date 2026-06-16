@@ -2197,6 +2197,17 @@ const MASONRY_TYPES = [
               setShowProperties(true);
               setActiveSidebarTab('penne');
             }}
+            onDoubleClickBIMElement={(entity) => {
+              setSelectedId(entity.id);
+              setShowProperties(true);
+              if (entity.bimType === 'door') {
+                setIsBIMPorteOpen(true);
+              } else if (entity.bimType === 'window') {
+                setIsBIMFinestreOpen(true);
+              } else if (entity.bimAreaType) {
+                setIsBIMAreaEditOpen(true);
+              }
+            }}
             eraserType={eraserType}
             setEraserType={setEraserType}
             eraserIntensity={eraserIntensity}
@@ -2259,15 +2270,88 @@ const MASONRY_TYPES = [
           />
           <FinestreDialog
             isOpen={isBIMFinestreOpen}
-            onClose={() => setIsBIMFinestreOpen(false)}
-            lastWindowWidth={bimWindowWidth}
-            lastWindowHeight={bimWindowHeight}
-            onConfirmWindow={(width, height, type, trasmittanza, prezzario) => {
-              setBimWindowWidth(width);
-              setBimWindowHeight(height);
+            onClose={() => {
               setIsBIMFinestreOpen(false);
-              setSelectedBIMSymbolType('window');
-              setShortcutToast("Seleziona un punto sul muro per inserire la finestra");
+              setSelectedId(null);
+            }}
+            lastWindowWidth={(() => {
+              const e = entities.find(ent => ent.id === selectedId);
+              return (e as any)?.bimWidth || bimWindowWidth;
+            })()}
+            lastWindowHeight={(() => {
+              const e = entities.find(ent => ent.id === selectedId);
+              return (e as any)?.bimWindowHeight || bimWindowHeight;
+            })()}
+            lastWindowZElevation={(() => {
+              const e = entities.find(ent => ent.id === selectedId);
+              return (e as any)?.bimZElevation !== undefined ? (e as any).bimZElevation : parseFloat(localStorage.getItem('lastWindowZElevation') || '100');
+            })()}
+            lastWindowType={(() => {
+              const e = entities.find(ent => ent.id === selectedId);
+              return (e as any)?.bimWindowType || localStorage.getItem('lastWindowType') || 'singola';
+            })()}
+            lastWindowFlipLeft={(() => {
+              const e = entities.find(ent => ent.id === selectedId);
+              return (e as any)?.bimFlipLeft !== undefined ? (e as any).bimFlipLeft : (localStorage.getItem('lastWindowFlip') === 'true');
+            })()}
+            lastWindowFlipSide={(() => {
+              const e = entities.find(ent => ent.id === selectedId);
+              return (e as any)?.bimFlipSide !== undefined ? (e as any).bimFlipSide : (localStorage.getItem('lastWindowFlipSide') === 'true');
+            })()}
+            lastWindowRotation={(() => {
+              const e = entities.find(ent => ent.id === selectedId);
+              return (e as any)?.angle !== undefined ? (e as any).angle : parseFloat(localStorage.getItem('lastWindowRotation') || '0');
+            })()}
+            onConfirmWindow={(width, height, type, trasmittanza, prezzario, zElevation, flipLeft, flipSide, rotation) => {
+              if (selectedId) {
+                // Update existing
+                updateEntitiesWithHistory(prev => prev.map(e => {
+                  if (e.id === selectedId) {
+                    const entAsAny = e as any;
+                    let nextElem = {
+                      ...e,
+                      bimWidth: width,
+                      bimWindowHeight: height,
+                      bimWindowType: type,
+                      bimZElevation: zElevation,
+                      bimFlipLeft: flipLeft,
+                      bimFlipSide: flipSide,
+                      angle: rotation,
+                      prezzario,
+                      trasmittanza
+                    };
+
+                    // Update geometry if rotation or width changed
+                    if (entAsAny.start && entAsAny.end) {
+                      const cx = (entAsAny.start.x + entAsAny.end.x) / 2;
+                      const cy = (entAsAny.start.y + entAsAny.end.y) / 2;
+                      const rad = (rotation * Math.PI) / 180;
+                      const hDx = Math.cos(rad) * (width / 2);
+                      const hDy = Math.sin(rad) * (width / 2);
+                      
+                      (nextElem as any).start = { x: cx - hDx, y: cy - hDy };
+                      (nextElem as any).end = { x: cx + hDx, y: cy + hDy };
+                    }
+                    
+                    return nextElem;
+                  }
+                  return e;
+                }));
+                setShortcutToast("Infisso aggiornato ✅");
+              } else {
+                // Set defaults for new
+                setBimWindowWidth(width);
+                setBimWindowHeight(height);
+                localStorage.setItem('lastWindowZElevation', zElevation.toString());
+                localStorage.setItem('lastWindowFlip', flipLeft.toString());
+                localStorage.setItem('lastWindowFlipSide', flipSide.toString());
+                localStorage.setItem('lastWindowRotation', rotation.toString());
+                cadCanvasRef.current?.setBIMDefaults(width, height, 'window', zElevation, type, flipLeft, flipSide, rotation);
+                setSelectedBIMSymbolType('window');
+                setShortcutToast("Seleziona un punto sul muro per inserire la finestra");
+              }
+              setIsBIMFinestreOpen(false);
+              setSelectedId(null);
             }}
           />
 
