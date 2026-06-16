@@ -1368,7 +1368,7 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
     setEditingEntityId(null);
   };
 
-  const handleConfirmWindowEdit = (width: number, height: number, type: string, trasmittanza: number, prezzario: string, zElevation: number, flip: boolean) => {
+  const handleConfirmWindowEdit = (width: number, height: number, type: string, trasmittanza: number, prezzario: string, zElevation: number, flipLeft: boolean, flipSide: boolean, rotation: number) => {
     if (!editingEntityId) return;
     setEntities(prev => prev.map(e => {
       if (e.id === editingEntityId) {
@@ -1397,7 +1397,9 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
           bimTrasmittanza: trasmittanza,
           bimPrezzario: prezzario,
           bimZElevation: zElevation,
-          bimFlip: flip
+          bimFlip: flipLeft,
+          bimFlipSide: flipSide,
+          bimRotation: rotation
         };
       }
       return e;
@@ -1412,7 +1414,10 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
       bimWindowType: type,
       bimTrasmittanza: trasmittanza,
       bimPrezzario: prezzario,
-      bimZElevation: zElevation
+      bimZElevation: zElevation,
+      bimFlip: flipLeft,
+      bimFlipSide: flipSide,
+      bimRotation: rotation
     } : prev);
 
     setIsWindowEditOpen(false);
@@ -2545,7 +2550,9 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
           lastWindowHeight={(selectedEntity as any).bimWindowHeight || (selectedEntity as any).height || 140}
           lastWindowZElevation={(selectedEntity as any).bimZElevation ?? 100}
           lastWindowType={(selectedEntity as any).bimWindowType || 'singola'}
-          lastWindowFlip={!!(selectedEntity as any).bimFlip}
+          lastWindowFlipLeft={!!(selectedEntity as any).bimFlip}
+          lastWindowFlipSide={!!(selectedEntity as any).bimFlipSide}
+          lastWindowRotation={(selectedEntity as any).bimRotation || 0}
           onConfirmWindow={handleConfirmWindowEdit}
           onDelete={() => handleDeleteEntity(selectedEntity.id)}
         />

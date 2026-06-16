@@ -4,6 +4,7 @@
  */
 
 import React, { useState, useRef, useEffect } from "react";
+import { motion, AnimatePresence } from "motion/react";
 import { Document, Page, pdfjs } from 'react-pdf';
 import { CADCanvas, getPaperSizeMm } from "./components/CADCanvas";
 import { CanvasPDFPreview } from "./components/CanvasPDFPreview";
@@ -74,8 +75,17 @@ import {
   ArrowDown,
   Clipboard,
   Target,
-  Settings2
+  Settings2,
+  Maximize,
+  RefreshCw
 } from "lucide-react";
+
+const RotateScaleIcon = ({ size = 16 }: { size?: number }) => (
+  <div className="relative" style={{ width: size, height: size }}>
+    <RefreshCw size={size} className="absolute inset-0" />
+    <Maximize size={size * 0.6} className="absolute -top-1 -right-1 bg-white rounded-full p-0.5" />
+  </div>
+);
 
 const ParallelIcon = ({ size = 16 }: { size?: number }) => (
   <svg 
@@ -155,9 +165,197 @@ const PolylineIcon = ({ size = 16, className = "" }: { size?: number, className?
   </svg>
 );
 
+const rotatePoint = (point: { x: number; y: number }, center: { x: number; y: number }, angleDeg: number) => {
+  const rad = (angleDeg * Math.PI) / 180;
+  const dx = point.x - center.x;
+  const dy = point.y - center.y;
+  return {
+    x: center.x + dx * Math.cos(rad) - dy * Math.sin(rad),
+    y: center.y + dx * Math.sin(rad) + dy * Math.cos(rad)
+  };
+};
+
+// Helper function to find a collective center for multiple IDs
+const getSelectionCenter = (ids: string[], allEntities: Entity[]) => {
+  const selection = allEntities.filter(e => ids.includes(e.id));
+  if (selection.length === 0) return { x: 0, y: 0 };
+  if (selection.length === 1) return getEntityCenter(selection[0]);
+
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  let hasGeometry = false;
+
+  selection.forEach(e => {
+    const pts: Point[] = [];
+    const entAsAny = e as any;
+    if (entAsAny.start) pts.push(entAsAny.start, entAsAny.end);
+    if (entAsAny.points) pts.push(...entAsAny.points);
+    if (entAsAny.freehandPoints) pts.push(...entAsAny.freehandPoints);
+    if (entAsAny.x !== undefined && entAsAny.y !== undefined) {
+        pts.push({ x: entAsAny.x, y: entAsAny.y });
+        if (entAsAny.width && entAsAny.height) {
+            pts.push({ x: entAsAny.x + entAsAny.width, y: entAsAny.y + entAsAny.height });
+        }
+    }
+    if (entAsAny.center) {
+        const r = entAsAny.radius || 5;
+        pts.push({ x: entAsAny.center.x - r, y: entAsAny.center.y - r });
+        pts.push({ x: entAsAny.center.x + r, y: entAsAny.center.y + r });
+    }
+    if (entAsAny.point) pts.push(entAsAny.point);
+
+    pts.forEach(p => {
+        minX = Math.min(minX, p.x); maxX = Math.max(maxX, p.x);
+        minY = Math.min(minY, p.y); maxY = Math.max(maxY, p.y);
+        hasGeometry = true;
+    });
+  });
+
+  return hasGeometry ? { x: (minX + maxX) / 2, y: (minY + maxY) / 2 } : { x: 0, y: 0 };
+};
+
+// Helper to get the absolute bounding box center of any entity
+const getEntityCenter = (e: any) => {
+  if (e.start && e.end) return { x: (e.start.x + e.end.x) / 2, y: (e.start.y + e.end.y) / 2 };
+  if (e.points && e.points.length > 0) {
+    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+    e.points.forEach((p: any) => {
+      minX = Math.min(minX, p.x); maxX = Math.max(maxX, p.x);
+      minY = Math.min(minY, p.y); maxY = Math.max(maxY, p.y);
+    });
+    return { x: (minX + maxX) / 2, y: (minY + maxY) / 2 };
+  }
+  if (e.freehandPoints && e.freehandPoints.length > 0) {
+    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+    e.freehandPoints.forEach((p: any) => {
+      minX = Math.min(minX, p.x); maxX = Math.max(maxX, p.x);
+      minY = Math.min(minY, p.y); maxY = Math.max(maxY, p.y);
+    });
+    return { x: (minX + maxX) / 2, y: (minY + maxY) / 2 };
+  }
+  if (e.x !== undefined && e.y !== undefined) {
+    if (e.width !== undefined && e.height !== undefined) {
+        return { x: e.x + e.width / 2, y: e.y + e.height / 2 };
+    }
+    return { x: e.x, y: e.y };
+  }
+  if (e.center) return e.center;
+  if (e.point) return e.point;
+  return { x: 0, y: 0 };
+};
+
+const rotateEntityFixed = (e: any, deltaAngle: number, center?: { x: number; y: number }) => {
+  const rotationCenter = center || getEntityCenter(e);
+  const nextAngle = (e.angle || 0) + deltaAngle;
+  
+  const rotated: any = { ...e, angle: nextAngle };
+  
+  if (e.start) rotated.start = rotatePoint(e.start, rotationCenter, deltaAngle);
+  if (e.end) rotated.end = rotatePoint(e.end, rotationCenter, deltaAngle);
+  if (e.points) rotated.points = e.points.map((p: any) => rotatePoint(p, rotationCenter, deltaAngle));
+  if (e.freehandPoints) rotated.freehandPoints = e.freehandPoints.map((p: any) => rotatePoint(p, rotationCenter, deltaAngle));
+  if (e.center) rotated.center = rotatePoint(e.center, rotationCenter, deltaAngle);
+  if (e.point) rotated.point = rotatePoint(e.point, rotationCenter, deltaAngle);
+  
+  // Rectangles (x, y) rotate their top-left around center
+  if (e.x !== undefined && e.y !== undefined && !e.start) {
+      const p = rotatePoint({ x: e.x, y: e.y }, rotationCenter, deltaAngle);
+      rotated.x = p.x;
+      rotated.y = p.y;
+  }
+
+  // Specific BIM handling to ensure width doesn't skew
+  if (e.isBIM && e.bimWidth && e.start && e.end && !center) {
+    const rad = (nextAngle * Math.PI) / 180;
+    const selfCenter = getEntityCenter(e);
+    const hDx = Math.cos(rad) * (e.bimWidth / 2);
+    const hDy = Math.sin(rad) * (e.bimWidth / 2);
+    rotated.start = { x: selfCenter.x - hDx, y: selfCenter.y - hDy };
+    rotated.end = { x: selfCenter.x + hDx, y: selfCenter.y + hDy };
+  }
+  
+  return rotated;
+};
+
+const scaleEntity = (e: any, factor: number, nextScale: number, center?: { x: number; y: number }) => {
+  const scalingCenter = center || getEntityCenter(e);
+  const scaled: any = { ...e, scale: nextScale };
+  
+  const scalePoint = (p: { x: number; y: number }) => ({
+    x: scalingCenter.x + (p.x - scalingCenter.x) * factor,
+    y: scalingCenter.y + (p.y - scalingCenter.y) * factor
+  });
+
+  if (e.start) scaled.start = scalePoint(e.start);
+  if (e.end) scaled.end = scalePoint(e.end);
+  if (e.points) scaled.points = e.points.map((p: any) => scalePoint(p));
+  if (e.freehandPoints) scaled.freehandPoints = e.freehandPoints.map((p: any) => scalePoint(p));
+  if (e.center) scaled.center = scalePoint(e.center);
+  if (e.point) scaled.point = scalePoint(e.point);
+  
+  if (e.x !== undefined && e.y !== undefined && !e.start) {
+      const p = scalePoint({ x: e.x, y: e.y });
+      scaled.x = p.x;
+      scaled.y = p.y;
+      if (e.width) scaled.width = e.width * factor;
+      if (e.height) scaled.height = e.height * factor;
+  }
+
+  if (e.radius) scaled.radius = e.radius * factor;
+  if (e.bimWidth) scaled.bimWidth = e.bimWidth * factor;
+  
+  return scaled;
+};
+
 export default function App() {
   const [selectedTool, setSelectedTool] = useState<string | null>(() => localStorage.getItem('selectedTool') || 'Select');
+  const [quickActions, setQuickActions] = useState<{ ids: string[], pos: Point } | null>(null);
+  const [capturedSelectionIds, setCapturedSelectionIds] = useState<string[]>([]);
+  const [initialSelectedIds, setInitialSelectedIds] = useState<string[]>([]);
+  useEffect(() => {
+    if (selectedTool !== 'Select' && capturedSelectionIds.length > 0) {
+      setInitialSelectedIds(capturedSelectionIds);
+      setQuickActions(null);
+    }
+  }, [selectedTool]);
+
+  useEffect(() => {
+    if (selectedTool === 'Select' && !quickActions) {
+      setCapturedSelectionIds([]);
+    }
+  }, [selectedTool, quickActions]);
+
+  useEffect(() => {
+    if (initialSelectedIds.length > 0) {
+      const timer = setTimeout(() => setInitialSelectedIds([]), 100);
+      return () => clearTimeout(timer);
+    }
+  }, [initialSelectedIds]);
+
+  const [rotationEntityId, setRotationEntityId] = useState<string | null>(null);
+  const [transformSelection, setTransformSelection] = useState<string[]>([]);
+  const initialBaseEntitiesRef = useRef<Entity[] | null>(null);
+  const [isRotateScaleOpen, setIsRotateScaleOpen] = useState(false);
   const [entities, setEntities] = useState<Entity[]>([]);
+
+  useEffect(() => {
+    if (rotationEntityId) {
+      if (capturedSelectionIds.includes(rotationEntityId)) {
+          setTransformSelection(capturedSelectionIds);
+      } else {
+          const entity = entities.find(e => e.id === rotationEntityId);
+          if (entity && (entity as any).groupId) {
+              const groupIds = entities.filter(e => (e as any).groupId === (entity as any).groupId).map(e => e.id);
+              setTransformSelection(groupIds);
+          } else {
+              setTransformSelection([rotationEntityId]);
+          }
+      }
+      initialBaseEntitiesRef.current = entities;
+    } else {
+      setTransformSelection([]);
+      initialBaseEntitiesRef.current = null;
+    }
+  }, [rotationEntityId]);
   const appEntitiesRef = useRef<Entity[]>(entities);
   useEffect(() => {
     appEntitiesRef.current = entities;
@@ -247,7 +445,11 @@ export default function App() {
     localStorage.setItem('dimensionMode', dimensionMode);
     localStorage.setItem('dimensionStyle', dimensionStyle);
     localStorage.setItem('selectionMode', selectionMode);
-  }, [dimensionScale, dimensionDecimals, dimensionMode, dimensionStyle, selectionMode]);
+    if (selectedTool !== 'RotateScale') {
+        setRotationEntityId(null);
+        setIsRotateScaleOpen(false);
+    }
+  }, [dimensionScale, dimensionDecimals, dimensionMode, dimensionStyle, selectionMode, selectedTool]);
 
   // BIM dedicated dialog states
   const [isBIMPorteOpen, setIsBIMPorteOpen] = useState(false);
@@ -257,6 +459,7 @@ export default function App() {
   const [isBIMElettricoOpen, setIsBIMElettricoOpen] = useState(false);
   const [isBIMIdraulicoOpen, setIsBIMIdraulicoOpen] = useState(false);
   const [isBIMFinitureOpen, setIsBIMFinitureOpen] = useState(false);
+  const [isRotateToolbarOpen, setIsRotateToolbarOpen] = useState(false);
 
   // BIM top bar reactive parameters
   const [bimWallThickness, setBimWallThickness] = useState<number>(() => parseFloat(localStorage.getItem('lastWallThickness') || '15'));
@@ -1296,6 +1499,7 @@ const MASONRY_TYPES = [
         { name: "Trim", icon: Scissors },
         { name: "Eraser", icon: Eraser },
         { name: "Parallel", icon: ParallelIcon },
+        { name: "RotateScale", icon: RotateScaleIcon },
         { name: "CopiaVideo", icon: Camera },
         { name: "Join", icon: Link },
         { name: "Raccordo", icon: RaccordoIcon },
@@ -2192,6 +2396,19 @@ const MASONRY_TYPES = [
             dimensionMode={dimensionMode}
             dimensionStyle={dimensionStyle}
             selectionMode={selectionMode}
+            selectedEntityIds={capturedSelectionIds}
+            onSelectionComplete={(ids, pos) => {
+              if (ids.length === 0) {
+                setQuickActions(null);
+                setCapturedSelectionIds([]);
+                return;
+              }
+              setQuickActions({ ids, pos });
+              setCapturedSelectionIds(ids);
+              // Also auto-select the first one for the sidebar
+              if (ids.length > 0) setSelectedId(ids[0]);
+            }}
+            initialSelectedIds={initialSelectedIds}
             onDoubleClickDimension={(dim) => {
               setSelectedId(dim.id);
               setShowProperties(true);
@@ -2205,7 +2422,7 @@ const MASONRY_TYPES = [
               } else if (entity.bimType === 'window') {
                 setIsBIMFinestreOpen(true);
               } else if (entity.bimAreaType) {
-                setIsBIMAreaEditOpen(true);
+                setIsBIMAreaDialogOpen(true);
               }
             }}
             eraserType={eraserType}
@@ -2243,7 +2460,152 @@ const MASONRY_TYPES = [
             }}
             onAreaDetected={handleAreaDetected}
             highlightedPoints={detectedAreaPoints}
+            rotationEntityId={rotationEntityId}
+            onSelectForRotation={(id) => {
+                setRotationEntityId(id);
+                setIsRotateScaleOpen(true);
+            }}
           />
+
+          {isRotateScaleOpen && (
+            <div className="absolute top-24 right-4 bg-white rounded-xl shadow-[0_20px_50px_rgba(0,0,0,0.1)] border border-neutral-200 p-4 z-50 flex flex-col gap-4 w-72 animate-in fade-in slide-in-from-right-4 duration-200">
+                <div className="flex items-center justify-between border-b border-neutral-100 pb-3">
+                    <div className="flex items-center gap-2">
+                        <div className="bg-indigo-50 p-2 rounded-lg">
+                            <RotateScaleIcon size={18} />
+                        </div>
+                        <h3 className="text-[13px] font-bold text-neutral-800 tracking-tight">
+                            Trasforma Oggetto
+                        </h3>
+                    </div>
+                    <button onClick={() => { setIsRotateScaleOpen(false); setSelectedTool('Select'); }} className="text-neutral-400 hover:text-neutral-600 transition-colors p-1 hover:bg-neutral-100 rounded-md">✕</button>
+                </div>
+
+                {!rotationEntityId ? (
+                    <div className="py-8 text-center px-4 bg-neutral-50 rounded-lg border border-dashed border-neutral-200">
+                        <RefreshCw size={24} className="text-neutral-300 mx-auto mb-2 animate-spin-slow" />
+                        <p className="text-[11px] text-neutral-500 font-medium leading-relaxed">Seleziona un elemento nel disegno per visualizzare le opzioni di rotazione e scala</p>
+                    </div>
+                ) : (
+                    <div className="space-y-6">
+                        {/* ROTAZIONE */}
+                        <div className="space-y-3">
+                            <label className="text-[10px] font-bold text-neutral-400 uppercase tracking-widest flex items-center gap-1.5">
+                                <RefreshCw size={10} /> Rotazione
+                            </label>
+                            
+                            <div className="grid grid-cols-4 gap-1.5">
+                                {[0, 90, 180, 270].map(angle => (
+                                    <button
+                                        key={angle}
+                                        onClick={() => {
+                                            if (!initialBaseEntitiesRef.current) return;
+                                            const baseCenter = getSelectionCenter(transformSelection, initialBaseEntitiesRef.current);
+                                            
+                                            updateEntitiesWithHistory(prev => {
+                                                const currentEntities = [...prev];
+                                                return currentEntities.map(e => {
+                                                    if (transformSelection.includes(e.id)) {
+                                                        const baseEntity = initialBaseEntitiesRef.current!.find(be => be.id === e.id);
+                                                        const currentEntAngle = (baseEntity as any)?.angle || 0;
+                                                        const delta = angle - currentEntAngle;
+                                                        return rotateEntityFixed(baseEntity || e, delta, baseCenter);
+                                                    }
+                                                    return e;
+                                                });
+                                            });
+                                        }}
+                                        className="py-2 bg-white hover:bg-indigo-50 hover:border-indigo-200 transition-all rounded-md text-[10px] font-bold border border-neutral-200 text-neutral-600 hover:text-indigo-600 shadow-sm"
+                                    >
+                                        {angle}°
+                                    </button>
+                                ))}
+                            </div>
+
+                            <div className="pt-1">
+                                <div className="flex justify-between items-center mb-2">
+                                    <span className="text-[10px] font-medium text-neutral-500 italic">Angolo Libero</span>
+                                    <span className="text-[11px] font-mono font-bold text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded border border-indigo-100">
+                                        {(entities.find(e => e.id === rotationEntityId) as any)?.angle || 0}°
+                                    </span>
+                                </div>
+                                <input 
+                                    type="range"
+                                    min="-180"
+                                    max="180"
+                                    step="1"
+                                    value={(entities.find(e => e.id === rotationEntityId) as any)?.angle || 0}
+                                    onChange={(e) => {
+                                        const nextAngle = parseInt(e.target.value);
+                                        if (!initialBaseEntitiesRef.current) return;
+                                        const baseCenter = getSelectionCenter(transformSelection, initialBaseEntitiesRef.current);
+
+                                        updateEntitiesSilent(prev => prev.map(ent => {
+                                            if (transformSelection.includes(ent.id)) {
+                                                const baseEntity = initialBaseEntitiesRef.current!.find(be => be.id === ent.id);
+                                                const entity = baseEntity || ent;
+                                                const currentAngle = (entity as any).angle || 0;
+                                                const delta = nextAngle - currentAngle;
+                                                return rotateEntityFixed(entity, delta, baseCenter);
+                                            }
+                                            return ent;
+                                        }));
+                                    }}
+                                    onMouseUp={() => commitToHistory()}
+                                    className="w-full h-1.5 bg-neutral-100 rounded-lg appearance-none cursor-pointer accent-indigo-600 border border-neutral-200"
+                                />
+                            </div>
+                        </div>
+
+                        {/* SCALA / INGRANDIMENTO */}
+                        <div className="space-y-3 pt-2 border-t border-neutral-100">
+                            <label className="text-[10px] font-bold text-neutral-400 uppercase tracking-widest flex items-center gap-1.5">
+                                <Maximize size={10} /> Ingrandimento
+                            </label>
+
+                            <div className="space-y-1">
+                                <div className="flex justify-between items-center mb-2">
+                                    <span className="text-[10px] font-medium text-neutral-500 italic">Fattore di Scala</span>
+                                    <span className="text-[11px] font-mono font-bold text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-100">
+                                        x{((entities.find(e => e.id === rotationEntityId) as any)?.scale || 1).toFixed(2)}
+                                    </span>
+                                </div>
+                                <input 
+                                    type="range"
+                                    min="0.1"
+                                    max="5"
+                                    step="0.05"
+                                    value={(entities.find(e => e.id === rotationEntityId) as any)?.scale || 1}
+                                    onChange={(e) => {
+                                        const nextScale = parseFloat(e.target.value);
+                                        if (!initialBaseEntitiesRef.current) return;
+                                        const baseCenter = getSelectionCenter(transformSelection, initialBaseEntitiesRef.current);
+
+                                        updateEntitiesSilent(prev => prev.map(ent => {
+                                            if (transformSelection.includes(ent.id)) {
+                                                const baseEntity = initialBaseEntitiesRef.current!.find(be => be.id === ent.id);
+                                                const entity = baseEntity || ent;
+                                                const currentBaseScale = (entity as any).scale || 1;
+                                                const factor = nextScale / currentBaseScale;
+                                                return scaleEntity(entity, factor, nextScale, baseCenter);
+                                            }
+                                            return ent;
+                                        }));
+                                    }}
+                                    onMouseUp={() => commitToHistory()}
+                                    className="w-full h-1.5 bg-neutral-100 rounded-lg appearance-none cursor-pointer accent-emerald-500 border border-neutral-200"
+                                />
+                                <div className="flex justify-between text-[8px] text-neutral-300 font-bold px-0.5 pt-1 uppercase">
+                                    <span>Ridotto</span>
+                                    <span>Normale (x1)</span>
+                                    <span>Ingrandito</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                )}
+            </div>
+          )}
 
           <AreaFunzionaleDialog
             isOpen={isBIMAreaDialogOpen}
@@ -5151,6 +5513,100 @@ const MASONRY_TYPES = [
           </div>
         </div>
       )}
+
+      <AnimatePresence>
+        {quickActions && (
+          <motion.div
+            initial={{ opacity: 0, scale: 0.9, y: 10 }}
+            animate={{ opacity: 1, scale: 1, y: 0 }}
+            exit={{ opacity: 0, scale: 0.9, y: 10 }}
+            className="fixed z-[9999] bg-white dark:bg-neutral-800 rounded-full shadow-2xl border border-neutral-200 dark:border-neutral-700 p-1.5 flex items-center gap-1"
+            style={{ 
+              left: quickActions.pos.x, 
+              top: Math.max(80, quickActions.pos.y - 80),
+              transform: 'translateX(-50%)' 
+            }}
+          >
+            <button 
+              onClick={() => {
+                setInitialSelectedIds(quickActions.ids);
+                setSelectedTool('Move');
+                setQuickActions(null);
+              }}
+              className="p-2 hover:bg-neutral-100 dark:hover:bg-neutral-700 rounded-full transition-colors text-neutral-600 dark:text-neutral-300 flex items-center gap-1.5 px-3"
+              title="Sposta"
+            >
+              <Move size={16} />
+              <span className="text-xs font-medium">Sposta</span>
+            </button>
+            <div className="w-[1px] h-6 bg-neutral-200 dark:bg-neutral-700 mx-0.5" />
+            <button 
+              onClick={() => {
+                setInitialSelectedIds(quickActions.ids);
+                setSelectedTool('Copy');
+                setQuickActions(null);
+              }}
+              className="p-2 hover:bg-neutral-100 dark:hover:bg-neutral-700 rounded-full transition-colors text-neutral-600 dark:text-neutral-300 flex items-center gap-1.5 px-3"
+              title="Copia"
+            >
+              <Copy size={16} />
+              <span className="text-xs font-medium">Copia</span>
+            </button>
+            <div className="w-[1px] h-6 bg-neutral-200 dark:bg-neutral-700 mx-0.5" />
+            <button 
+              onClick={() => {
+                setRotationEntityId(quickActions.ids[0]);
+                setIsRotateScaleOpen(true);
+                setQuickActions(null);
+              }}
+              className="p-2 hover:bg-neutral-100 dark:hover:bg-neutral-700 rounded-full transition-colors text-neutral-600 dark:text-neutral-300 flex items-center gap-1.5 px-3"
+              title="Ruota"
+            >
+              <RefreshCw size={16} />
+              <span className="text-xs font-medium">Ruota</span>
+            </button>
+            <div className="w-[1px] h-6 bg-neutral-200 dark:bg-neutral-700 mx-0.5" />
+            <button 
+              onClick={() => {
+                const newGroupId = Date.now().toString();
+                updateEntitiesWithHistory(prev => prev.map(ent => {
+                  if (quickActions.ids.includes(ent.id)) {
+                    return { ...ent, groupId: newGroupId };
+                  }
+                  return ent;
+                }));
+                setQuickActions(null);
+                setShortcutToast("Oggetti uniti (Join)");
+                setTimeout(() => setShortcutToast(null), 2000);
+              }}
+              className="p-2 hover:bg-neutral-100 dark:hover:bg-neutral-700 rounded-full transition-colors text-neutral-600 dark:text-neutral-300 flex items-center gap-1.5 px-3"
+              title="Join"
+            >
+              <Link size={16} />
+              <span className="text-xs font-medium">Join</span>
+            </button>
+            <div className="w-[1px] h-6 bg-neutral-200 dark:bg-neutral-700 mx-0.5" />
+            <button 
+              onClick={() => {
+                updateEntitiesWithHistory(prev => prev.filter(ent => !quickActions.ids.includes(ent.id)));
+                setQuickActions(null);
+              }}
+              className="p-2 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-full transition-colors text-red-500 flex items-center gap-1.5 px-3"
+              title="Cancella"
+            >
+              <Trash2 size={16} />
+              <span className="text-xs font-medium">Cancella</span>
+            </button>
+            <div className="w-[1px] h-6 bg-neutral-200 dark:bg-neutral-700 mx-0.5" />
+            <button 
+              onClick={() => setQuickActions(null)}
+              className="p-1.5 hover:bg-neutral-100 dark:hover:bg-neutral-700 rounded-full transition-colors text-neutral-400"
+            >
+              <X size={16} />
+            </button>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* BIM Dialog Submenus were removed and redesigned in the inline top bars for higher efficiency */}
     </div>

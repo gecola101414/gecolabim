@@ -2456,15 +2456,20 @@ interface CADCanvasProps {
     color: string;
   };
   onAreaDetected?: (result: { points: Point[], holes?: Point[][] }) => void;
+  onSelectionComplete?: (ids: string[], point: Point) => void;
+  initialSelectedIds?: string[];
+  selectedEntityIds?: string[];
   highlightedPoints?: Point[] | { points: Point[], holes?: Point[][] } | null;
   bimWallHeight?: number;
   bimDoorHeight?: number;
   bimWindowHeight?: number;
   bimWallThickness?: number;
   bimWallType?: string;
+  rotationEntityId?: string | null;
+  onSelectForRotation?: (id: string | null) => void;
 }
 
-export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entities, activeTool, setActiveTool, setEntities, setEntitiesSilent, onCommitHistory, onSelect, onContextMenu, activeLayerId, layers, defaultLineStyle, setDefaultLineStyle, defaultHatchStyle, defaultTextStyle = { fontFamily: 'sans-serif', fontSize: 14, fontWeight: 'normal', textAlign: 'left' }, eraserRadius, setEraserRadius, eraserType = 'pencil', setEraserType, eraserIntensity = 55, setEraserIntensity, onMouseMovePosition, rulerStyle = 'tecnigrafo', orthoMode = false, setOrthoMode, isContinuousMode = false, cancelTrigger = 0, parallelTrigger = 0, tavole, onUpdateTavole, onDoubleClickTavola, selectedTemplateId, selectedEntityId, selectedBIMSymbolType, setSelectedBIMSymbolType, bimSymbolScale = 1, raccordoConfig, dimensionScale = 1, dimensionDecimals = 2, dimensionMode = 'two-points', dimensionStyle = 'linear', selectionMode = 'manual', onEditRaccordo, onDoubleClickDimension, onDoubleClickBIMElement, onActionStart, onAreaDetected, highlightedPoints, bimWallHeight = 270, bimDoorHeight = 210, bimWindowHeight = 140, bimWallThickness = 15, bimWallType = 'Forati (Laterizio)' }, ref) => {
+export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entities, activeTool, setActiveTool, setEntities, setEntitiesSilent, onCommitHistory, onSelect, onContextMenu, activeLayerId, layers, defaultLineStyle, setDefaultLineStyle, defaultHatchStyle, defaultTextStyle = { fontFamily: 'sans-serif', fontSize: 14, fontWeight: 'normal', textAlign: 'left' }, eraserRadius, setEraserRadius, eraserType = 'pencil', setEraserType, eraserIntensity = 55, setEraserIntensity, onMouseMovePosition, rulerStyle = 'tecnigrafo', orthoMode = false, setOrthoMode, isContinuousMode = false, cancelTrigger = 0, parallelTrigger = 0, tavole, onUpdateTavole, onDoubleClickTavola, selectedTemplateId, selectedEntityId, selectedBIMSymbolType, setSelectedBIMSymbolType, bimSymbolScale = 1, raccordoConfig, dimensionScale = 1, dimensionDecimals = 2, dimensionMode = 'two-points', dimensionStyle = 'linear', selectionMode = 'manual', onEditRaccordo, onDoubleClickDimension, onDoubleClickBIMElement, onActionStart, onAreaDetected, onSelectionComplete, initialSelectedIds, selectedEntityIds = [], highlightedPoints, rotationEntityId, onSelectForRotation, bimWallHeight = 270, bimDoorHeight = 210, bimWindowHeight = 140, bimWallThickness = 15, bimWallType = 'Forati (Laterizio)' }, ref) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const entitiesRef = useRef(entities);
   useEffect(() => {
@@ -2581,6 +2586,32 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
   const [clonedEntityIds, setClonedEntityIds] = useState<Set<string>>(new Set());
   const [selectedRaccordoLineIds, setSelectedRaccordoLineIds] = useState<string[]>([]);
   const [selectedRaccordoClickPoints, setSelectedRaccordoClickPoints] = useState<Point[]>([]);
+
+  useEffect(() => {
+    if (initialSelectedIds && initialSelectedIds.length > 0) {
+      if (activeTool === 'Move' || activeTool === 'Copy' || activeTool === 'Cancella' || activeTool === 'Join') {
+          setDragEntityIds(initialSelectedIds);
+          if (activeTool === 'Copy') {
+              setCopySourceEntityIds(initialSelectedIds);
+          }
+          // Immediate drag support
+          if (activeTool === 'Move' || activeTool === 'Copy') {
+              setDragEntityId(initialSelectedIds[0]);
+              dragEntityIdRef.current = initialSelectedIds[0];
+              previousMouseRef.current = lastMouseRef.current || { x: 0, y: 0 };
+          }
+      }
+    }
+  }, [initialSelectedIds, activeTool]);
+
+  useEffect(() => {
+    if (selectedEntityIds.length > 0) {
+      const interval = setInterval(() => {
+        renderRef.current?.();
+      }, 30);
+      return () => clearInterval(interval);
+    }
+  }, [selectedEntityIds]);
 
   useEffect(() => {
     if (activeTool !== 'Raccordo') {
@@ -2763,15 +2794,29 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
 
   const resolveGroups = (ids: string[], currentEntities: Entity[]): string[] => {
     const groupIds = new Set<string>();
+    
+    let includesTempSelection = false;
+    if (selectedEntityIds.length > 0) {
+        for (const id of ids) {
+            if (selectedEntityIds.includes(id)) {
+                includesTempSelection = true;
+                break;
+            }
+        }
+    }
+
     currentEntities.forEach(ent => {
         if (ids.includes(ent.id) && ent.groupId) {
             groupIds.add(ent.groupId);
         }
     });
     
-    if (groupIds.size === 0) return ids;
+    if (groupIds.size === 0 && !includesTempSelection) return ids;
     
     const allIds = new Set(ids);
+    if (includesTempSelection) {
+        selectedEntityIds.forEach(id => allIds.add(id));
+    }
     currentEntities.forEach(ent => {
         if (ent.groupId && groupIds.has(ent.groupId)) {
             allIds.add(ent.id);
@@ -4459,15 +4504,23 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
             ctx.shadowBlur = 10 * flashIntensity;
         }
 
-        if ((entity.id === selectedParallelLine?.id && blink) || (selectedEntityId === entity.id) || (positioningGroupId && entity.groupId === positioningGroupId) || (positioningEntityId && entity.id === positioningEntityId) || selectedRaccordoLineIds.includes(entity.id)) {
+        const isCurrentlyDragged = dragEntityIds.includes(entity.id);
+        const isPropSelected = selectedEntityIds.includes(entity.id) || isCurrentlyDragged;
+        const pulse = isPropSelected ? (Math.sin(Date.now() / 200) + 1) / 2 : 0;
+
+        if ((entity.id === selectedParallelLine?.id && blink) || (selectedEntityId === entity.id) || isPropSelected || (positioningGroupId && entity.groupId === positioningGroupId) || (positioningEntityId && entity.id === positioningEntityId) || selectedRaccordoLineIds.includes(entity.id)) {
           if (isFlashing) {
             // Let the flashing styles take precedence for initial attention blink
           } else if (entity.type === 'hatch') {
             ctx.strokeStyle = '#22c55e'; // Green highlight for selected hatch
             ctx.lineWidth = baseWidth + 3 / view.zoom;
           } else {
-            ctx.strokeStyle = '#fbbf24'; // Amber highlight
-            ctx.lineWidth = baseWidth + 2 / view.zoom;
+            ctx.strokeStyle = isPropSelected ? `rgba(59, 130, 246, ${0.7 + 0.3 * pulse})` : '#fbbf24'; // Pulsing Blue if from prop, Amber if single select
+            ctx.lineWidth = baseWidth + (isPropSelected ? (3 + 2 * pulse) : 2) / view.zoom;
+            if (isPropSelected) {
+              ctx.shadowColor = 'rgba(59, 130, 246, 0.5)';
+              ctx.shadowBlur = 8 * pulse;
+            }
           }
         } else if (activeTool === 'Dimension' && selectionMode === 'object' && entity.id === hoveredDimensionEntityId) {
             ctx.strokeStyle = '#22c55e'; // Green highlight for hovered entity in dimension object selection mode
@@ -6434,12 +6487,11 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
             
             const wThickness = 12; // Standard frame thickness in 2D
 
-            // Window Frame
+            // 1. MAIN OUTER FRAME (Telaio Fisso)
             ctx.strokeStyle = '#2563eb';
             ctx.fillStyle = 'rgba(37, 99, 235, 0.05)';
-            ctx.lineWidth = 1.8 / view.zoom;
+            ctx.lineWidth = 2 / view.zoom;
             ctx.beginPath();
-            // Outer frame
             ctx.moveTo(start.x + nx * wThickness/2, start.y + ny * wThickness/2);
             ctx.lineTo(end.x + nx * wThickness/2, end.y + ny * wThickness/2);
             ctx.lineTo(end.x - nx * wThickness/2, end.y - ny * wThickness/2);
@@ -6447,109 +6499,135 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
             ctx.closePath();
             ctx.fill();
             ctx.stroke();
-            
-            // Glass pane (two lines for standard look)
-            ctx.lineWidth = 0.6 / view.zoom;
-            ctx.strokeStyle = '#93c5fd';
-            ctx.beginPath();
-            ctx.moveTo(start.x + nx * 1.5, start.y + ny * 1.5);
-            ctx.lineTo(end.x + nx * 1.5, end.y + ny * 1.5);
-            ctx.moveTo(start.x - nx * 1.5, start.y - ny * 1.5);
-            ctx.lineTo(end.x - nx * 1.5, end.y - ny * 1.5);
-            ctx.stroke();
 
-            // Handle & Opening Direction logic
             const windowType = entAsAny.bimWindowType || 'singola';
-            const isFlipLeft = !!entAsAny.bimFlipLeft; // true = Left hinge, handle on Right
-            const isFlipSide = !!entAsAny.bimFlipSide; // true = Opens Inward (verso l'interno)
+            const isFlipLeft = !!entAsAny.bimFlipLeft; 
+            const isFlipSide = !!entAsAny.bimFlipSide; 
             const cx = (start.x + end.x) / 2;
             const cy = (start.y + end.y) / 2;
+            const sThickness = wThickness * 0.7; // Sash thickness
 
-            if (windowType !== 'vetrata' && windowType !== 'vasistas') {
-                // If double, we have ONE handle on the center mullion. 
-                // If single, one handle on the side.
-                const sides = (windowType === 'doppia') ? ['center'] : [isFlipLeft ? 'right' : 'left'];
+            // 2. SASHES (Ante) & GLASS
+            const sashCount = (windowType === 'doppia') ? 2 : 1;
+            for (let i = 0; i < sashCount; i++) {
+                const sStart = (sashCount === 2 && i === 1) ? { x: cx, y: cy } : start;
+                const sEnd = (sashCount === 2 && i === 0) ? { x: cx, y: cy } : end;
                 
-                sides.forEach(side => {
-                    let hPosX = cx;
-                    let hPosY = cy;
-                    let hingeX = cx;
-                    let hingeY = cy;
+                // Sash box
+                ctx.strokeStyle = '#3b82f6';
+                ctx.lineWidth = 1 / view.zoom;
+                ctx.beginPath();
+                ctx.moveTo(sStart.x + nx * sThickness/2, sStart.y + ny * sThickness/2);
+                ctx.lineTo(sEnd.x + nx * sThickness/2, sEnd.y + ny * sThickness/2);
+                ctx.lineTo(sEnd.x - nx * sThickness/2, sEnd.y - ny * sThickness/2);
+                ctx.lineTo(sStart.x - nx * sThickness/2, sStart.y - ny * sThickness/2);
+                ctx.closePath();
+                ctx.stroke();
 
-                    if (windowType === 'doppia' || side === 'center') {
-                        // Handle perfectly centered on the width axis (meeting style)
-                        hPosX = cx; 
-                        hPosY = cy;
-                        hingeX = start.x; 
-                        hingeY = start.y;
-                    } else {
-                        // Single sash
-                        if (isFlipLeft) {
-                            hPosX = end.x - ux * 5;
-                            hPosY = end.y - uy * 5;
-                            hingeX = start.x;
-                            hingeY = start.y;
-                        } else {
-                            hPosX = start.x + ux * 5;
-                            hPosY = start.y + uy * 5;
-                            hingeX = end.x;
-                            hingeY = end.y;
-                        }
-                    }
+                // Glass (Fill)
+                ctx.fillStyle = 'rgba(147, 197, 253, 0.2)';
+                ctx.fill();
+                
+                // Glass detail lines
+                ctx.strokeStyle = '#93c5fd';
+                ctx.lineWidth = 0.5 / view.zoom;
+                ctx.beginPath();
+                ctx.moveTo(sStart.x + nx * 1.5, sStart.y + ny * 1.5);
+                ctx.lineTo(sEnd.x + nx * 1.5, sEnd.y + ny * 1.5);
+                ctx.moveTo(sStart.x - nx * 1.5, sStart.y - ny * 1.5);
+                ctx.lineTo(sEnd.x - nx * 1.5, sEnd.y - ny * 1.5);
+                ctx.stroke();
 
-                    // Handle Base (Circular)
-                    // Offset based on flipSide (Inward/Outward)
-                    const sideDir = isFlipSide ? 1 : -1; // 1 = inside (nx/ny), -1 = outside (-nx/-ny)
-                    const hOff = (wThickness / 2 + 1.2);
-                    const baseCenter = {
-                        x: hPosX + nx * hOff * sideDir,
-                        y: hPosY + ny * hOff * sideDir
-                    };
-
-                    ctx.fillStyle = '#1d4ed8';
-                    ctx.beginPath();
-                    ctx.arc(baseCenter.x, baseCenter.y, 2.2 / view.zoom, 0, Math.PI * 2);
-                    ctx.fill();
-
-                    // Handle lever
-                    const leverLen = 9 / view.zoom;
-                    const leverDir = (side === 'left' || (!isFlipLeft && windowType !== 'doppia')) ? 1 : -1;
-                    ctx.beginPath();
-                    ctx.lineWidth = 2.5 / view.zoom;
-                    ctx.strokeStyle = '#2563eb';
-                    ctx.lineCap = 'round';
-                    ctx.moveTo(baseCenter.x, baseCenter.y);
-                    ctx.lineTo(baseCenter.x + ux * leverLen * leverDir, baseCenter.y + uy * leverLen * leverDir);
-                    ctx.stroke();
-
-                    // Opening Triangle (dashed lines) - Professional CAD style
-                    ctx.save();
-                    ctx.setLineDash([3 / view.zoom, 3 / view.zoom]);
-                    ctx.strokeStyle = '#94a3b8';
-                    ctx.lineWidth = 0.8 / view.zoom;
-                    ctx.beginPath();
+                // 3. HINGES (Cerniere) where opening is
+                // We determine hinge position based on flip
+                ctx.fillStyle = '#64748b';
+                const showHinges = windowType !== 'vetrata';
+                if (showHinges) {
+                    const hSide = (sashCount === 2) 
+                        ? (i === 0 ? 'left' : 'right') // Left sash hinges at start, Right sash hinges at end
+                        : (isFlipLeft ? 'left' : 'right');
                     
-                    // Apex of triangle on the handle side, protruding
-                    const apex = {
-                        x: hPosX + nx * (wThickness + 15) * sideDir,
-                        y: hPosY + ny * (wThickness + 15) * sideDir
-                    };
+                    const hBase = (hSide === 'left') ? sStart : sEnd;
+                    const hDir = (hSide === 'left') ? 1 : -1;
                     
-                    if (windowType === 'doppia') {
-                        ctx.moveTo(hingeX, hingeY);
-                        ctx.lineTo(apex.x, apex.y);
-                        // Back to center mullion area
-                        ctx.lineTo(cx, cy);
-                    } else {
-                        ctx.moveTo(hingeX, hingeY);
-                        ctx.lineTo(apex.x, apex.y);
-                        // Back to opposite corner of sash
-                        const sashEnd = (isFlipLeft) ? end : start;
-                        ctx.lineTo(sashEnd.x, sashEnd.y);
+                    // Simple hinge dots
+                    for (let j = 0; j < 2; j++) {
+                        const hOff = (j === 0 ? 5 : -5);
+                        ctx.beginPath();
+                        ctx.arc(hBase.x + ux * hOff * hDir, hBase.y + uy * hOff * hDir, 1.2 / view.zoom, 0, Math.PI * 2);
+                        ctx.fill();
                     }
+                }
+            }
+
+            // 4. HANDLE (Maniglia)
+            if (windowType !== 'vetrata' && windowType !== 'vasistas') {
+                const hPosX = cx; 
+                const hPosY = cy;
+                
+                // For single windows, handle is on the opposite side of hinges
+                let finalHPos = { x: cx, y: cy };
+                if (windowType === 'singola') {
+                    if (isFlipLeft) {
+                        finalHPos = { x: end.x - ux * 8, y: end.y - uy * 8 };
+                    } else {
+                        finalHPos = { x: start.x + ux * 8, y: start.y + uy * 8 };
+                    }
+                }
+
+                const sideDir = isFlipSide ? 1 : -1;
+                const hBaseRadius = 3.5 / view.zoom;
+                const hBaseCenter = {
+                    x: finalHPos.x + nx * (wThickness/2 + 1) * sideDir,
+                    y: finalHPos.y + ny * (wThickness/2 + 1) * sideDir
+                };
+
+                // Supporto circolare
+                ctx.fillStyle = '#cbd5e1';
+                ctx.beginPath();
+                ctx.arc(hBaseCenter.x, hBaseCenter.y, hBaseRadius, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.strokeStyle = '#475569';
+                ctx.lineWidth = 0.5 / view.zoom;
+                ctx.stroke();
+
+                // Handle Lever
+                const leverLen = 10 / view.zoom;
+                const leverDir = (windowType === 'doppia' || !isFlipLeft) ? 1 : -1;
+                ctx.beginPath();
+                ctx.lineWidth = 2 / view.zoom;
+                ctx.strokeStyle = '#334155';
+                ctx.lineCap = 'round';
+                ctx.moveTo(hBaseCenter.x, hBaseCenter.y);
+                ctx.lineTo(hBaseCenter.x + ux * leverLen * leverDir, hBaseCenter.y + uy * leverLen * leverDir);
+                ctx.stroke();
+
+                // Opening Direction Lines
+                ctx.save();
+                ctx.setLineDash([4 / view.zoom, 3 / view.zoom]);
+                ctx.strokeStyle = 'rgba(148, 163, 184, 0.6)';
+                ctx.lineWidth = 0.8 / view.zoom;
+                
+                const apexOff = 18;
+                const apex = {
+                    x: finalHPos.x + nx * (wThickness/2 + apexOff) * sideDir,
+                    y: finalHPos.y + ny * (wThickness/2 + apexOff) * sideDir
+                };
+
+                if (windowType === 'doppia') {
+                    // Two opening triangles meeting at center
+                    ctx.beginPath();
+                    ctx.moveTo(start.x, start.y); ctx.lineTo(apex.x, apex.y); ctx.lineTo(cx, cy);
+                    ctx.moveTo(end.x, end.y); ctx.lineTo(apex.x, apex.y); ctx.lineTo(cx, cy);
                     ctx.stroke();
-                    ctx.restore();
-                });
+                } else {
+                    const hHinge = isFlipLeft ? start : end;
+                    const hOpen = isFlipLeft ? end : start;
+                    ctx.beginPath();
+                    ctx.moveTo(hHinge.x, hHinge.y); ctx.lineTo(apex.x, apex.y); ctx.lineTo(hOpen.x, hOpen.y);
+                    ctx.stroke();
+                }
+                ctx.restore();
             }
 
             // BIM Annotations
@@ -8710,6 +8788,16 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
         return;
     }
 
+    if (activeTool === 'RotateScale') {
+        const found = getEntityAtPoint(rawPoint);
+        if (found) {
+            onSelectForRotation?.(found.id);
+        } else {
+            onSelectForRotation?.(null);
+        }
+        return;
+    }
+
     if (activeTool === 'Select') {
         const found = getEntityAtPoint(rawPoint);
         if (found) {
@@ -8790,6 +8878,7 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
             return;
         } else {
             onSelect(null);
+            setSelectionWindow({ start: rawPoint, current: rawPoint });
         }
     } else if (activeTool === 'Specchio') {
         if (specchioState === 'axis_start') {
@@ -9266,11 +9355,12 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
             setEntities(prev => {
                 return prev.map(ent => {
                     if (ent.id === found.id) {
-                        const currentAngle = (ent as any).angle || 0;
+                        const eAny = ent as any;
+                        const currentAngle = eAny.angle || 0;
                         return { 
                             ...ent, 
-                            start: rotatePt(ent.start), 
-                            end: rotatePt(ent.end),
+                            start: rotatePt(eAny.start), 
+                            end: rotatePt(eAny.end),
                             angle: (currentAngle + 90) % 360
                         };
                     }
@@ -10923,6 +11013,10 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
                 const newIds = ids.filter(id => id !== specchioFinalAxis?.entityId);
                 return Array.from(new Set([...prev, ...newIds]));
             });
+        }
+        if (ids.length > 0 && activeTool === 'Select' && onSelectionComplete) {
+            setFlashIds(ids);
+            onSelectionComplete(ids, { x: e.clientX, y: e.clientY });
         }
         setSelectionWindow(null);
         return;
