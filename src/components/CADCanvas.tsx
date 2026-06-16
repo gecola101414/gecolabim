@@ -2589,16 +2589,21 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
 
   useEffect(() => {
     if (initialSelectedIds && initialSelectedIds.length > 0) {
-      if (activeTool === 'Move' || activeTool === 'Copy' || activeTool === 'Cancella' || activeTool === 'Join') {
+      if (activeTool === 'Move' || activeTool === 'Copy' || activeTool === 'Cancella' || activeTool === 'Join' || activeTool === 'Specchio') {
           setDragEntityIds(initialSelectedIds);
+          dragEntityIdsRef.current = initialSelectedIds;
           if (activeTool === 'Copy') {
               setCopySourceEntityIds(initialSelectedIds);
           }
-          // Immediate drag support
-          if (activeTool === 'Move' || activeTool === 'Copy') {
+          if (activeTool === 'Specchio') {
+              setSpecchioSelectedIds(initialSelectedIds);
+          }
+          // Immediate drag support for Move only, to avoid moving originals in Copy mode
+          if (activeTool === 'Move') {
               setDragEntityId(initialSelectedIds[0]);
               dragEntityIdRef.current = initialSelectedIds[0];
               previousMouseRef.current = lastMouseRef.current || { x: 0, y: 0 };
+              dragHasMovedRef.current = false;
           }
       }
     }
@@ -2675,6 +2680,8 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
   const dragEntityIdRef = useRef<string | null>(null);
   useEffect(() => { dragEntityIdRef.current = dragEntityId; }, [dragEntityId]);
   const [dragEntityIds, setDragEntityIds] = useState<string[]>([]);
+  const dragEntityIdsRef = useRef<string[]>([]);
+  useEffect(() => { dragEntityIdsRef.current = dragEntityIds; }, [dragEntityIds]);
   const [lockedFocalPoint, setLockedFocalPoint] = useState<Point | null>(null);
   const [tecnigrafoLock, setTecnigrafoLock] = useState<'x' | 'y' | null>(null);
   const [tecnigrafoOrigin, setTecnigrafoOrigin] = useState<Point | null>(null);
@@ -4505,21 +4512,23 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
         }
 
         const isCurrentlyDragged = dragEntityIds.includes(entity.id);
-        const isPropSelected = selectedEntityIds.includes(entity.id) || isCurrentlyDragged;
-        const pulse = isPropSelected ? (Math.sin(Date.now() / 200) + 1) / 2 : 0;
+        const isPropSelected = (selectedEntityIds as string[]).includes(entity.id);
+        const isReallySelected = isPropSelected || isCurrentlyDragged;
+        const pulse = isReallySelected ? (Math.sin(Date.now() / 150) + 1) / 2 : 0;
 
-        if ((entity.id === selectedParallelLine?.id && blink) || (selectedEntityId === entity.id) || isPropSelected || (positioningGroupId && entity.groupId === positioningGroupId) || (positioningEntityId && entity.id === positioningEntityId) || selectedRaccordoLineIds.includes(entity.id)) {
+        if ((entity.id === selectedParallelLine?.id && blink) || (selectedEntityId === entity.id) || isReallySelected || (positioningGroupId && entity.groupId === positioningGroupId) || (positioningEntityId && entity.id === positioningEntityId) || selectedRaccordoLineIds.includes(entity.id)) {
           if (isFlashing) {
             // Let the flashing styles take precedence for initial attention blink
           } else if (entity.type === 'hatch') {
             ctx.strokeStyle = '#22c55e'; // Green highlight for selected hatch
             ctx.lineWidth = baseWidth + 3 / view.zoom;
           } else {
-            ctx.strokeStyle = isPropSelected ? `rgba(59, 130, 246, ${0.7 + 0.3 * pulse})` : '#fbbf24'; // Pulsing Blue if from prop, Amber if single select
-            ctx.lineWidth = baseWidth + (isPropSelected ? (3 + 2 * pulse) : 2) / view.zoom;
-            if (isPropSelected) {
-              ctx.shadowColor = 'rgba(59, 130, 246, 0.5)';
-              ctx.shadowBlur = 8 * pulse;
+            // Se fa parte della selezione multipla (prop) o trascinamento, usa il Verde pulsante come richiesto
+            ctx.strokeStyle = isReallySelected ? `rgba(34, 197, 94, ${0.8 + 0.2 * pulse})` : '#fbbf24'; // Pulsing Green if captured, Amber if single select
+            ctx.lineWidth = baseWidth + (isReallySelected ? (4 + 2 * pulse) : 2) / view.zoom;
+            if (isReallySelected) {
+              ctx.shadowColor = 'rgba(34, 197, 94, 0.6)';
+              ctx.shadowBlur = 12 * pulse;
             }
           }
         } else if (activeTool === 'Dimension' && selectionMode === 'object' && entity.id === hoveredDimensionEntityId) {
@@ -10712,7 +10721,7 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
             }
         }
     } else if ((activeTool === 'Move' || activeTool === 'Copy' || activeTool === 'Testo') && dragEntityIdRef.current) {
-    let targetIds = dragEntityIds.length > 0 ? [...dragEntityIds] : [dragEntityIdRef.current!];
+    let targetIds = dragEntityIdsRef.current.length > 0 ? [...dragEntityIdsRef.current] : [dragEntityIdRef.current!];
     
     // 1. Nominal movement from cursor
     let deltaX = rawPoint.x - previousMouseRef.current.x;
@@ -11858,7 +11867,11 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
   const pencilSvg = `data:image/svg+xml;utf8,` + encodeURIComponent(`<svg width="32" height="32" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg"><path d="M0,0 L3,1 L1,3 Z" fill="#1e293b"/><path d="M3,1 L7,3 L3,7 L1,3 Z" fill="#fed7aa"/><path d="M7,3 L21,17 L17,21 L3,7 Z" fill="#4f46e5"/><path d="M7,3 L21,17 L19,19 L5,5 Z" fill="#6366f1"/><path d="M21,17 L24,20 L20,24 L17,21 Z" fill="#94a3b8"/><path d="M24,20 L28,24 L24,28 L20,24 Z" fill="#fda4af"/></svg>`);
   const kinaSvg = `data:image/svg+xml;utf8,` + encodeURIComponent(`<svg width="32" height="32" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg"><path d="M0,0 L4,2 L2,4 Z" fill="#000000"/><path d="M4,2 L8,4 L4,8 L2,4 Z" fill="#94a3b8"/><path d="M8,4 L22,18 L18,22 L4,8 Z" fill="#334155"/><path d="M22,18 L26,22 L22,26 L18,22 Z" fill="#1e293b"/><rect x="22" y="22" width="6" height="6" fill="#1e293b" transform="rotate(45 25 25)"/></svg>`);
 
-  const crosshairSvg = `data:image/svg+xml;utf8,` + encodeURIComponent(`<svg width="96" height="96" viewBox="0 0 96 96" xmlns="http://www.w3.org/2000/svg"><circle cx="48" cy="48" r="4" fill="transparent" stroke="rgba(0,0,0,0.6)" stroke-width="1"/></svg>`);
+  const crosshairSvg = `data:image/svg+xml;utf8,` + encodeURIComponent(`<svg width="96" height="96" viewBox="0 0 96 96" xmlns="http://www.w3.org/2000/svg">
+    <line x1="0" y1="48" x2="96" y2="48" stroke="rgba(0,0,0,0.5)" stroke-width="1"/>
+    <line x1="48" y1="0" x2="48" y2="96" stroke="rgba(0,0,0,0.5)" stroke-width="1"/>
+    <rect x="44" y="44" width="8" height="8" fill="none" stroke="black" stroke-width="1"/>
+  </svg>`);
 
   const kinaLabel = defaultLineStyle.mode === 'ink' ? defaultLineStyle.lineWidth.toString() : '';
   const pencilLabel = defaultLineStyle.color === '#bbbbbb' ? '2H' : (defaultLineStyle.color === '#444444' ? 'HB' : '2B');
@@ -11911,7 +11924,7 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
     <div 
       ref={containerRef} 
       className="w-full h-full relative overflow-hidden" 
-      style={{ cursor: isSKeyPressedRef.current ? 'none' : hoveredTavolaPart ? 'pointer' : isMovingTecnigrafo ? 'grabbing' : hoverMoveTecnigrafo ? 'grab' : dragTavolaId ? 'grabbing' : hoverTavolaEdge ? 'grab' : activeTool === 'Testo' ? 'text' : activeTool === 'Eraser' ? 'none' : activeTool === 'Trim' ? `url("${scissorsSvg}") 16 16, crosshair` : defaultLineStyle.mode === 'CAD' ? 'crosshair' : defaultLineStyle.mode === 'ink' ? getKinaCursor(kinaLabel) : defaultLineStyle.mode === 'pencil' ? getPencilCursor(pencilLabel) : rulerStyle === 'crosshair' ? `url("${crosshairSvg}") 48 48, crosshair` : `url("${tecnigrafoSvg}") 20 108, crosshair` }}
+      style={{ cursor: isSKeyPressedRef.current ? 'none' : hoveredTavolaPart ? 'pointer' : isMovingTecnigrafo ? 'grabbing' : hoverMoveTecnigrafo ? 'grab' : dragTavolaId ? 'grabbing' : hoverTavolaEdge ? 'grab' : activeTool === 'Testo' ? 'text' : activeTool === 'Eraser' ? 'none' : activeTool === 'Select' ? `url("${crosshairSvg}") 48 48, crosshair` : activeTool === 'Trim' ? `url("${scissorsSvg}") 16 16, crosshair` : defaultLineStyle.mode === 'CAD' ? 'crosshair' : defaultLineStyle.mode === 'ink' ? getKinaCursor(kinaLabel) : defaultLineStyle.mode === 'pencil' ? getPencilCursor(pencilLabel) : rulerStyle === 'crosshair' ? `url("${crosshairSvg}") 48 48, crosshair` : `url("${tecnigrafoSvg}") 20 108, crosshair` }}
       onWheel={handleWheel} 
       onMouseDown={handleMouseDown} 
       onMouseMove={handleMouseMove} 
