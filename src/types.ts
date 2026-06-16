@@ -88,6 +88,10 @@ export interface DimensionEntity extends CADEntity {
   style: number;
   customText?: string;
   rotation?: number; // In degrees
+  scale?: number;     // specific scale if overridden
+  decimals?: number;  // custom decimal digits
+  extAhead?: number;  // custom extension line ahead length (beyond dimension line)
+  extBehind?: number; // custom extension line behind length (gap from snap points)
 }
 
 export interface TextEntity extends CADEntity {

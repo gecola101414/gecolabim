@@ -9,8 +9,7 @@ import { CADCanvas, getPaperSizeMm } from "./components/CADCanvas";
 import { CanvasPDFPreview } from "./components/CanvasPDFPreview";
 
 pdfjs.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.mjs`;
-import { DimensionStyleDialog } from "./components/DimensionStyleDialog";
-import { DimensionSettingsDialog } from "./components/DimensionSettingsDialog";
+
 import { RaccordoDialog } from "./components/RaccordoDialog";
 import { DXFTextReaderDialog } from "./components/DXFTextReaderDialog";
 import { TemplatePreview } from "./components/TemplatePreview";
@@ -206,7 +205,8 @@ export default function App() {
     };
   });
   const [eraserRadius, setEraserRadius] = useState(() => Number(localStorage.getItem('eraserRadius')) || 4);
-  const [eraserType, setEraserType] = useState<'pencil' | 'all'>(() => (localStorage.getItem('eraserType') as 'pencil' | 'all') || 'pencil');
+  const [eraserType, setEraserType] = useState<'pencil' | 'all' | 'lametta'>(() => (localStorage.getItem('eraserType') as 'pencil' | 'all' | 'lametta') || 'pencil');
+  const [eraserIntensity, setEraserIntensity] = useState(() => Number(localStorage.getItem('eraserIntensity')) || 55);
   const [favoritePanels, setFavoritePanels] = useState<Array<{ id: string; tools: string[]; x: number; y: number; isDocked: 'left' | 'right' | 'top' | null }>>(() => {
     const saved = localStorage.getItem('favoritePanels');
     if (saved) {
@@ -227,24 +227,27 @@ export default function App() {
   });
   const [activeDraggingId, setActiveDraggingId] = useState<string | null>(null);
   const favoritesDragRef = useRef<{ isDragging: boolean; panelId: string; startX: number; startY: number; posX: number; posY: number } | null>(null);
+  const [draggingToolName, setDraggingToolName] = useState<string | null>(null);
+  const [draggingSource, setDraggingSource] = useState<string | null>(null);
+  const [dragOverTool, setDragOverTool] = useState<{ panelId: string; toolName: string; position: 'before' | 'after' } | null>(null);
   const [measurements, setMeasurements] = useState<Measurement[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [isDimensionDialogOpen, setIsDimensionDialogOpen] = useState(false);
-  const [isRaccordoDialogOpen, setIsRaccordoDialogOpen] = useState(false);
+   const [isRaccordoDialogOpen, setIsRaccordoDialogOpen] = useState(false);
   const [isDXFTextReaderOpen, setIsDXFTextReaderOpen] = useState(false);
   const [selectedBIMSymbolType, setSelectedBIMSymbolType] = useState<string | null>(null);
   const [dimensionScale, setDimensionScale] = useState(() => parseFloat(localStorage.getItem('dimensionScale') || '1.0'));
+  const [dimensionDecimals, setDimensionDecimals] = useState<number>(() => parseInt(localStorage.getItem('dimensionDecimals') || '2'));
   const [dimensionMode, setDimensionMode] = useState<'two-points' | 'chain'>(() => (localStorage.getItem('dimensionMode') as 'two-points' | 'chain') || 'two-points');
-  const [dimensionStyle, setDimensionStyle] = useState<'linear' | 'aligned'>(() => (localStorage.getItem('dimensionStyle') as 'linear' | 'aligned') || 'linear');
+  const [dimensionStyle, setDimensionStyle] = useState<'linear' | 'aligned' | 'horizontal' | 'vertical' | 'auto-ortho'>(() => (localStorage.getItem('dimensionStyle') as any) || 'linear');
   const [selectionMode, setSelectionMode] = useState<'manual' | 'object'>(() => (localStorage.getItem('selectionMode') as 'manual' | 'object') || 'manual');
-  const [isDimensionScaleDialogOpen, setIsDimensionScaleDialogOpen] = useState(false);
 
   useEffect(() => {
     localStorage.setItem('dimensionScale', dimensionScale.toString());
+    localStorage.setItem('dimensionDecimals', dimensionDecimals.toString());
     localStorage.setItem('dimensionMode', dimensionMode);
     localStorage.setItem('dimensionStyle', dimensionStyle);
     localStorage.setItem('selectionMode', selectionMode);
-  }, [dimensionScale, dimensionMode, dimensionStyle, selectionMode]);
+  }, [dimensionScale, dimensionDecimals, dimensionMode, dimensionStyle, selectionMode]);
 
   // BIM dedicated dialog states
   const [isBIMPorteOpen, setIsBIMPorteOpen] = useState(false);
@@ -402,6 +405,10 @@ const MASONRY_TYPES = [
   }, [eraserType]);
 
   useEffect(() => {
+    localStorage.setItem('eraserIntensity', eraserIntensity.toString());
+  }, [eraserIntensity]);
+
+  useEffect(() => {
     localStorage.setItem('favoritePanels', JSON.stringify(favoritePanels));
   }, [favoritePanels]);
 
@@ -418,6 +425,14 @@ const MASONRY_TYPES = [
 
   useEffect(() => {
     const requiredLayers = [
+      { id: "0", name: "0", visible: true, frozen: false },
+      { id: "p1", name: "p1", visible: true, frozen: false },
+      { id: "p2", name: "p2", visible: true, frozen: false },
+      { id: "p4", name: "p4", visible: true, frozen: false },
+      { id: "Maschere", name: "Maschere", visible: true, frozen: false },
+      { id: "Misure", name: "Misure", visible: true, frozen: false },
+      { id: "Spessori", name: "Spessori", visible: true, frozen: false },
+      { id: "Hatch", name: "Hatch", visible: true, frozen: false },
       { id: "BIM_Muri", name: "BIM_Muri", visible: true, frozen: false },
       { id: "BIM_Porte", name: "BIM_Porte", visible: true, frozen: false },
       { id: "BIM_Finestre", name: "BIM_Finestre", visible: true, frozen: false },
@@ -804,12 +819,31 @@ const MASONRY_TYPES = [
   // Matita 2H -> Layer 0
   // HB, CAD -> p1, p2, p4
   useEffect(() => {
+    let targetLayer: string | null = null;
     if (defaultLineStyle.mode === 'pencil' && defaultLineStyle.color === '#bbbbbb') {
-      setActiveLayerId("0"); // Schizzo / Costruzione
-    } else if (defaultLineStyle.mode === 'ink') {
-      if (defaultLineStyle.lineWidth === 0.25) setActiveLayerId("p1");
-      else if (defaultLineStyle.lineWidth === 0.35) setActiveLayerId("p2");
-      else if (defaultLineStyle.lineWidth >= 0.5) setActiveLayerId("p4");
+      targetLayer = "0"; // Schizzo / Costruzione
+    } else if (defaultLineStyle.mode === 'ink' || defaultLineStyle.mode === 'CAD') {
+      if (defaultLineStyle.lineWidth === 0.25) targetLayer = "p1";
+      else if (defaultLineStyle.lineWidth === 0.35) targetLayer = "p2";
+      else if (defaultLineStyle.lineWidth >= 0.5) targetLayer = "p4";
+    }
+
+    if (targetLayer) {
+      setActiveLayerId(targetLayer);
+      
+      // Ensure the activated layer is visible and unfrozen so the user's strokes don't vanish!
+      setLayers(prev => {
+        const idx = prev.findIndex(l => l.id === targetLayer);
+        if (idx !== -1) {
+          const l = prev[idx];
+          if (!l.visible || l.frozen) {
+            const updated = [...prev];
+            updated[idx] = { ...l, visible: true, frozen: false };
+            return updated;
+          }
+        }
+        return prev;
+      });
     }
   }, [defaultLineStyle.mode, defaultLineStyle.lineWidth, defaultLineStyle.color]);
 
@@ -1099,9 +1133,15 @@ const MASONRY_TYPES = [
     }
 
     if (selectedTool === 'Eraser') {
-      const nextType = eraserType === 'pencil' ? 'all' : 'pencil';
+      const nextType = eraserType === 'pencil' ? 'all' : (eraserType === 'all' ? 'lametta' : 'pencil');
       setEraserType(nextType);
-      setShortcutToast(nextType === 'pencil' ? "Gomma: Matita (Bianca)" : "Gomma: China/Tutto (Gialla)");
+      setShortcutToast(
+        nextType === 'pencil' 
+          ? "Gomma: Matita (Bianca)" 
+          : nextType === 'all' 
+            ? "Gomma: China/Tutto (Gialla)" 
+            : "Gomma: Lametta Gillette"
+      );
       setTimeout(() => setShortcutToast(null), 2000);
       e.preventDefault();
       return;
@@ -1196,7 +1236,7 @@ const MASONRY_TYPES = [
     } else {
       setSelectedTool(tool);
       // Ensure the correct sidebar tab opens for specific tools as requested
-      if (tool === 'Hatch' || tool === 'Line' || tool === 'Circle' || tool === 'Muro') {
+      if (tool === 'Hatch' || tool === 'Line' || tool === 'Circle' || tool === 'Muro' || tool === 'Eraser') {
         setActiveSidebarTab('penne');
         setShowProperties(true);
       } else if (tool === 'Testo') {
@@ -1836,6 +1876,13 @@ const MASONRY_TYPES = [
               onDragStart={(e) => {
                 e.dataTransfer.setData("text/plain", tool.name);
                 e.dataTransfer.setData("source", "toolbar");
+                setDraggingToolName(tool.name);
+                setDraggingSource("toolbar");
+              }}
+              onDragEnd={() => {
+                setDraggingToolName(null);
+                setDraggingSource(null);
+                setDragOverTool(null);
               }}
               onMouseEnter={() => handleGuideHover(tool.name)}
               onClick={() => handleToolClick(tool.name)}
@@ -2141,11 +2188,19 @@ const MASONRY_TYPES = [
             eraserRadius={eraserRadius}
             setEraserRadius={setEraserRadius}
             dimensionScale={dimensionScale}
+            dimensionDecimals={dimensionDecimals}
             dimensionMode={dimensionMode}
             dimensionStyle={dimensionStyle}
             selectionMode={selectionMode}
+            onDoubleClickDimension={(dim) => {
+              setSelectedId(dim.id);
+              setShowProperties(true);
+              setActiveSidebarTab('penne');
+            }}
             eraserType={eraserType}
             setEraserType={setEraserType}
+            eraserIntensity={eraserIntensity}
+            setEraserIntensity={setEraserIntensity}
             rulerStyle={rulerStyle}
             orthoMode={orthoMode}
             setOrthoMode={setOrthoMode}
@@ -2507,29 +2562,44 @@ const MASONRY_TYPES = [
                 onDrop={(e) => {
                   e.preventDefault();
                   e.stopPropagation();
-                  const toolName = e.dataTransfer.getData("text/plain");
-                  const source = e.dataTransfer.getData("source");
+                  const toolName = e.dataTransfer.getData("text/plain") || draggingToolName;
+                  const source = e.dataTransfer.getData("source") || draggingSource;
 
                   if (toolName) {
-                    if (source === `favorites-${panel.id}`) return;
+                    setDragOverTool(null);
+                    setDraggingToolName(null);
+                    setDraggingSource(null);
 
-                    if (source && source.startsWith("favorites-")) {
-                      const sourcePanelId = source.replace("favorites-", "");
-                      setFavoritePanels(prev => prev.map(p => {
-                        if (p.id === sourcePanelId) {
-                          return { ...p, tools: p.tools.filter(t => t !== toolName) };
+                    setFavoritePanels(prev => {
+                      // 1. Remove the dragging tool from its source panel
+                      let updatedPanels = [...prev];
+                      if (source && source.startsWith("favorites-")) {
+                        const sourcePanelId = source.replace("favorites-", "");
+                        updatedPanels = updatedPanels.map(p => {
+                          if (p.id === sourcePanelId) {
+                            return { ...p, tools: p.tools.filter(t => t !== toolName) };
+                          }
+                          return p;
+                        }).filter(p => p.tools.length > 0);
+                      } else {
+                        // If from toolbar, remove first from this panel to prevent duplicates
+                        updatedPanels = updatedPanels.map(p => {
+                          if (p.id === panel.id) {
+                            return { ...p, tools: p.tools.filter(t => t !== toolName) };
+                          }
+                          return p;
+                        });
+                      }
+
+                      // 2. Append to the end of the panel
+                      return updatedPanels.map(p => {
+                        if (p.id === panel.id) {
+                          if (p.tools.includes(toolName)) return p;
+                          return { ...p, tools: [...p.tools, toolName] };
                         }
                         return p;
-                      }).filter(p => p.tools.length > 0));
-                    }
-
-                    setFavoritePanels(prev => prev.map(p => {
-                      if (p.id === panel.id) {
-                        if (p.tools.includes(toolName)) return p;
-                        return { ...p, tools: [...p.tools, toolName] };
-                      }
-                      return p;
-                    }));
+                      });
+                    });
                   }
                 }}
               >
@@ -2586,6 +2656,8 @@ const MASONRY_TYPES = [
                         (toolName === "Tecnigrafo" && isTecnigrafoActive) ||
                         (toolName === "Polilinea" && isContinuousMode);
 
+                      const isThisOver = dragOverTool && dragOverTool.panelId === panel.id && dragOverTool.toolName === toolName;
+
                       return (
                         <div
                           key={toolName}
@@ -2593,9 +2665,102 @@ const MASONRY_TYPES = [
                           onDragStart={(e) => {
                             e.dataTransfer.setData("text/plain", toolName);
                             e.dataTransfer.setData("source", `favorites-${panel.id}`);
+                            setDraggingToolName(toolName);
+                            setDraggingSource(`favorites-${panel.id}`);
+                          }}
+                          onDragEnd={() => {
+                            setDraggingToolName(null);
+                            setDraggingSource(null);
+                            setDragOverTool(null);
+                          }}
+                          onDragOver={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            const rect = e.currentTarget.getBoundingClientRect();
+                            let position: 'before' | 'after' = 'before';
+                            if (isDocked === 'top') {
+                              const mouseX = e.clientX - rect.left;
+                              if (mouseX > rect.width / 2) {
+                                position = 'after';
+                              }
+                            } else {
+                              const mouseY = e.clientY - rect.top;
+                              if (mouseY > rect.height / 2) {
+                                position = 'after';
+                              }
+                            }
+                            setDragOverTool({
+                              panelId: panel.id,
+                              toolName: toolName,
+                              position: position
+                            });
+                          }}
+                          onDragLeave={() => {
+                            setDragOverTool(null);
+                          }}
+                          onDrop={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            const dragName = e.dataTransfer.getData("text/plain") || draggingToolName;
+                            const dragSource = e.dataTransfer.getData("source") || draggingSource;
+
+                            if (dragName) {
+                              setDragOverTool(null);
+                              setDraggingToolName(null);
+                              setDraggingSource(null);
+
+                              setFavoritePanels(prev => {
+                                // 1. Remove the dragging tool from its source panel
+                                let updatedPanels = [...prev];
+                                if (dragSource && dragSource.startsWith("favorites-")) {
+                                  const sourcePanelId = dragSource.replace("favorites-", "");
+                                  updatedPanels = updatedPanels.map(p => {
+                                    if (p.id === sourcePanelId) {
+                                      return { ...p, tools: p.tools.filter(t => t !== dragName) };
+                                    }
+                                    return p;
+                                  }).filter(p => p.tools.length > 0);
+                                } else {
+                                  // If from toolbar, remove first to prevent duplicates/reorder
+                                  updatedPanels = updatedPanels.map(p => {
+                                    if (p.id === panel.id) {
+                                      return { ...p, tools: p.tools.filter(t => t !== dragName) };
+                                    }
+                                    return p;
+                                  });
+                                }
+
+                                // 2. Insert into the target panel at the correct position
+                                return updatedPanels.map(p => {
+                                  if (p.id === panel.id) {
+                                    const targetIndex = p.tools.indexOf(toolName);
+                                    if (targetIndex === -1) {
+                                      return { ...p, tools: [...p.tools, dragName] };
+                                    }
+                                    
+                                    const isAfter = dragOverTool && dragOverTool.panelId === panel.id && dragOverTool.toolName === toolName && dragOverTool.position === 'after';
+                                    const insertIndex = isAfter ? targetIndex + 1 : targetIndex;
+                                    
+                                    const nextTools = [...p.tools];
+                                    nextTools.splice(insertIndex, 0, dragName);
+                                    return { ...p, tools: nextTools };
+                                  }
+                                  return p;
+                                });
+                              });
+                            }
                           }}
                           className="group relative"
                         >
+                          {isThisOver && (
+                            <div 
+                              className={`absolute z-10 bg-indigo-500 shadow-[0_0_8px_rgba(78,70,229,0.8)] animate-pulse pointer-events-none rounded-full ${
+                                isDocked === 'top'
+                                  ? `top-0 bottom-0 w-1 ${dragOverTool.position === 'before' ? 'left-0' : 'right-0'}`
+                                  : `left-0 right-0 h-1 ${dragOverTool.position === 'before' ? 'top-0' : 'bottom-0'}`
+                              }`}
+                            />
+                          )}
                           <button
                             onClick={() => handleToolClick(toolName)}
                             className={`p-1 rounded-lg transition-all flex flex-col items-center justify-center gap-0.5 w-[58px] h-[58px] cursor-grab active:cursor-grabbing hover:scale-105 ${
@@ -2752,9 +2917,11 @@ const MASONRY_TYPES = [
                           <Settings2 className="w-3.5 h-3.5 text-emerald-400" />
                           Scala Dimensioni
                         </label>
-                        <span className="font-mono text-emerald-400 text-xs font-black bg-slate-900/80 border border-slate-800 px-2 py-0.5 rounded">
-                          {dimensionScale.toFixed(2)}x
-                        </span>
+                        <div className="flex items-center gap-1.5">
+                          <span className="font-mono text-emerald-400 text-xs font-black bg-slate-900/80 border border-slate-800 px-2 py-0.5 rounded">
+                            {dimensionScale.toFixed(2)}x
+                          </span>
+                        </div>
                       </div>
                       <input
                         type="range"
@@ -2787,17 +2954,38 @@ const MASONRY_TYPES = [
                       {/* DIMENSION STYLE */}
                       <div className="space-y-1.5">
                         <label className="text-[10px] font-black uppercase text-slate-400 tracking-widest block">
-                          Tipo
+                          Tipo Stile
                         </label>
                         <select
                           value={dimensionStyle}
-                          onChange={(e) => setDimensionStyle(e.target.value as 'linear' | 'aligned')}
+                          onChange={(e) => setDimensionStyle(e.target.value as any)}
                           className="w-full bg-slate-900 border border-slate-800 rounded-lg p-2.5 text-xs font-bold text-slate-200 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none"
                         >
-                          <option value="linear" className="bg-slate-950 text-slate-200">Lineare</option>
+                          <option value="linear" className="bg-slate-950 text-slate-200">Lineare (Auto)</option>
                           <option value="aligned" className="bg-slate-950 text-slate-200">Allineata</option>
+                          <option value="horizontal" className="bg-slate-950 text-slate-200">Orto Orizzontale</option>
+                          <option value="vertical" className="bg-slate-950 text-slate-200">Orto Verticale</option>
+                          <option value="auto-ortho" className="bg-slate-950 text-slate-200">Auto Orto</option>
                         </select>
                       </div>
+                    </div>
+
+                    {/* DECIMAL PRECISION FIELD */}
+                    <div className="space-y-1.5">
+                      <label className="text-[10px] font-black uppercase text-slate-400 tracking-widest block">
+                        Approssimazione Decimale Globale
+                      </label>
+                      <select
+                        value={dimensionDecimals}
+                        onChange={(e) => setDimensionDecimals(parseInt(e.target.value))}
+                        className="w-full bg-slate-900 border border-slate-800 rounded-lg p-2.5 text-xs font-bold text-slate-200 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none"
+                      >
+                        <option value="0" className="bg-slate-950 text-slate-200">Nessun Decimale (es: 100)</option>
+                        <option value="1" className="bg-slate-950 text-slate-200">1 Decimale (es: 100,5)</option>
+                        <option value="2" className="bg-slate-950 text-slate-200">2 Decimali (es: 100,54)</option>
+                        <option value="3" className="bg-slate-950 text-slate-200">3 Decimali (es: 100,538)</option>
+                        <option value="4" className="bg-slate-950 text-slate-200">4 Decimali (es: 100,5378)</option>
+                      </select>
                     </div>
                   </div>
 
@@ -3808,27 +3996,95 @@ const MASONRY_TYPES = [
                         </div>
                       </label>
                       {selectedEntity.type === "dimension" && (
-                        <>
-                          <label className="block text-sm">
-                            Text:{" "}
+                        <div className="space-y-4 pt-2 border-t border-neutral-100 font-sans">
+                          {/* Testo Personalizzato */}
+                          <div className="space-y-1">
+                            <label className="text-[10px] font-black uppercase text-neutral-500 tracking-widest block">
+                              Testo Personalizzato
+                            </label>
                             <input
                               type="text"
                               value={(selectedEntity as any).customText || ""}
+                              placeholder="Default (Misurato)"
                               onChange={(e) =>
                                 updateEntity(selectedEntity.id, {
                                   customText: e.target.value,
                                 })
                               }
-                              className="w-full bg-neutral-100 p-2 mt-1 rounded text-xs"
+                              className="w-full bg-neutral-100 border border-neutral-200 text-xs rounded p-2 focus:ring-1 focus:ring-indigo-500 focus:outline-none font-semibold text-neutral-800"
                             />
-                          </label>
-                          <button
-                            className="w-full bg-indigo-600 text-white p-2 text-xs font-bold rounded"
-                            onClick={() => setIsDimensionDialogOpen(true)}
-                          >
-                            Edit Style
-                          </button>
-                        </>
+                          </div>
+
+                          {/* Scala Locale */}
+                          <div className="space-y-2">
+                            <div className="flex justify-between items-center">
+                              <label className="text-[10px] font-black uppercase text-neutral-500 tracking-widest">
+                                Scala Quota Locale
+                              </label>
+                              <span className="font-mono text-indigo-600 font-bold text-xs bg-indigo-50 px-1.5 py-0.5 rounded">
+                                {((selectedEntity as any).scale ?? 1.0).toFixed(2)}x
+                              </span>
+                            </div>
+                            <input
+                              type="range"
+                              min="0.1"
+                              max="5.0"
+                              step="0.1"
+                              value={(selectedEntity as any).scale ?? 1.0}
+                              onChange={(e) =>
+                                updateEntity(selectedEntity.id, {
+                                  scale: parseFloat(e.target.value),
+                                })
+                              }
+                              className="w-full h-1 accent-indigo-600 bg-neutral-200 rounded-lg appearance-none cursor-pointer"
+                            />
+                          </div>
+
+                          {/* Decimali Locale */}
+                          <div className="space-y-1">
+                            <label className="text-[10px] font-black uppercase text-neutral-500 tracking-widest block">
+                              Precisione Decimali
+                            </label>
+                            <select
+                              value={(selectedEntity as any).decimals ?? ""}
+                              onChange={(e) =>
+                                updateEntity(selectedEntity.id, {
+                                  decimals: e.target.value === "" ? undefined : parseInt(e.target.value),
+                                })
+                              }
+                              className="w-full bg-white border border-neutral-200 text-xs rounded p-2 focus:ring-1 focus:ring-indigo-500 focus:outline-none font-bold text-neutral-700"
+                            >
+                              <option value="">Eredita Globale</option>
+                              <option value="0">0 (Nessun Decimale)</option>
+                              <option value="1">1 Decimale</option>
+                              <option value="2">2 Decimali</option>
+                              <option value="3">3 Decimali</option>
+                              <option value="4">4 Decimali</option>
+                            </select>
+                          </div>
+
+                          {/* Tipo Orientamento Quota */}
+                          <div className="space-y-1">
+                            <label className="text-[10px] font-black uppercase text-neutral-500 tracking-widest block">
+                              Orientamento Quota
+                            </label>
+                            <select
+                              value={(selectedEntity as any).style ?? 1}
+                              onChange={(e) =>
+                                updateEntity(selectedEntity.id, {
+                                  style: parseInt(e.target.value),
+                                })
+                              }
+                              className="w-full bg-white border border-neutral-200 text-xs rounded p-2 focus:ring-1 focus:ring-indigo-500 focus:outline-none font-bold text-neutral-700"
+                            >
+                              <option value={1}>Lineare (Auto)</option>
+                              <option value={2}>Allineata</option>
+                              <option value={3}>Verticale Constrained</option>
+                              <option value={4}>Orizzontale Constrained</option>
+                              <option value={5}>Auto Orto</option>
+                            </select>
+                          </div>
+                        </div>
                       )}
                     </>
                   )) : (
@@ -3946,47 +4202,91 @@ const MASONRY_TYPES = [
                         {/* Switch Eraser Type Options in UI */}
                         <div className="space-y-4 pt-2 border-t border-neutral-100">
                           <p className="text-[10px] font-black text-neutral-400 uppercase tracking-widest">Tipo di Gomma Attiva</p>
-                          <div className="grid grid-cols-2 gap-2">
+                          <div className="space-y-2">
                             <button
                               onClick={() => setEraserType('pencil')}
-                              className={`p-3 rounded-xl border text-left cursor-pointer transition-all flex flex-col gap-1.5 ${eraserType === 'pencil' ? 'bg-neutral-100 border-neutral-400 ring-4 ring-neutral-200' : 'bg-white border-neutral-200 hover:bg-neutral-50 shadow-xs'}`}
+                              className={`w-full p-2.5 rounded-xl border text-left cursor-pointer transition-all flex flex-col gap-1 ${eraserType === 'pencil' ? 'bg-neutral-100 border-neutral-400 ring-2 ring-neutral-200' : 'bg-white border-neutral-200 hover:bg-neutral-50 shadow-xs'}`}
                             >
-                              <div className="flex items-center gap-1.5">
-                                <span className="w-3.5 h-3.5 rounded bg-neutral-200 border border-neutral-400 shadow-xs inline-block"></span>
-                                <span className={`text-[10px] font-black uppercase tracking-wider ${eraserType === 'pencil' ? 'text-neutral-800' : 'text-neutral-500'}`}>Matita</span>
+                              <div className="flex items-center gap-2">
+                                <span className="w-3 h-3 rounded bg-neutral-200 border border-neutral-400 shadow-xs inline-block"></span>
+                                <span className={`text-[10px] font-black uppercase tracking-wider ${eraserType === 'pencil' ? 'text-neutral-800' : 'text-neutral-500'}`}>Matita (Bianca-Grigia)</span>
                               </div>
-                              <span className="text-[9px] text-neutral-400 leading-snug">La classica bianca-grigia. Cancella solo linee a matita dura/media/morbida. Non tocca la china.</span>
+                              <span className="text-[9px] text-neutral-400 leading-normal">Cancella solo linee a matita dura/media/morbida. Non tocca la china.</span>
                             </button>
 
                             <button
                               onClick={() => setEraserType('all')}
-                              className={`p-3 rounded-xl border text-left cursor-pointer transition-all flex flex-col gap-1.5 ${eraserType === 'all' ? 'bg-amber-50 border-amber-400 ring-4 ring-amber-100' : 'bg-white border-neutral-200 hover:bg-neutral-50 shadow-xs'}`}
+                              className={`w-full p-2.5 rounded-xl border text-left cursor-pointer transition-all flex flex-col gap-1 ${eraserType === 'all' ? 'bg-amber-50 border-amber-400 ring-2 ring-amber-100' : 'bg-white border-neutral-200 hover:bg-neutral-50 shadow-xs'}`}
                             >
-                              <div className="flex items-center gap-1.5">
-                                <span className="w-3.5 h-3.5 rounded bg-amber-400 border border-amber-600 shadow-xs inline-block"></span>
-                                <span className={`text-[10px] font-black uppercase tracking-wider ${eraserType === 'all' ? 'text-amber-800' : 'text-neutral-500'}`}>China/Tutto</span>
+                              <div className="flex items-center gap-2">
+                                <span className="w-3 h-3 rounded bg-amber-400 border border-amber-600 shadow-xs inline-block"></span>
+                                <span className={`text-[10px] font-black uppercase tracking-wider ${eraserType === 'all' ? 'text-amber-800' : 'text-neutral-500'}`}>China/Tutto (Gialla)</span>
                               </div>
-                              <span className="text-[9px] text-neutral-400 leading-snug">La classica gomma gialla. Rimuove china, matita, testi, retini e tutto il resto.</span>
+                              <span className="text-[9px] text-neutral-400 leading-normal">Cancella china, matita, testi, retini, quote e tutto il resto.</span>
+                            </button>
+
+                            <button
+                              onClick={() => setEraserType('lametta')}
+                              className={`w-full p-2.5 rounded-xl border text-left cursor-pointer transition-all flex flex-col gap-1 ${eraserType === 'lametta' ? 'bg-slate-100 border-slate-400 ring-2 ring-slate-200' : 'bg-white border-neutral-200 hover:bg-neutral-50 shadow-xs'}`}
+                            >
+                              <div className="flex items-center gap-2">
+                                <span className="w-4 h-2.5 bg-slate-300 border border-slate-500 rounded-xs inline-block relative"></span>
+                                <span className={`text-[10px] font-black uppercase tracking-wider ${eraserType === 'lametta' ? 'text-slate-800' : 'text-neutral-500'}`}>Lametta Gillette (China e altro)</span>
+                              </div>
+                              <span className="text-[9px] text-neutral-400 leading-normal">La mitica lametta. Cancella all'istante solo sotto la punta sottile dello spigolo.</span>
                             </button>
                           </div>
 
-                          {/* Eraser radius slider */}
-                          <div className="space-y-2 pt-2 border-t border-neutral-100">
-                            <div className="flex justify-between items-center">
-                              <label className="text-[10px] font-black uppercase text-neutral-400 tracking-widest block font-sans">Spessore Punta Gomma</label>
-                              <span className="text-[10px] font-mono font-bold text-neutral-600">{eraserRadius} mm (px)</span>
+                          {/* Eraser controls based on chosen type */}
+                          {eraserType === 'lametta' ? (
+                            <div className="bg-slate-50 border border-slate-200 p-3 rounded-xl space-y-1">
+                              <p className="text-[10px] font-black text-slate-700 uppercase tracking-wider flex items-center gap-1">
+                                <span className="inline-block w-2 h-2 rounded-full bg-slate-400 animate-pulse"></span>
+                                Caratteristiche Lametta
+                              </p>
+                              <p className="text-[9px] text-slate-500 leading-relaxed">
+                                La lametta Gillette rimuove istantaneamente ogni genere di tratto sul punto esatto dello spigolo inclinato. <strong>Spessore (2.5px) e intensità di raschiatura sono costanti e preimpostati</strong> per un lavoro di sbarbatura d'epoca perfetto.
+                              </p>
                             </div>
-                            <input
-                              type="range"
-                              min="5"
-                              max="100"
-                              step="5"
-                              value={eraserRadius}
-                              onChange={(e) => setEraserRadius(Number(e.target.value))}
-                              className="w-full h-1 bg-neutral-200 rounded-lg appearance-none cursor-pointer accent-indigo-600 font-bold"
-                            />
-                            <p className="text-[9px] text-neutral-400 leading-tight">Ottimizza la dimensione per cancellature precise.</p>
-                          </div>
+                          ) : (
+                            <div className="space-y-4 pt-2 border-t border-neutral-100">
+                              {/* Eraser radius slider */}
+                              <div className="space-y-1.5">
+                                <div className="flex justify-between items-center">
+                                  <label className="text-[10px] font-black uppercase text-neutral-400 tracking-widest block font-sans">Spessore Punta Gomma</label>
+                                  <span className="text-[10px] font-mono font-bold text-neutral-600">{eraserRadius} mm (px)</span>
+                                </div>
+                                <input
+                                  type="range"
+                                  min="5"
+                                  max="100"
+                                  step="5"
+                                  value={eraserRadius}
+                                  onChange={(e) => setEraserRadius(Number(e.target.value))}
+                                  className="w-full h-1 bg-neutral-200 rounded-lg appearance-none cursor-pointer accent-indigo-600 font-bold"
+                                />
+                                <p className="text-[9px] text-neutral-400 leading-tight">Larghezza dell'area di azione della gomma.</p>
+                              </div>
+
+                              {/* Eraser intensity slider */}
+                              <div className="space-y-1.5 pt-2 border-t border-neutral-100/50">
+                                <div className="flex justify-between items-center">
+                                  <label className="text-[10px] font-black uppercase text-neutral-400 tracking-widest block font-sans">Intensità Cancellazione (%)</label>
+                                  <span className="text-[10px] font-mono font-bold text-neutral-600">{eraserIntensity}%</span>
+                                </div>
+                                <input
+                                  type="range"
+                                  min="10"
+                                  max="100"
+                                  step="5"
+                                  value={eraserIntensity}
+                                  onChange={(e) => setEraserIntensity(Number(e.target.value))}
+                                  className="w-full h-1 bg-neutral-200 rounded-lg appearance-none cursor-pointer accent-indigo-600 font-bold"
+                                />
+                                <p className="text-[9px] text-neutral-400 leading-tight">Opacità rimossa a ogni passaggio (sfumatura o cancellazione drastica).</p>
+                              </div>
+                            </div>
+                          )}
                         </div>
                       </div>
                     ) : (
@@ -4698,6 +4998,8 @@ const MASONRY_TYPES = [
           }
         }}
       />
+
+
 
       {/* DXF text reader dialog */}
       <DXFTextReaderDialog
