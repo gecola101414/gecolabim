@@ -32,11 +32,19 @@ import {
   Sun,
   Phone,
   Video,
-  Trash2
+  Trash2,
+  Plus,
+  Search,
+  ChevronDown,
+  Eye,
+  EyeOff,
+  Lock,
+  Unlock
 } from "lucide-react";
 import { Point, Entity } from '../types';
 import { TEMPLATES, Template } from '../data/templates';
 import { TemplatePreview } from './TemplatePreview';
+import { BIM_FAMILIES, BIMFamily } from '../data/bimFamilies';
 
 // --- DRAGGABLE WRAPPER HELPERS ---
 function useDraggableDialog(isOpen: boolean, defaultPos: { x: number; y: number }) {
@@ -1041,11 +1049,12 @@ export const FinitureDialog: React.FC<FinitureDialogProps> = ({
 };
 
 // 9. --- AREA FUNZIONALE DIALOG ---
-interface AreaFunzionaleDialogProps {
+interface BIMElementDialogProps {
   isOpen: boolean;
   onClose: () => void;
-  onConfirm: (areaData: { 
-    type: 'stanza' | 'muro' | 'tramezzo' | 'giardino' | 'tetto' | 'altro'; 
+  onConfirm: (data: { 
+    familyId: string;
+    subFamily: string;
     name: string; 
     color: string; 
     zPlane: number;
@@ -1055,7 +1064,8 @@ interface AreaFunzionaleDialogProps {
   }) => void;
   points?: Point[] | { points: Point[], holes?: Point[][] };
   initialData?: {
-    type: 'stanza' | 'muro' | 'tramezzo' | 'giardino' | 'tetto' | 'altro';
+    familyId: string;
+    subFamily: string;
     name: string;
     color: string;
     zPlane: number;
@@ -1066,32 +1076,7 @@ interface AreaFunzionaleDialogProps {
   onDelete?: () => void;
 }
 
-const AREA_COLORS = [
-  'rgba(52, 211, 153, 0.4)', // Stanza (Emerald)
-  'rgba(244, 63, 94, 0.4)',  // Muro (Rose)
-  'rgba(59, 130, 246, 0.4)', // Tramezzo (Blue)
-  'rgba(132, 204, 22, 0.4)', // Giardino (Lime)
-  'rgba(168, 85, 247, 0.4)', // Tetto (Purple)
-  'rgba(249, 115, 22, 0.4)', // Altro (Orange)
-];
-
-const HATCH_PATTERNS: Array<{ id: 'SOLID' | 'ANSI31' | 'CROSS' | 'NONE', label: string }> = [
-  { id: 'SOLID', label: 'Colore Pieno' },
-  { id: 'ANSI31', label: 'Tratteggio (ANSI31)' },
-  { id: 'CROSS', label: 'Reticolo (Cross)' },
-  { id: 'NONE', label: 'Solo Contorno' },
-];
-
-const AREA_LABELS: Record<'stanza' | 'muro' | 'tramezzo' | 'giardino' | 'tetto' | 'altro', string> = {
-  stanza: 'Stanza / Locale',
-  muro: 'Muro Portante',
-  tramezzo: 'Tramezzo Interno',
-  giardino: 'Giardino / Esterno',
-  tetto: 'Tetto / Copertura',
-  altro: 'Altro / Funzione Specifica'
-};
-
-export const AreaFunzionaleDialog: React.FC<AreaFunzionaleDialogProps> = ({
+export const BIMElementDialog: React.FC<BIMElementDialogProps> = ({
   isOpen,
   onClose,
   onConfirm,
@@ -1100,18 +1085,27 @@ export const AreaFunzionaleDialog: React.FC<AreaFunzionaleDialogProps> = ({
   onDelete
 }) => {
   const { position, handlePointerDown, handlePointerMove, handlePointerUp } = useDraggableDialog(isOpen, { x: 300, y: 130 });
-  const [areaType, setAreaType] = useState<'stanza' | 'muro' | 'tramezzo' | 'giardino' | 'tetto' | 'altro'>('stanza');
+  
+  // Persistent family choice
+  const [familyId, setFamilyId] = useState<string>(() => localStorage.getItem('last_bim_family') || BIM_FAMILIES[0].id);
+  const [subFamily, setSubFamily] = useState('');
   const [name, setName] = useState('');
-  const [color, setColor] = useState(AREA_COLORS[0]);
+  const [color, setColor] = useState(() => BIM_FAMILIES.find(f => f.id === (localStorage.getItem('last_bim_family') || BIM_FAMILIES[0].id))?.defaultColor || '#34d399');
   const [zPlane, setZPlane] = useState(0);
   const [zElevation, setZElevation] = useState(0);
   const [objectHeight, setObjectHeight] = useState(2.70);
   const [hatch, setHatch] = useState<'SOLID' | 'ANSI31' | 'CROSS' | 'NONE'>('SOLID');
+  
+  const [customFamilyMode, setCustomFamilyMode] = useState(false);
+  const [customFamilyName, setCustomFamilyName] = useState('');
+
+  const currentFamily = useMemo(() => BIM_FAMILIES.find(f => f.id === familyId), [familyId]);
 
   useEffect(() => {
     if (isOpen) {
       if (initialData) {
-        setAreaType(initialData.type);
+        setFamilyId(initialData.familyId);
+        setSubFamily(initialData.subFamily);
         setName(initialData.name);
         setColor(initialData.color);
         setZPlane(initialData.zPlane);
@@ -1119,10 +1113,13 @@ export const AreaFunzionaleDialog: React.FC<AreaFunzionaleDialogProps> = ({
         setObjectHeight(initialData.objectHeight);
         setHatch(initialData.hatch);
       } else {
-        // Reset to defaults for new area
-        setAreaType('stanza');
-        setName(AREA_LABELS['stanza']);
-        setColor(AREA_COLORS[0]);
+        const lastFam = localStorage.getItem('last_bim_family') || BIM_FAMILIES[0].id;
+        const famObj = BIM_FAMILIES.find(f => f.id === lastFam);
+        
+        setFamilyId(lastFam);
+        setSubFamily('');
+        setName(famObj?.name || '');
+        setColor(famObj?.defaultColor || '#34d399');
         setZPlane(parseFloat(localStorage.getItem('last_bim_zPlane') || '0'));
         setZElevation(parseFloat(localStorage.getItem('last_bim_zElevation') || '0'));
         setObjectHeight(parseFloat(localStorage.getItem('last_bim_height') || '270'));
@@ -1131,19 +1128,15 @@ export const AreaFunzionaleDialog: React.FC<AreaFunzionaleDialogProps> = ({
     }
   }, [isOpen, initialData]);
 
-  // Effect only for type changes (when NOT in edit mode or when user manually changes type)
-  useEffect(() => {
-    if (isOpen && !initialData) {
-      setName(AREA_LABELS[areaType] || '');
-      const types: Array<'stanza' | 'muro' | 'tramezzo' | 'giardino' | 'tetto' | 'altro'> = ['stanza', 'muro', 'tramezzo', 'giardino', 'tetto', 'altro'];
-      const idx = types.indexOf(areaType);
-      setColor(AREA_COLORS[idx % AREA_COLORS.length]);
-      
-      if (areaType === 'muro') setHatch('ANSI31');
-      else if (areaType === 'tetto') setHatch('CROSS');
-      else setHatch('SOLID');
+  const handleFamilyChange = (id: string) => {
+    setFamilyId(id);
+    localStorage.setItem('last_bim_family', id);
+    const fam = BIM_FAMILIES.find(f => f.id === id);
+    if (fam && !initialData) {
+      setName(fam.name);
+      setColor(fam.defaultColor);
     }
-  }, [isOpen, areaType, initialData]);
+  };
 
   if (!isOpen) return null;
 
@@ -1152,12 +1145,22 @@ export const AreaFunzionaleDialog: React.FC<AreaFunzionaleDialogProps> = ({
     localStorage.setItem('last_bim_zPlane', zPlane.toString());
     localStorage.setItem('last_bim_zElevation', zElevation.toString());
     localStorage.setItem('last_bim_height', objectHeight.toString());
-    onConfirm({ type: areaType, name, color, zPlane, zElevation, objectHeight: parseFloat(objectHeight.toString()), hatch });
+    
+    onConfirm({ 
+      familyId: customFamilyMode ? 'custom' : familyId,
+      subFamily: customFamilyMode ? customFamilyName : subFamily,
+      name: name || (customFamilyMode ? customFamilyName : (currentFamily?.name || '')), 
+      color, 
+      zPlane, 
+      zElevation, 
+      objectHeight: parseFloat(objectHeight.toString()), 
+      hatch 
+    });
   };
 
   return (
     <div 
-      className="fixed z-[200] bg-slate-950 border-2 border-cyan-500/50 p-5 rounded-2xl shadow-[0_20px_50px_rgba(0,0,0,0.6)] max-w-sm w-full text-white backdrop-blur-2xl max-h-[85vh] flex flex-col"
+      className="fixed z-[200] bg-slate-950 border-2 border-indigo-500/50 p-5 rounded-2xl shadow-[0_20px_50px_rgba(0,0,0,0.6)] max-w-sm w-full text-white backdrop-blur-2xl max-h-[85vh] flex flex-col"
       style={{ left: `${position.x}px`, top: `${position.y}px` }}
       onClick={(e) => e.stopPropagation()}
     >
@@ -1167,137 +1170,163 @@ export const AreaFunzionaleDialog: React.FC<AreaFunzionaleDialogProps> = ({
         onPointerMove={handlePointerMove}
         onPointerUp={handlePointerUp}
       >
-        <div className="flex flex-col text-left">
-          <h3 className="text-[12px] font-black uppercase text-cyan-400 tracking-widest font-mono flex items-center gap-2">
-            <Layers size={14} className="animate-pulse" />
-            <span>{initialData ? 'MODIFICA AREA BIM' : 'RILEVAMENTO AREA BIM'}</span>
+        <div className="flex flex-col text-left text-ellipsis overflow-hidden">
+          <h3 className="text-[12px] font-black uppercase text-indigo-400 tracking-widest font-mono flex items-center gap-2">
+            <Building size={14} className="animate-pulse" />
+            <span>{initialData ? 'MODIFICA ELEMENTO BIM' : 'RILEVAMENTO ELEMENTO BIM'}</span>
           </h3>
-          <span className="text-[9px] text-slate-500 font-bold font-mono">{initialData ? 'Aggiorna parametri area selezionata' : 'Input parametri aree funzionali'}</span>
+          <span className="text-[9px] text-slate-500 font-bold font-mono uppercase tracking-tighter">Standard Internazionale BIM</span>
         </div>
         <button type="button" onClick={onClose} className="bg-white/5 border border-white/10 text-slate-400 hover:text-white rounded-lg p-1.5 transition-colors">
           <X size={16} />
         </button>
       </div>
 
-      <form onSubmit={handleSubmit} className="space-y-4 overflow-y-auto pr-2 pb-2">
+      <form onSubmit={handleSubmit} className="space-y-3 overflow-y-auto pr-2 pb-2 scrollbar-none">
+        
+        {/* FAMILY SELECTION */}
         <div>
-          <label className="block text-[9px] text-slate-400 font-black uppercase tracking-widest mb-1.5 font-mono">Tipo di Funzione</label>
-          <div className="grid grid-cols-2 gap-1.5">
-            {(Object.keys(AREA_LABELS) as Array<keyof typeof AREA_LABELS>).map((type) => (
-              <button
-                key={type}
-                type="button"
-                onClick={() => setAreaType(type)}
-                className={`py-1.5 px-2.5 rounded-lg border transition-all text-[10px] font-bold font-sans text-left flex items-center gap-2 ${
-                  areaType === type 
-                  ? 'bg-cyan-500/20 border-cyan-400 text-cyan-200' 
-                  : 'bg-white/5 border-white/10 text-slate-400 hover:border-white/20 hover:text-slate-200'
-                }`}
-              >
-                <div className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: AREA_COLORS[['stanza', 'muro', 'tramezzo', 'giardino', 'tetto', 'altro'].indexOf(type)] }}></div>
-                {AREA_LABELS[type]}
-              </button>
-            ))}
+          <div className="flex justify-between items-center mb-1.5">
+            <label className="block text-[9px] text-slate-400 font-black uppercase tracking-widest font-mono italic">Famiglia di Appartenenza</label>
+            <button 
+              type="button" 
+              onClick={() => setCustomFamilyMode(!customFamilyMode)}
+              className="text-[8px] px-1.5 py-0.5 rounded border border-indigo-500/30 text-indigo-400 hover:bg-indigo-500/20 transition-all font-bold"
+            >
+              {customFamilyMode ? '- ANNULLA' : '+ PERSONALIZZATA'}
+            </button>
           </div>
+          
+          {customFamilyMode ? (
+            <input
+              type="text"
+              placeholder="Nome Nuova Famiglia..."
+              value={customFamilyName}
+              onChange={(e) => setCustomFamilyName(e.target.value)}
+              autoFocus
+              className="w-full bg-indigo-500/10 border border-indigo-500/30 text-white rounded-lg p-2.5 text-xs font-bold focus:outline-none focus:border-indigo-400 transition-colors"
+            />
+          ) : (
+            <div className="relative">
+              <select
+                value={familyId}
+                onChange={(e) => handleFamilyChange(e.target.value)}
+                className="w-full bg-slate-900 border border-white/10 text-white rounded-lg p-2.5 text-xs font-bold focus:outline-none focus:border-indigo-500 transition-colors appearance-none"
+              >
+                {BIM_FAMILIES.map(fam => (
+                  <option key={fam.id} value={fam.id} className="bg-slate-900 text-slate-200">
+                    {fam.name}
+                  </option>
+                ))}
+              </select>
+              <div className="absolute right-3 top-3 pointer-events-none opacity-50">
+                <ChevronDown size={14} />
+              </div>
+            </div>
+          )}
+          {currentFamily && !customFamilyMode && (
+            <p className="text-[8px] text-slate-500 mt-1 font-medium font-mono uppercase tracking-tight overflow-hidden text-ellipsis whitespace-nowrap">
+              📂 {currentFamily.category} - {currentFamily.description}
+            </p>
+          )}
         </div>
 
         <div className="grid grid-cols-2 gap-3">
           <div className="col-span-2">
-            <label className="block text-[9px] text-slate-400 font-black uppercase tracking-widest mb-1.5 font-mono">Etichetta Vano</label>
+            <label className="block text-[9px] text-slate-400 font-black uppercase tracking-widest mb-1.5 font-mono italic">Identificativo / Mark</label>
             <input
               type="text"
               value={name}
               onChange={(e) => setName(e.target.value)}
-              className="w-full bg-white/5 border border-white/10 text-white rounded-lg p-2.5 text-xs font-bold focus:outline-none focus:border-cyan-500 transition-colors"
+              className="w-full bg-white/5 border border-white/10 text-white rounded-lg p-2.5 text-xs font-bold focus:outline-none focus:border-indigo-500 transition-colors"
+              placeholder="Es. Muro M1, Pilastro P2..."
             />
           </div>
 
           <div>
-            <label className="block text-[9px] text-slate-400 font-black uppercase tracking-widest mb-1.5 font-mono">Retino (Hatch)</label>
+            <label className="block text-[9px] text-slate-400 font-black uppercase tracking-widest mb-1.5 font-mono italic">Retino (Hatch)</label>
             <select
               value={hatch}
               onChange={(e) => setHatch(e.target.value as any)}
-              className="w-full bg-white/5 border border-white/10 text-white rounded-lg p-2.5 text-[10px] font-bold focus:outline-none focus:border-cyan-500"
+              className="w-full bg-slate-900 border border-white/10 text-white rounded-lg p-2.5 text-[10px] font-bold focus:outline-none focus:border-indigo-500"
             >
-              {HATCH_PATTERNS.map(p => <option key={p.id} value={p.id} className="bg-slate-900">{p.label}</option>)}
+              <option value="SOLID" className="bg-slate-900">Colore Pieno</option>
+              <option value="ANSI31" className="bg-slate-900">Tratteggio (ANSI31)</option>
+              <option value="CROSS" className="bg-slate-900">Reticolo (Cross)</option>
+              <option value="NONE" className="bg-slate-900">Solo Contorno</option>
             </select>
           </div>
 
-        <div className="grid grid-cols-3 gap-2">
-          <div className="col-span-1">
-            <label className="block text-[8px] text-slate-400 font-black uppercase tracking-widest mb-1 font-mono">Piano Z (m)</label>
-            <input
-              type="text"
-              value={zPlane}
-              onChange={(e) => setZPlane(parseFloat(e.target.value) || 0)}
-              className="w-full bg-white/5 border border-white/10 text-white rounded p-2 text-xs font-mono font-bold focus:outline-none focus:border-cyan-500"
-            />
+          <div>
+             <label className="block text-[9px] text-slate-400 font-black uppercase tracking-widest mb-1.5 font-mono italic">Colore Rappresent.</label>
+             <div className="flex items-center gap-2 h-10 bg-white/5 border border-white/10 rounded-lg px-2 overflow-hidden">
+                <input
+                 type="color"
+                 value={color.startsWith('rgba') ? '#6366f1' : color}
+                 onChange={(e) => setColor(e.target.value)}
+                 className="w-full h-8 bg-transparent border-0 cursor-pointer p-0"
+               />
+             </div>
           </div>
-          <div className="col-span-1">
-            <label className="block text-[8px] text-slate-400 font-black uppercase tracking-widest mb-1 font-mono">Elevaz. (m)</label>
-            <input
-              type="text"
-              value={zElevation}
-              onChange={(e) => setZElevation(parseFloat(e.target.value) || 0)}
-              className="w-full bg-white/5 border border-white/10 text-white rounded p-2 text-xs font-mono font-bold focus:outline-none focus:border-cyan-500"
-            />
-          </div>
-          <div className="col-span-1">
-            <label className="block text-[8px] text-slate-400 font-black uppercase tracking-widest mb-1 font-mono">Altezza (cm)</label>
-            <input
-              type="text"
-              value={objectHeight}
-              onChange={(e) => setObjectHeight(parseFloat(e.target.value) || 270)}
-              className="w-full bg-white/5 border border-white/10 text-white rounded p-2 text-xs font-mono font-bold focus:outline-none focus:border-cyan-500"
-            />
-          </div>
-        </div>
-        </div>
 
-        <div className="flex gap-3">
-          <div className="flex-1">
-            <label className="block text-[9px] text-slate-400 font-black uppercase tracking-widest mb-1.5 font-mono">Colore Area</label>
-            <div className="flex items-center gap-2 h-10 bg-white/5 border border-white/10 rounded-lg px-3 overflow-hidden">
-               <input
-                type="color"
-                value={color.includes('rgba') ? '#06b6d4' : color}
-                onChange={(e) => {
-                  const r = parseInt(e.target.value.slice(1, 3), 16);
-                  const g = parseInt(e.target.value.slice(3, 5), 16);
-                  const b = parseInt(e.target.value.slice(5, 7), 16);
-                  setColor(`rgba(${r}, ${g}, ${b}, 0.4)`);
-                }}
-                className="w-6 h-6 bg-transparent border-0 cursor-pointer"
+          <div className="col-span-2 grid grid-cols-3 gap-2 bg-indigo-500/5 p-3 rounded-xl border border-indigo-500/10">
+            <div>
+              <label className="block text-[8px] text-slate-500 font-black uppercase tracking-widest mb-1 font-mono">Quota Z Base (cm)</label>
+              <input
+                type="number"
+                step="1"
+                value={zPlane}
+                onChange={(e) => setZPlane(parseFloat(e.target.value) || 0)}
+                className="w-full bg-white/5 border border-white/10 text-white rounded p-2 text-xs font-mono font-bold focus:outline-none focus:border-indigo-500 transition-all"
               />
-              <span className="text-[10px] font-mono text-slate-500">{color.substring(0, 15)}...</span>
+            </div>
+            <div>
+              <label className="block text-[8px] text-slate-500 font-black uppercase tracking-widest mb-1 font-mono">Soffitto/Top (cm)</label>
+              <input
+                type="number"
+                step="1"
+                value={zElevation}
+                onChange={(e) => setZElevation(parseFloat(e.target.value) || 0)}
+                className="w-full bg-white/5 border border-white/10 text-white rounded p-2 text-xs font-mono font-bold focus:outline-none focus:border-indigo-500 transition-all"
+              />
+            </div>
+            <div>
+              <label className="block text-[8px] text-slate-500 font-black uppercase tracking-widest mb-1 font-mono">Altezza (cm)</label>
+              <input
+                type="number"
+                value={objectHeight}
+                onChange={(e) => setObjectHeight(parseFloat(e.target.value) || 270)}
+                className="w-full bg-white/5 border border-white/10 text-white rounded p-2 text-xs font-mono font-bold focus:outline-none focus:border-indigo-500 transition-all"
+              />
             </div>
           </div>
         </div>
 
-        <div className="p-3 bg-emerald-500/10 border border-emerald-500/20 rounded-lg flex items-center justify-between">
-          <p className="text-[9px] text-emerald-400/80 leading-relaxed italic">
-            L'area visualizzata sul CAD avrà un <span className="text-emerald-300 font-bold underline">bordo verde lampeggiante</span> per conferma posizionale.
+        <div className="p-3 bg-indigo-500/10 border border-indigo-500/20 rounded-xl flex items-center justify-between gap-3">
+          <p className="text-[9px] text-indigo-400 font-medium leading-relaxed italic">
+            💡 La selezione verrà mantenuta per i prossimi caricamenti veloci degli elementi.
           </p>
-          <div className="bg-emerald-500/20 px-2 py-1 rounded border border-emerald-500/30">
+          <div className="w-8 h-8 rounded-full bg-indigo-500/20 flex items-center justify-center border border-indigo-500/40">
+            <Sparkles size={14} className="text-indigo-400" />
           </div>
         </div>
 
-        <div className="flex gap-2 mt-4">
+        <div className="flex gap-2 mt-2">
           {onDelete && (
             <button
               type="button"
               onClick={onDelete}
-              className="bg-red-600/10 hover:bg-red-600/20 text-red-500 font-black px-4 py-3.5 rounded-lg text-xs tracking-widest transition-all cursor-pointer flex items-center justify-center border border-red-500/20 active:scale-[0.97]"
-              title="Cancella Oggetto"
+              className="bg-red-600/10 hover:bg-red-600/20 text-red-500 font-black px-4 py-3.5 rounded-xl text-xs tracking-widest transition-all cursor-pointer flex items-center justify-center border border-red-500/20 active:scale-95"
+              title="Cancella Elemento"
             >
               <Trash2 size={16} />
             </button>
           )}
           <button
             type="submit"
-            className="flex-1 bg-cyan-600 hover:bg-cyan-500 text-slate-950 font-black py-3.5 rounded-lg text-xs tracking-widest transition-all shadow-lg cursor-pointer uppercase active:scale-[0.97]"
+            className="flex-1 bg-indigo-600 hover:bg-indigo-500 text-white font-black py-3.5 rounded-xl text-xs tracking-widest transition-all shadow-[0_10px_20px_rgba(79,70,229,0.3)] cursor-pointer uppercase active:scale-[0.98] border border-indigo-400/30"
           >
-            {initialData ? 'SALVA MODIFICHE ✅' : 'GENERA AREA FUNZIONALE ✅'}
+            {initialData ? 'AGGIORNA ELEMENTO BIM' : 'CARICA ELEMENTO BIM ✅'}
           </button>
         </div>
       </form>

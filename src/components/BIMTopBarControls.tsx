@@ -194,7 +194,7 @@ export const BIMTopBarControls: React.FC<BIMTopBarControlsProps> = ({
     <div ref={containerRef} className="flex items-center gap-1.5 w-full text-neutral-800">
       
 
-      {/* 1. ROOMS (VANI) BUTTON & DROPDOWN */}
+      {/* 1. ELEMENTS (ELEMENTI BIM) BUTTON & DROPDOWN */}
       <div className="relative flex items-center">
         <button
           onClick={() => {
@@ -205,11 +205,11 @@ export const BIMTopBarControls: React.FC<BIMTopBarControlsProps> = ({
               ? 'bg-cyan-100 text-cyan-950 font-bold border-cyan-300 shadow-sm' 
               : 'hover:bg-neutral-100 border-neutral-300 bg-white'
           }`}
-          title="Rilevamento e Tracciamento dei vani/locali"
+          title="Rilevamento e Tracciamento Elementi BIM (Muri, Fondazioni, Tavolati, etc)"
         >
-          <span className="text-cyan-600 font-bold text-[10px]">📐</span>
+          <span className="text-cyan-600 font-bold text-[10px]">🏗️</span>
           <span>
-            {selectedTool === 'BIM_DisegnaStanza' ? 'Traccia Volume' : 'Rileva Volume'}
+            {selectedTool === 'BIM_DisegnaStanza' ? 'Traccia Elemento' : 'Rileva Elemento'}
           </span>
         </button>
         <button
@@ -217,14 +217,14 @@ export const BIMTopBarControls: React.FC<BIMTopBarControlsProps> = ({
           className={`px-1 py-1 rounded-r border transition text-neutral-500 hover:text-neutral-900 ${
             activeDropdown === 'vani' ? 'bg-cyan-50 border-cyan-300 pointer-events-auto' : 'hover:bg-neutral-100 border-neutral-300 bg-white'
           }`}
-          title="Seleziona modalità rilevamento volumi"
+          title="Seleziona modalità rilevamento elementi bim"
         >
           <ChevronDown size={11} />
         </button>
 
         {activeDropdown === 'vani' && (
           <div className="absolute top-7 left-0 w-52 bg-white rounded-lg shadow-xl border border-neutral-200 p-2 z-50 animate-fade-in text-xs space-y-1">
-            <span className="font-semibold text-[10px] uppercase text-neutral-400 block px-2 py-1 border-b">Modalità Rilievo Volumi</span>
+            <span className="font-semibold text-[10px] uppercase text-neutral-400 block px-2 py-1 border-b">Rilevamento Elemento BIM</span>
             
             <button
               onClick={() => {
@@ -237,7 +237,7 @@ export const BIMTopBarControls: React.FC<BIMTopBarControlsProps> = ({
             >
               <Sparkles size={13} className="text-cyan-600" />
               <div className="flex flex-col text-left">
-                <span>Rileva con punto interno</span>
+                <span>Rilevamento Elemento BIM</span>
                 <span className="text-[9px] text-neutral-400 font-normal">Sotto-muro automatico con 1 click</span>
               </div>
             </button>

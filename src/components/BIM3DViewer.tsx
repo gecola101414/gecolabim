@@ -1,11 +1,11 @@
 import React, { useMemo, useRef, useEffect, useState, useCallback } from 'react';
 import { Canvas, useFrame } from '@react-three/fiber';
-import { OrbitControls, PerspectiveCamera, OrthographicCamera, Grid, Stars, Float, Text, Html, ContactShadows, Environment, Edges } from '@react-three/drei';
+import { OrbitControls, PerspectiveCamera, OrthographicCamera, Grid, Stars, Float, Text, Html, ContactShadows, Environment, Edges, GizmoHelper, GizmoViewcube } from '@react-three/drei';
 import * as THREE from 'three';
 import { useThree } from '@react-three/fiber';
 import { Entity, Point, LineEntity, RectEntity } from '../types';
-import { X, ZoomIn, ZoomOut, RotateCw, Box, Layers, Database, Maximize, Home, Compass, Eye, EyeOff, Info, Settings, MousePointer2, Move, Scissors, Play, Pause, RefreshCw, ArrowDown, ArrowUp, ArrowLeft, ArrowRight, Edit, Trash2, Wand2 } from 'lucide-react';
-import { AreaFunzionaleDialog, PorteDialog, FinestreDialog } from './BIMDialogs';
+import { X, ZoomIn, ZoomOut, RotateCw, Box, Layers, Database, Maximize, Home, Compass, Eye, EyeOff, Info, Settings, MousePointer2, Move, Scissors, Play, Pause, RefreshCw, ArrowDown, ArrowUp, ArrowLeft, ArrowRight, Edit, Trash2, Wand2, Lock, Unlock, FolderTree, ChevronDown, ChevronRight } from 'lucide-react';
+import { BIMElementDialog, PorteDialog, FinestreDialog } from './BIMDialogs';
 
 interface BIM3DViewerProps {
   entities: Entity[];
@@ -155,20 +155,29 @@ const Wall = ({ points, height, width, color, baseZ, clippingPlanes = [], opacit
   return (
     <group>
       {segments.map((seg, i) => (
-        <mesh key={i} position={seg.position} rotation={seg.rotation} castShadow receiveShadow>
-          <boxGeometry args={seg.args} />
-          <meshStandardMaterial 
-            color={color} 
-            transparent={opacity < 1}
-            opacity={opacity}
-            metalness={0.15} 
-            roughness={0.4} 
-            envMapIntensity={1}
-            clippingPlanes={clippingPlanes}
-            clipShadows={true}
-          />
-          <Edges color="#1e293b" threshold={15} />
-        </mesh>
+        <group key={i}>
+          {/* Solid Clipped Part */}
+          <mesh position={seg.position} rotation={seg.rotation} castShadow receiveShadow>
+            <boxGeometry args={seg.args} />
+            <meshStandardMaterial 
+              color={color} 
+              transparent={opacity < 1}
+              opacity={opacity}
+              metalness={0.15} 
+              roughness={0.4} 
+              envMapIntensity={1}
+              clippingPlanes={clippingPlanes}
+              clipShadows={true}
+              side={THREE.DoubleSide}
+            />
+          </mesh>
+          {/* Wireframe Reference - Unclipped */}
+          <mesh position={seg.position} rotation={seg.rotation}>
+            <boxGeometry args={seg.args} />
+            <meshBasicMaterial transparent opacity={0} depthWrite={false} color={color} />
+            <Edges color="#475569" threshold={15} transparent opacity={0.4} />
+          </mesh>
+        </group>
       ))}
     </group>
   );
@@ -222,6 +231,7 @@ const Room = ({ points, holes, height, color, name, areaType, baseZ, clippingPla
 
   return (
     <group position={[0, zBase, 0]}>
+      {/* Solid Clipped part */}
       <mesh rotation={[-Math.PI / 2, 0, 0]} castShadow receiveShadow>
         <extrudeGeometry args={[shape, extrudeSettings]} />
         <meshStandardMaterial 
@@ -233,11 +243,18 @@ const Room = ({ points, holes, height, color, name, areaType, baseZ, clippingPla
           envMapIntensity={1.2}
           clippingPlanes={clippingPlanes}
           clipShadows={true}
+          side={THREE.DoubleSide}
         />
-        <Edges color="#1e293b" threshold={15} />
+      </mesh>
+
+      {/* Wireframe Reference - Unclipped */}
+      <mesh rotation={[-Math.PI / 2, 0, 0]}>
+        <extrudeGeometry args={[shape, extrudeSettings]} />
+        <meshBasicMaterial transparent opacity={0} depthWrite={false} />
+        <Edges color="#475569" threshold={15} transparent opacity={0.4} />
       </mesh>
       
-      {/* Floor Highlight */}
+      {/* Floor Highlight - Clipped */}
       {!isWall && (
         <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.001, 0]} receiveShadow>
           <shapeGeometry args={[shape]} />
@@ -307,27 +324,33 @@ const BIMSymbol = ({ entity, onPointerOver, onPointerOut, clippingPlanes = [], o
   const depth = 0.15; 
   if (bimType === 'door') {
     return (
-      <mesh 
-        position={pos} 
-        rotation={[0, angle, 0]}
-        castShadow 
-        onPointerOver={(e) => { e.stopPropagation(); onPointerOver?.(); }}
-        onPointerOut={(e) => { e.stopPropagation(); onPointerOut?.(); }}
-      >
-        <boxGeometry args={[w, h, depth]} />
-        <meshStandardMaterial 
-          color={color} 
-          transparent 
-          opacity={(isHovered ? 0.9 : 0.6) * opacity} 
-          metalness={0.4} 
-          roughness={0.3} 
-          emissive={isHovered ? color : '#000000'}
-          emissiveIntensity={isHovered ? 0.2 : 0}
-          clippingPlanes={clippingPlanes}
-          clipShadows={true}
-        />
-        <Edges color={isHovered ? "cyan" : "white"} />
-      </mesh>
+      <group position={pos} rotation={[0, angle, 0]}>
+        {/* Solid Clipped part */}
+        <mesh 
+          castShadow 
+          onPointerOver={(e) => { e.stopPropagation(); onPointerOver?.(); }}
+          onPointerOut={(e) => { e.stopPropagation(); onPointerOut?.(); }}
+        >
+          <boxGeometry args={[w, h, depth]} />
+          <meshStandardMaterial 
+            color={color} 
+            transparent 
+            opacity={(isHovered ? 0.9 : 0.6) * opacity} 
+            metalness={0.4} 
+            roughness={0.3} 
+            emissive={isHovered ? color : '#000000'}
+            emissiveIntensity={isHovered ? 0.2 : 0}
+            clippingPlanes={clippingPlanes}
+            clipShadows={true}
+          />
+        </mesh>
+        {/* Wireframe Reference - Unclipped */}
+        <mesh>
+          <boxGeometry args={[w, h, depth]} />
+          <meshBasicMaterial transparent opacity={0.05} depthWrite={false} color={color} />
+          <Edges color="#475569" transparent opacity={0.4} />
+        </mesh>
+      </group>
     );
   }
 
@@ -342,7 +365,7 @@ const BIMSymbol = ({ entity, onPointerOver, onPointerOut, clippingPlanes = [], o
     if (gw <= 0 || gh <= 0) return null;
     return (
       <group position={[xOffset, 0, 0]}>
-        {/* Main Glass Plane */}
+        {/* Main Glass Plane - Clipped */}
         <mesh castShadow>
           <boxGeometry args={[gw, gh, 0.015]} />
           <meshPhysicalMaterial 
@@ -357,27 +380,36 @@ const BIMSymbol = ({ entity, onPointerOver, onPointerOut, clippingPlanes = [], o
             clipShadows={true}
           />
         </mesh>
-        {/* Inner Frame / Cornice (Bordo vetro) */}
-        <mesh position={[0, 0, 0.008]}>
-          <boxGeometry args={[gw, gh, 0.02]} />
-          <Edges color="#523215" threshold={15} />
+        {/* Wireframe Reference - Unclipped */}
+        <mesh>
+          <boxGeometry args={[gw, gh, 0.015]} />
+          <meshBasicMaterial transparent opacity={0} depthWrite={false} color={glassColor} />
+          <Edges color="#94a3b8" transparent opacity={0.2} />
         </mesh>
       </group>
     );
   };
 
   const drawFramePart = (width: number, height: number, depth: number, x: number, y: number) => (
-    <mesh position={[x, y, 0]} castShadow>
-      <boxGeometry args={[width, height, depth]} />
-      <meshStandardMaterial 
-        color={isHovered ? '#eab308' : frameColor}
-        transparent={opacity < 1}
-        opacity={opacity}
-        clippingPlanes={clippingPlanes.length > 0 ? clippingPlanes : undefined}
-        clipShadows={true}
-      />
-      <Edges color="#3a230d" threshold={20} />
-    </mesh>
+    <group position={[x, y, 0]}>
+      {/* Solid Part */}
+      <mesh castShadow>
+        <boxGeometry args={[width, height, depth]} />
+        <meshStandardMaterial 
+          color={isHovered ? '#eab308' : frameColor}
+          transparent={opacity < 1}
+          opacity={opacity}
+          clippingPlanes={clippingPlanes.length > 0 ? clippingPlanes : undefined}
+          clipShadows={true}
+        />
+      </mesh>
+      {/* Wireframe Reference */}
+      <mesh>
+        <boxGeometry args={[width, height, depth]} />
+        <meshBasicMaterial transparent opacity={0} depthWrite={false} />
+        <Edges color="#475569" transparent opacity={0.3} />
+      </mesh>
+    </group>
   );
 
   const innerH = h - ft * 2;
@@ -516,19 +548,26 @@ const CSGMeshRender = ({ entity, color, clippingPlanes = [], opacity = 1 }: { en
   }, [entity]);
 
   return (
-    <mesh geometry={geom} castShadow receiveShadow>
-      <meshStandardMaterial 
-        color={color} 
-        transparent={opacity < 1}
-        opacity={opacity}
-        metalness={0.15} 
-        roughness={0.4} 
-        envMapIntensity={1}
-        clippingPlanes={clippingPlanes}
-        clipShadows={true}
-        side={THREE.DoubleSide}
-      />
-    </mesh>
+    <group>
+      <mesh geometry={geom} castShadow receiveShadow>
+        <meshStandardMaterial 
+          color={color} 
+          transparent={opacity < 1}
+          opacity={opacity}
+          metalness={0.15} 
+          roughness={0.4} 
+          envMapIntensity={1}
+          clippingPlanes={clippingPlanes}
+          clipShadows={true}
+          side={THREE.DoubleSide}
+        />
+      </mesh>
+      {/* Wireframe Reference - Unclipped */}
+      <mesh geometry={geom}>
+        <meshBasicMaterial transparent opacity={0} depthWrite={false} />
+        <Edges color="#475569" threshold={15} transparent opacity={0.4} />
+      </mesh>
+    </group>
   );
 };
 
@@ -640,6 +679,11 @@ const SceneCameraController = ({
 }) => {
   const { camera, controls, size: viewportSize } = useThree();
   
+  const lastResetRef = useRef(resetTrigger);
+  const lastPresetRef = useRef(cameraPreset);
+  const lastFocusRef = useRef(focusTrigger);
+  const lastViewModeRef = useRef(cameraViewMode);
+  
   const applyPreset = useCallback((preset: 'FRONT' | 'BACK' | 'LEFT' | 'RIGHT' | 'TOP' | 'BOTTOM' | 'ISO', onlySelected = false) => {
     const box = new THREE.Box3();
     let hasValidBounds = false;
@@ -700,21 +744,22 @@ const SceneCameraController = ({
     let newPos = new THREE.Vector3();
 
     // Set up vector orientation per preset to avoid lookAt lock/flip
+    // Use a slight lerp or just cleaner snapping to avoid jerky behavior
     camera.up.set(0, 1, 0);
     if (preset === 'TOP') {
       camera.up.set(0, 0, -1);
-      newPos.set(center.x, center.y + offset, center.z);
+      newPos.set(center.x, box.max.y + offset, center.z);
     } else if (preset === 'BOTTOM') {
       camera.up.set(0, 0, 1);
-      newPos.set(center.x, center.y - offset, center.z);
+      newPos.set(center.x, box.min.y - offset, center.z);
     } else if (preset === 'FRONT') {
-      newPos.set(center.x, center.y, center.z + offset);
+      newPos.set(center.x, center.y, box.max.z + offset);
     } else if (preset === 'BACK') {
-      newPos.set(center.x, center.y, center.z - offset);
+      newPos.set(center.x, center.y, box.min.z - offset);
     } else if (preset === 'RIGHT') {
-      newPos.set(center.x + offset, center.y, center.z);
+      newPos.set(box.max.x + offset, center.y, center.z);
     } else if (preset === 'LEFT') {
-      newPos.set(center.x - offset, center.y, center.z);
+      newPos.set(box.min.x - offset, center.y, center.z);
     } else {
       newPos.set(center.x + offset * 0.8, center.y + offset * 0.8, center.z + offset * 0.8);
     }
@@ -723,46 +768,98 @@ const SceneCameraController = ({
     camera.lookAt(center);
 
     if (controls) {
-      (controls as any).target.copy(center);
-    }
-
-    // Force snap to top/bottom rotation for TOP/BOTTOM
-    if (preset === 'TOP' || preset === 'BOTTOM') {
-      (controls as any).reset(); 
-    }
-
-    // Set zoom dynamically for Orthographic projections to fit model boundaries
-    if ((camera as any).isOrthographicCamera) {
-      const ortho = camera as THREE.OrthographicCamera;
-      const margin = 1.35;
-      const zoomFactor = Math.min(viewportSize.width, viewportSize.height) / (maxDim * margin || 1);
-      ortho.zoom = Math.max(5, Math.min(600, zoomFactor));
-      ortho.updateProjectionMatrix();
-    }
-
-    if (controls) {
-      (controls as any).update();
+      const orbit = controls as any;
+      orbit.target.copy(center);
+      orbit.update();
     }
   }, [camera, controls, entities, selectedEntity, viewportSize]);
 
   useEffect(() => {
-    applyPreset(cameraViewMode, false);
-  }, [resetTrigger, camera, cameraViewMode, applyPreset]);
-
-  useEffect(() => {
-    if (focusTrigger > 0 && selectedEntity) {
-      applyPreset(cameraViewMode, true);
+    if (resetTrigger !== lastResetRef.current) {
+      applyPreset(cameraViewMode, false);
+      lastResetRef.current = resetTrigger;
     }
-  }, [focusTrigger, camera, cameraViewMode, applyPreset, selectedEntity]);
+  }, [resetTrigger, cameraViewMode, applyPreset]);
 
   useEffect(() => {
-    if (cameraPreset) {
+    if (focusTrigger !== lastFocusRef.current && selectedEntity) {
+      applyPreset(cameraViewMode, true);
+      lastFocusRef.current = focusTrigger;
+    }
+  }, [focusTrigger, cameraViewMode, applyPreset, selectedEntity]);
+
+  useEffect(() => {
+    if (cameraPreset && cameraPreset !== lastPresetRef.current) {
       applyPreset(cameraPreset, false);
+      lastPresetRef.current = cameraPreset;
       onPresetProcessed();
     }
-  }, [cameraPreset, camera, applyPreset, onPresetProcessed]);
+  }, [cameraPreset, applyPreset, onPresetProcessed]);
+
+  useEffect(() => {
+    if (cameraViewMode !== lastViewModeRef.current) {
+      applyPreset(cameraViewMode, false);
+      lastViewModeRef.current = cameraViewMode;
+    }
+  }, [cameraViewMode, applyPreset]);
 
   return null;
+};
+
+const SectionPlaneHelper = ({ height, active, mode, entities }: { height: number, active: boolean, mode: string, entities: Entity[] }) => {
+  const box = useMemo(() => {
+    const b = new THREE.Box3();
+    entities.forEach(entity => {
+      let pts = (entity as any).points || (entity as any).bimPoints || [];
+      if (entity.type === 'line') pts = [(entity as LineEntity).start, (entity as LineEntity).end];
+      if (entity.type === 'rectangle') pts = [(entity as RectEntity).p1, (entity as RectEntity).p2];
+      
+      pts.forEach((p: Point) => {
+        const e = entity as any;
+        const bz = (e.bimZPlane || 0) + (e.bimZElevation || 0);
+        const eh = (e.bimHeight || e.height || 270) / 100;
+        b.expandByPoint(new THREE.Vector3(p.x / 100, bz / 100, -p.y / 100));
+        b.expandByPoint(new THREE.Vector3(p.x / 100, (bz / 100) + eh, -p.y / 100));
+      });
+    });
+    if (b.isEmpty()) b.set(new THREE.Vector3(-10, 0, -10), new THREE.Vector3(10, 3, 10));
+    return b;
+  }, [entities]);
+
+  const size = new THREE.Vector3();
+  box.getSize(size);
+  const center = new THREE.Vector3();
+  box.getCenter(center);
+
+  if (!active) return null;
+
+  return (
+    <group position={[center.x, height, center.z]}>
+      {/* PROFESSIONAL SECTION PLANE - COMPLETELY TRANSPARENT (CLEAN VIEW) */}
+      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.01, 0]} visible={false}>
+        <planeGeometry args={[size.x + 10, size.z + 10]} />
+        <meshBasicMaterial transparent opacity={0} depthWrite={false} />
+      </mesh>
+      
+      {/* PROFESSIONAL SECTION OUTLINE (THE BORDER) */}
+      <mesh rotation={[-Math.PI / 2, 0, 0]}>
+        <planeGeometry args={[size.x + 10.1, size.z + 10.1]} />
+        <meshBasicMaterial transparent opacity={0} depthWrite={false} side={THREE.DoubleSide} />
+        <Edges color="#6366f1" opacity={0.7} transparent />
+      </mesh>
+
+      {/* Height Label */}
+      <Text
+        position={[size.x/2 + 2, 0.1, size.z/2 + 2]}
+        fontSize={0.2}
+        color="#6366f1"
+        anchorX="left"
+        anchorY="bottom"
+      >
+        Piano di Sezione: {height.toFixed(2)}m
+      </Text>
+    </group>
+  );
 };
 
 export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, setEntities }) => {
@@ -774,6 +871,19 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
   const [inspectorOpen, setInspectorOpen] = useState(false);
   const [hoveredId, setHoveredId] = useState<string | null>(null);
   const [isCSGOperating, setIsCSGOperating] = useState(false);
+  const [isBimTreeOpen, setIsBimTreeOpen] = useState(false);
+  const [expandedFamilies, setExpandedFamilies] = useState<{[key: string]: boolean}>({});
+
+  const bimTreeFamilies = useMemo(() => {
+    const f: { [key: string]: Entity[] } = {};
+    entities.forEach(e => {
+      if (!e.isBIM) return;
+      const fName = (e as any).bimFamily || (e as any).bimAreaType || 'Altri Elementi';
+      if (!f[fName]) f[fName] = [];
+      f[fName].push(e);
+    });
+    return f;
+  }, [entities]);
 
   // Camera Presets
   const [cameraPreset, setCameraPreset] = useState<'FRONT' | 'BACK' | 'LEFT' | 'RIGHT' | 'TOP' | 'BOTTOM' | 'ISO' | null>(null);
@@ -1275,8 +1385,9 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
     }
   };
 
-  const handleConfirmAreaEdit = (areaData: {
-    type: string;
+  const handleConfirmAreaEdit = (data: {
+    familyId: string;
+    subFamily: string;
     name: string;
     color: string;
     zPlane: number;
@@ -1289,16 +1400,16 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
       if (e.id === editingEntityId) {
         return {
           ...e,
-          bimAreaType: areaData.type as any,
-          bimName: areaData.name,
-          backgroundColor: areaData.color,
-          color: areaData.color,
-          bimHatchPattern: areaData.hatch,
-          pattern: areaData.hatch === 'NONE' ? 'SOLID' : areaData.hatch,
-          bimHeight: areaData.objectHeight,
-          height: areaData.objectHeight,
-          bimZPlane: areaData.zPlane,
-          bimZElevation: areaData.zElevation
+          bimFamily: data.subFamily || data.familyId, // subFamily is used for custom or sub-type
+          bimName: data.name,
+          backgroundColor: data.color,
+          color: data.color,
+          bimHatchPattern: data.hatch as any,
+          pattern: data.hatch === 'NONE' ? 'SOLID' : data.hatch as any,
+          bimHeight: data.objectHeight,
+          height: data.objectHeight,
+          bimZPlane: data.zPlane,
+          bimZElevation: data.zElevation
         };
       }
       return e;
@@ -1306,17 +1417,17 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
 
     setSelectedEntity(prev => prev && prev.id === editingEntityId ? {
       ...prev,
-      bimAreaType: areaData.type as any,
-      bimName: areaData.name,
-      backgroundColor: areaData.color,
-      color: areaData.color,
-      bimHatchPattern: areaData.hatch,
-      pattern: areaData.hatch === 'NONE' ? 'SOLID' : areaData.hatch,
-      bimHeight: areaData.objectHeight,
-      height: areaData.objectHeight,
-      bimZPlane: areaData.zPlane,
-      bimZElevation: areaData.zElevation
-    } : prev);
+      bimFamily: data.subFamily || data.familyId,
+      bimName: data.name,
+      backgroundColor: data.color,
+      color: data.color,
+      bimHatchPattern: data.hatch as any,
+      pattern: data.hatch === 'NONE' ? 'SOLID' : data.hatch as any,
+      bimHeight: data.objectHeight,
+      height: data.objectHeight,
+      bimZPlane: data.zPlane,
+      bimZElevation: data.zElevation
+    } as any : prev);
 
     setIsAreaEditOpen(false);
     setEditingEntityId(null);
@@ -1430,7 +1541,27 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
 
   // Slicing States
   const [isSlicing, setIsSlicing] = useState(false);
-  const [slicingHeight, setSlicingHeight] = useState(3.0); // Default max height
+  const maxModelHeight = useMemo(() => {
+    let max = 0.5;
+    entities.forEach(entity => {
+      if (!entity.isBIM && entity.type !== 'bim-csg') return;
+      const e = entity as any;
+      const baseZ = (e.bimZPlane || 0) + (e.bimZElevation || 0);
+      const h = (e.bimHeight || e.height || (e.bimType === 'door' ? 210 : (e.bimType === 'window' ? 120 : 270))) / 100;
+      const totalH = (baseZ / 100) + h;
+      if (totalH > max) max = totalH;
+    });
+    return max;
+  }, [entities]);
+
+  const [slicingHeight, setSlicingHeight] = useState(6.0);
+  
+  useEffect(() => {
+    if (!isSlicing) {
+      setSlicingHeight(maxModelHeight + 0.1);
+    }
+  }, [isSlicing, maxModelHeight]);
+
   const [slicingMode, setSlicingMode] = useState<'HIDE_ABOVE' | 'HIDE_BELOW' | 'WINDOW'>('HIDE_ABOVE');
   const [slicingDirection, setSlicingDirection] = useState<'UP' | 'DOWN'>('UP');
   const [isAutoSlicing, setIsAutoSlicing] = useState(false);
@@ -1463,7 +1594,7 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
       interval = setInterval(() => {
         setSlicingHeight(prev => {
           const step = 0.015;
-          const maxH = 4.0;
+          const maxH = maxModelHeight + 0.5;
           if (slicingDirection === 'UP') {
             if (prev >= maxH) {
               setSlicingDirection('DOWN');
@@ -1484,7 +1615,7 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
   }, [isAutoSlicing, slicingDirection]);
 
   const bimEntities = useMemo(() => {
-    return entities.filter(e => e.isBIM);
+    return entities.filter(e => e.isBIM && (e as any).isVisible !== false);
   }, [entities]);
 
   const resetCamera = () => setResetTrigger(prev => prev + 1);
@@ -1678,14 +1809,89 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
         </div>
 
         <div className="w-px h-8 bg-slate-200 mx-1" />
+
+        <button 
+          onClick={() => setIsBimTreeOpen(!isBimTreeOpen)}
+          className={`p-3 rounded-xl transition-all active:scale-95 flex items-center gap-1.5 cursor-pointer border ${
+            isBimTreeOpen 
+              ? 'bg-indigo-600 border-indigo-700 text-white shadow-lg shadow-indigo-200 font-extrabold text-xs px-4' 
+              : 'hover:bg-slate-50 hover:text-indigo-600 text-slate-500 border-transparent'
+          }`}
+          title="Albero Struttura ed Elementi BIM"
+        >
+          <FolderTree size={20} className={isBimTreeOpen ? "animate-pulse" : ""} />
+          <span className="text-[10.5px] font-black uppercase tracking-wider">Albero BIM</span>
+        </button>
+
+        <div className="w-px h-8 bg-slate-200 mx-1" />
         
         <div className="flex items-center px-5 gap-3 h-10 bg-slate-50/50 rounded-xl border border-slate-100">
           <div className={`w-2.5 h-2.5 rounded-full ${isAutoSlicing ? 'bg-indigo-500 animate-pulse' : 'bg-emerald-500'} shadow-[0_0_8px_rgba(16,185,129,0.6)]`} />
           <span className="text-[11px] font-black text-slate-500 uppercase tracking-[0.2em] font-mono">
-            {isSlicing ? 'SLICING ACTIVE' : 'BIM ENGINE LIVE'}
+            {isSlicing ? 'SECTION ACTIVE' : 'BIM ENGINE LIVE'}
           </span>
         </div>
       </div>
+
+      {/* VERTICAL SECTION SLIDER (BIM STYLE) */}
+      {isSlicing && (
+        <div className="absolute right-8 top-1/2 -translate-y-1/2 z-[70] flex flex-col items-center gap-4 py-8 px-5 bg-white/80 backdrop-blur-3xl rounded-[3rem] border border-slate-200/50 shadow-2xl animate-in fade-in slide-in-from-right-8 duration-500">
+           <div className="flex flex-col items-center gap-1 mb-2">
+             <div className="p-2 bg-indigo-50 rounded-lg text-indigo-600">
+               <ArrowUp size={14} strokeWidth={3} />
+             </div>
+             <span className="text-[9px] font-black text-indigo-400 uppercase tracking-tighter">Section</span>
+           </div>
+
+           <div className="relative h-[40vh] w-12 flex items-center justify-center bg-slate-50/50 rounded-3xl border border-slate-100/50">
+             <input 
+               type="range" 
+               min="0" 
+               max={maxModelHeight + 0.5} 
+               step="0.01" 
+               value={slicingHeight}
+               onChange={(e) => {
+                 setSlicingHeight(parseFloat(e.target.value));
+                 setIsAutoSlicing(false);
+               }}
+               style={{ 
+                 writingMode: 'vertical-lr', 
+                 WebkitAppearance: 'slider-vertical',
+                 direction: 'rtl'
+               } as any}
+               className="h-[35vh] w-2.5 cursor-pointer accent-indigo-600 appearance-none bg-indigo-100/30 rounded-full"
+             />
+             
+             {/* Height markings */}
+             <div className="absolute right-1 h-[35vh] flex flex-col justify-between py-1 pointer-events-none">
+               {[Math.ceil(maxModelHeight + 0.5), Math.ceil((maxModelHeight + 0.5) * 0.8), Math.ceil((maxModelHeight + 0.5) * 0.6), Math.ceil((maxModelHeight + 0.5) * 0.4), Math.ceil((maxModelHeight + 0.5) * 0.2), 0].map(h => (
+                 <div key={h} className="flex items-center gap-1.5">
+                   <div className="w-1.5 h-0.5 bg-slate-200 rounded-full" />
+                   <span className="text-[8px] font-bold text-slate-300 font-mono">{h}m</span>
+                 </div>
+               ))}
+             </div>
+           </div>
+
+           <div className="flex flex-col items-center gap-1 mt-2">
+             <span className="text-[12px] font-black text-indigo-600 font-mono tracking-tighter">{slicingHeight.toFixed(2)}</span>
+             <span className="text-[7px] font-black text-slate-400 uppercase">Meters</span>
+             <div className="p-2 bg-indigo-50 rounded-lg text-indigo-600 mt-1">
+               <ArrowDown size={14} strokeWidth={3} />
+             </div>
+           </div>
+           
+           <div className="w-8 h-px bg-slate-100 my-1" />
+           
+           <button 
+             onClick={() => setIsAutoSlicing(!isAutoSlicing)}
+             className={`p-3 rounded-full shadow-lg transition-all active:scale-90 ${isAutoSlicing ? 'bg-rose-500 text-white shadow-rose-200' : 'bg-emerald-500 text-white shadow-emerald-200'}`}
+             title="Animazione"
+           >
+             {isAutoSlicing ? <Pause size={18} /> : <Play size={18} />}
+           </button>
+        </div>
+      )}
 
       {/* 3D PERSPECTIVE PRESETS TOOLBAR (VISTE ORTOGONALI - CUBETTI COLLORATI) */}
       <div className="absolute top-28 left-1/2 -translate-x-1/2 z-40 bg-white/95 backdrop-blur-3xl px-5 py-2.5 rounded-[2rem] border border-slate-200/50 shadow-[0_20px_45px_-10px_rgba(0,0,0,0.12)] pointer-events-auto flex items-center gap-2 animate-in fade-in slide-in-from-top-4 duration-300">
@@ -1794,6 +2000,223 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
         </button>
       </div>
 
+      {/* Side BIM Tree Hierarchy Panel (Left-aligned, matching the aesthetic perfectly) */}
+      <div 
+        className={`absolute top-24 left-8 z-[60] w-88 bg-white/95 backdrop-blur-2xl rounded-[2.5rem] shadow-[0_20px_60px_-15px_rgba(0,0,0,0.15)] border border-slate-100 transition-all duration-300 pointer-events-auto flex flex-col max-h-[80vh] ${
+          isBimTreeOpen ? 'opacity-100 translate-x-0 visible' : 'opacity-0 -translate-x-12 invisible pointer-events-none'
+        }`}
+      >
+        <div className="p-8 flex flex-col h-full overflow-hidden max-h-[80vh]">
+          {/* Header block */}
+          <div className="flex items-center justify-between mb-4 pb-3 border-b border-slate-100 select-none">
+            <div className="flex items-center gap-3">
+              <div className="p-3 bg-indigo-600 rounded-2xl text-white shadow-lg shadow-indigo-100 animate-pulse">
+                <FolderTree size={20} />
+              </div>
+              <div>
+                <h3 className="font-black text-slate-800 text-lg tracking-tight leading-tight">Albero BIM</h3>
+                <span className="text-[9px] font-bold text-indigo-500 uppercase tracking-wider block font-mono">Struttura & Filtri</span>
+              </div>
+            </div>
+            <button 
+              onClick={() => setIsBimTreeOpen(false)} 
+              className="text-slate-300 hover:text-slate-600 transition-colors cursor-pointer p-1 hover:bg-slate-50 rounded-lg"
+            >
+              <X size={20} />
+            </button>
+          </div>
+
+          {/* Tree hierarchy container */}
+          <div className="overflow-y-auto pr-1 flex-1 max-h-[calc(80vh-10rem)] scrollbar-thin space-y-2.5 pb-2">
+            {Object.keys(bimTreeFamilies).length === 0 ? (
+              <div className="text-center py-10 px-4">
+                <span className="block text-4xl mb-3">📁</span>
+                <p className="text-slate-400 font-bold text-xs uppercase tracking-wide">Nessun elemento BIM caricato</p>
+                <p className="text-slate-300 text-[10px] mt-1 pr-1 pl-1">Traccia o rileva elementi BIM in pianta 2D prima di accedere all'albero di controllo.</p>
+              </div>
+            ) : (
+              Object.entries(bimTreeFamilies).map(([familyName, familyMembers]) => {
+                const isExpanded = expandedFamilies[familyName] !== false;
+                const allVisible = familyMembers.every(m => (m as any).isVisible !== false);
+                const allFrozen = familyMembers.every(m => (m as any).isFrozen === true);
+
+                return (
+                  <div key={familyName} className="bg-slate-50/50 rounded-2xl border border-slate-150/40 overflow-hidden">
+                    {/* Family Header Row */}
+                    <div className="p-3 flex items-center justify-between gap-2 hover:bg-slate-100/50 transition duration-200">
+                      <div 
+                        onClick={() => {
+                          setExpandedFamilies(prev => ({
+                            ...prev,
+                            [familyName]: !isExpanded
+                          }));
+                        }}
+                        className="flex items-center gap-2 cursor-pointer flex-1 min-w-0"
+                      >
+                        <span className="text-slate-400 select-none shrink-0">
+                          {isExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                        </span>
+                        <div className="min-w-0">
+                          <span className="font-extrabold text-slate-800 text-[11.5px] truncate block" title={familyName}>
+                            📁 {familyName}
+                          </span>
+                          <span className="text-[9px] text-slate-400 font-bold font-mono">({familyMembers.length} oggetti)</span>
+                        </div>
+                      </div>
+
+                      {/* Action buttons (Family Level) */}
+                      <div className="flex items-center gap-1 shrink-0">
+                        {/* Visibility toggle (Family Level) */}
+                        <button
+                          onClick={() => {
+                            const nextVisible = !allVisible;
+                            setEntities(prev => prev.map(ent => {
+                              const isMem = ent.isBIM && (((ent as any).bimFamily === familyName) || ((ent as any).bimAreaType === familyName));
+                              return isMem ? { ...ent, isVisible: nextVisible } as any : ent;
+                            }));
+                            if (selectedEntity && (((selectedEntity as any).bimFamily === familyName) || ((selectedEntity as any).bimAreaType === familyName))) {
+                              setSelectedEntity(prev => prev ? { ...prev, isVisible: nextVisible } as any : null);
+                            }
+                          }}
+                          className={`p-1.5 rounded-lg transition-all duration-200 cursor-pointer ${
+                            allVisible 
+                              ? 'bg-cyan-500/10 text-cyan-600 hover:bg-cyan-500/20' 
+                              : 'bg-slate-200/60 text-slate-400 hover:bg-slate-200'
+                          }`}
+                          title={allVisible ? "Nascondi tutta la famiglia" : "Mostra tutta la famiglia"}
+                        >
+                          {allVisible ? <Eye size={12.5} /> : <EyeOff size={12.5} />}
+                        </button>
+
+                        {/* Freeze toggle (Family Level) */}
+                        <button
+                          onClick={() => {
+                            const nextFrozen = !allFrozen;
+                            setEntities(prev => prev.map(ent => {
+                              const isMem = ent.isBIM && (((ent as any).bimFamily === familyName) || ((ent as any).bimAreaType === familyName));
+                              return isMem ? { ...ent, isFrozen: nextFrozen } as any : ent;
+                            }));
+                            if (selectedEntity && (((selectedEntity as any).bimFamily === familyName) || ((selectedEntity as any).bimAreaType === familyName))) {
+                              setSelectedEntity(prev => prev ? { ...prev, isFrozen: nextFrozen } as any : null);
+                            }
+                          }}
+                          className={`p-1.5 rounded-lg transition-all duration-200 cursor-pointer ${
+                            allFrozen 
+                              ? 'bg-amber-500/15 text-amber-600 hover:bg-amber-500/25' 
+                              : 'bg-slate-200/60 text-slate-400 hover:bg-slate-200'
+                          }`}
+                          title={allFrozen ? "Sblocca tutta la famiglia" : "Congela/Blocca tutta la famiglia"}
+                        >
+                          {allFrozen ? <Lock size={12.5} /> : <Unlock size={12.5} />}
+                        </button>
+
+                        {/* Delete entire Family */}
+                        <button
+                          onClick={() => {
+                            if (confirm(`Sei sicuro di voler eliminare interamente la famiglia "${familyName}" insieme a tutti i suoi ${familyMembers.length} oggetti?`)) {
+                              setEntities(prev => prev.filter(ent => !(ent.isBIM && (((ent as any).bimFamily === familyName) || ((ent as any).bimAreaType === familyName)))));
+                              if (selectedEntity && (((selectedEntity as any).bimFamily === familyName) || ((selectedEntity as any).bimAreaType === familyName))) {
+                                setSelectedEntity(null);
+                                setInspectorOpen(false);
+                              }
+                            }
+                          }}
+                          className="p-1.5 rounded-lg text-rose-500 hover:bg-rose-50 transition-all duration-200 cursor-pointer"
+                          title="Elimina intera famiglia"
+                        >
+                          <Trash2 size={12.5} />
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Member Elements (Shown on Expansion) */}
+                    {isExpanded && (
+                      <div className="bg-white/40 border-t border-slate-150/40 divide-y divide-slate-100/60">
+                        {familyMembers.map((member) => {
+                          const isMemVisible = (member as any).isVisible !== false;
+                          const isMemFrozen = (member as any).isFrozen === true;
+                          const isMemSelected = selectedEntity?.id === member.id;
+
+                          return (
+                            <div 
+                              key={member.id}
+                              className={`pl-6 pr-3 py-2 flex items-center justify-between gap-2 hover:bg-indigo-50/20 transition duration-150 ${
+                                isMemSelected ? 'bg-indigo-500/5' : ''
+                              }`}
+                            >
+                              {/* Member Title / Selection Trigger */}
+                              <div
+                                onClick={() => {
+                                  setSelectedEntity(member);
+                                  setInspectorOpen(true);
+                                  flashEntity(member.id);
+                                }}
+                                className="flex-1 min-w-0 cursor-pointer flex items-center gap-1.5"
+                              >
+                                <span className={`w-1.5 h-1.5 rounded-full`} style={{ backgroundColor: (member as any).backgroundColor || member.color || '#3b82f6' }} />
+                                <span className={`text-[10.5px] truncate block ${
+                                  isMemSelected ? 'font-black text-indigo-700' : 'text-slate-600 font-medium'
+                                } ${!isMemVisible ? 'opacity-40 line-through' : ''}`}>
+                                  {(member as any).bimName || 'Oggetto Senza Nome'}
+                                </span>
+                              </div>
+
+                              {/* Action buttons (Individual Level) */}
+                              <div className="flex items-center gap-0.5 shrink-0">
+                                {/* Visibility toggle */}
+                                <button
+                                  onClick={() => {
+                                    setEntities(prev => prev.map(ent => ent.id === member.id ? { ...ent, isVisible: !isMemVisible } as any : ent));
+                                    if (selectedEntity && selectedEntity.id === member.id) {
+                                      setSelectedEntity(prev => prev ? { ...prev, isVisible: !isMemVisible } as any : null);
+                                    }
+                                  }}
+                                  className={`p-1 rounded-md transition duration-150 cursor-pointer ${
+                                    isMemVisible ? 'text-cyan-600 hover:bg-cyan-50' : 'text-slate-350 hover:bg-slate-100'
+                                  }`}
+                                  title={isMemVisible ? "Nascondi elemento" : "Mostra elemento"}
+                                >
+                                  {isMemVisible ? <Eye size={11} /> : <EyeOff size={11} />}
+                                </button>
+
+                                {/* Freeze toggle */}
+                                <button
+                                  onClick={() => {
+                                    setEntities(prev => prev.map(ent => ent.id === member.id ? { ...ent, isFrozen: !isMemFrozen } as any : ent));
+                                    if (selectedEntity && selectedEntity.id === member.id) {
+                                      setSelectedEntity(prev => prev ? { ...prev, isFrozen: !isMemFrozen } as any : null);
+                                    }
+                                  }}
+                                  className={`p-1 rounded-md transition duration-150 cursor-pointer ${
+                                    isMemFrozen ? 'text-amber-600 hover:bg-amber-50' : 'text-slate-350 hover:bg-slate-100'
+                                  }`}
+                                  title={isMemFrozen ? "Sblocca elemento" : "Congela/Blocca elemento"}
+                                >
+                                  {isMemFrozen ? <Lock size={11} /> : <Unlock size={11} />}
+                                </button>
+
+                                {/* Delete single element */}
+                                <button
+                                  onClick={() => handleDeleteEntity(member.id)}
+                                  className="p-1 rounded-md text-rose-450 hover:bg-rose-50 transition duration-150 cursor-pointer"
+                                  title="Elimina elemento"
+                                >
+                                  <Trash2 size={11} />
+                                </button>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                );
+              })
+            )}
+          </div>
+        </div>
+      </div>
+
       {/* Side Properties Inspector (Dalux Inspired) - Dragging and Scrollable */}
       <div 
         style={{
@@ -1861,6 +2284,129 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
                   {(selectedEntity as any).bimName || 'Elemento Non Nominato'}
                 </div>
               </div>
+
+              {/* Controlli Filtro Multi-Livello (Elemento + Famiglia) */}
+              {(() => {
+                const familyName = (selectedEntity as any).bimFamily || (selectedEntity as any).bimAreaType || 'Altri Elementi';
+                const familyMembers = entities.filter(e => e.isBIM && (((e as any).bimFamily === familyName) || ((e as any).bimAreaType === familyName)));
+                
+                const isElementVisible = (selectedEntity as any).isVisible !== false;
+                const isElementFrozen = (selectedEntity as any).isFrozen === true;
+                
+                const isFamilyVisible = familyMembers.every(m => (m as any).isVisible !== false);
+                const isFamilyFrozen = familyMembers.every(m => (m as any).isFrozen === true);
+
+                const updateElementField = (field: string, val: any) => {
+                  setEntities((prev: Entity[]) => prev.map(e => e.id === selectedEntity.id ? { ...e, [field]: val } as any : e));
+                  setSelectedEntity((prev: any) => prev && prev.id === selectedEntity.id ? { ...prev, [field]: val } : prev);
+                };
+
+                const toggleFamilyVisibility = () => {
+                  const nextVal = !isFamilyVisible;
+                  setEntities((prev: Entity[]) => prev.map(e => {
+                    const isMem = e.isBIM && (((e as any).bimFamily === familyName) || ((e as any).bimAreaType === familyName));
+                    return isMem ? { ...e, isVisible: nextVal } as any : e;
+                  }));
+                };
+
+                const toggleFamilyFrozen = () => {
+                  const nextVal = !isFamilyFrozen;
+                  setEntities((prev: Entity[]) => prev.map(e => {
+                    const isMem = e.isBIM && (((e as any).bimFamily === familyName) || ((e as any).bimAreaType === familyName));
+                    return isMem ? { ...e, isFrozen: nextVal } as any : e;
+                  }));
+                };
+
+                const deleteFamily = () => {
+                  if (confirm(`Sei sicuro di voler eliminare l'intera famiglia di elementi "${familyName}" contenente ${familyMembers.length} oggetti?`)) {
+                    setEntities((prev: Entity[]) => prev.filter(e => !(e.isBIM && (((e as any).bimFamily === familyName) || ((e as any).bimAreaType === familyName)))));
+                    setSelectedEntity(null);
+                    setInspectorOpen(false);
+                  }
+                };
+
+                return (
+                  <div className="bg-slate-50/80 border border-slate-200/60 p-4 rounded-3xl space-y-3 shadow-sm text-xs">
+                    <div className="text-[10px] font-black text-slate-500 uppercase tracking-widest border-b border-slate-200/50 pb-1.5 flex items-center justify-between">
+                      <span className="flex items-center gap-1">🎛️ Filtri & Controllo Rapido</span>
+                      <span className="text-[8px] bg-slate-900 text-white px-2 py-0.5 rounded-full font-bold uppercase tracking-wide">Multi-Livello</span>
+                    </div>
+
+                    {/* Row 1: Selected Element Control */}
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="min-w-0 pr-1 flex-1">
+                        <span className="block text-[8px] text-slate-400 uppercase tracking-wider font-extrabold">Singolo Elemento</span>
+                        <span className="block font-black text-slate-700 truncate text-[11px]" title={(selectedEntity as any).bimName || 'Elemento'}>
+                          {(selectedEntity as any).bimName || 'Senza Nome'}
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-1 shrink-0">
+                        {/* Visibility */}
+                        <button
+                          onClick={() => updateElementField('isVisible', !isElementVisible)}
+                          className={`p-2 rounded-xl transition-all duration-300 ${!isElementVisible ? 'bg-slate-200 text-slate-400' : 'bg-cyan-100 text-cyan-700 hover:bg-cyan-200'}`}
+                          title={isElementVisible ? "Nascondi Elemento" : "Mostra Elemento"}
+                        >
+                          {!isElementVisible ? <EyeOff size={13} /> : <Eye size={13} />}
+                        </button>
+                        {/* Freeze / Lock */}
+                        <button
+                          onClick={() => updateElementField('isFrozen', !isElementFrozen)}
+                          className={`p-2 rounded-xl transition-all duration-300 ${isElementFrozen ? 'bg-amber-100 text-amber-700 hover:bg-amber-200' : 'bg-slate-100 text-slate-400 hover:bg-slate-200'}`}
+                          title={isElementFrozen ? "Sblocca Elemento" : "Blocca/Congela Elemento"}
+                        >
+                          {isElementFrozen ? <Lock size={13} /> : <Unlock size={13} />}
+                        </button>
+                        {/* Delete */}
+                        <button
+                          onClick={() => handleDeleteEntity(selectedEntity.id)}
+                          className="p-2 rounded-xl transition-all duration-300 bg-rose-50 text-rose-600 hover:bg-rose-100"
+                          title="Elimina Elemento"
+                        >
+                          <Trash2 size={13} />
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Row 2: Selected Family Control */}
+                    <div className="flex items-center justify-between gap-3 border-t border-slate-200/50 pt-2.5">
+                      <div className="min-w-0 pr-1 flex-1">
+                        <span className="block text-[8px] text-slate-400 uppercase tracking-wider font-extrabold">Famiglia di Appartenenza</span>
+                        <span className="block font-black text-slate-800 truncate text-[11px]" title={familyName}>
+                          📁 {familyName}
+                        </span>
+                        <span className="text-[9px] text-slate-500 font-bold">({familyMembers.length} elementi)</span>
+                      </div>
+                      <div className="flex items-center gap-1 shrink-0">
+                        {/* Family Visibility */}
+                        <button
+                          onClick={toggleFamilyVisibility}
+                          className={`p-2 rounded-xl transition-all duration-300 ${!isFamilyVisible ? 'bg-slate-200 text-slate-400' : 'bg-cyan-600/10 text-cyan-700 hover:bg-cyan-600/20'}`}
+                          title={isFamilyVisible ? "Nascondi Intera Famiglia" : "Mostra Intera Famiglia"}
+                        >
+                          {!isFamilyVisible ? <EyeOff size={13} /> : <Eye size={13} />}
+                        </button>
+                        {/* Family Freezing */}
+                        <button
+                          onClick={toggleFamilyFrozen}
+                          className={`p-2 rounded-xl transition-all duration-300 ${isFamilyFrozen ? 'bg-amber-100 text-amber-700 hover:bg-amber-200' : 'bg-slate-100 text-slate-400 hover:bg-slate-200'}`}
+                          title={isFamilyFrozen ? "Sblocca Intera Famiglia" : "Congela Intera Famiglia"}
+                        >
+                          {isFamilyFrozen ? <Lock size={13} /> : <Unlock size={13} />}
+                        </button>
+                        {/* Family Deletion */}
+                        <button
+                          onClick={deleteFamily}
+                          className="p-2 rounded-xl transition-all duration-300 bg-rose-100 text-rose-700 hover:bg-rose-200"
+                          title="Elimina Intera Famiglia di Elementi"
+                        >
+                          <Trash2 size={13} />
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })()}
 
               <div className="grid grid-cols-1 gap-4">
                 <div className="flex justify-between items-center px-2">
@@ -2299,13 +2845,30 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
             />
           )}
           <OrbitControls 
-            enableDamping 
-            dampingFactor={0.06} 
-            maxPolarAngle={viewMode === 'TOP' ? 0 : Math.PI / 1.8} 
-            minDistance={0.1}
-            maxDistance={500}
+            enableDamping={false}
+            rotateSpeed={1.0}
+            zoomSpeed={1.2}
+            panSpeed={1.0}
+            maxPolarAngle={Math.PI} 
+            minPolarAngle={0}
+            minDistance={0.01}
+            maxDistance={2000}
             makeDefault
           />
+          
+          <GizmoHelper
+            alignment="top-right" 
+            margin={[80, 80]}
+          >
+            <GizmoViewcube 
+              font="bold 12px Inter, sans-serif"
+              color="#f8fafc"
+              hoverColor="#6366f1"
+              strokeColor="#cbd5e1"
+              textColor="#334155"
+              opacity={0.9}
+            />
+          </GizmoHelper>
           
           <ambientLight intensity={isRealistic ? 0.6 : 0.4} />
           <directionalLight 
@@ -2316,48 +2879,12 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
             shadow-bias={-0.0001}
           />
 
-          {isSlicing && (
-            <group position={[0, slicingHeight, 0]}>
-              {slicingMode === 'WINDOW' && (
-                <>
-                  <mesh position={[0, windowThickness/2, 0]} rotation={[-Math.PI / 2, 0, 0]}>
-                    <planeGeometry args={[100, 100]} />
-                    <meshStandardMaterial color="#6366f1" transparent opacity={0.03} depthWrite={false} />
-                  </mesh>
-                  <mesh position={[0, -windowThickness/2, 0]} rotation={[-Math.PI / 2, 0, 0]}>
-                    <planeGeometry args={[100, 100]} />
-                    <meshStandardMaterial color="#6366f1" transparent opacity={0.03} depthWrite={false} />
-                  </mesh>
-                </>
-              )}
-              
-              <mesh rotation={[-Math.PI / 2, 0, 0]}>
-                <planeGeometry args={[100, 100]} />
-                <meshStandardMaterial 
-                  color="#6366f1" 
-                  transparent 
-                  opacity={0.08} 
-                  depthWrite={false}
-                  emissive="#818cf8"
-                  emissiveIntensity={0.5}
-                />
-              </mesh>
-              <Grid 
-                infiniteGrid 
-                cellSize={0.2} 
-                sectionSize={1} 
-                sectionColor={slicingMode === 'WINDOW' ? "#f59e0b" : "#a5b4fc"} 
-                cellColor="#818cf8" 
-                sectionThickness={1.5}
-                fadeDistance={40}
-              />
-              {/* Scan Line Detail */}
-              <mesh rotation={[-Math.PI / 2, 0, 0]}>
-                <ringGeometry args={[0, 50, 4]} />
-                <meshStandardMaterial color={slicingMode === 'WINDOW' ? "#f59e0b" : "#4f46e1"} transparent opacity={0.1} />
-              </mesh>
-            </group>
-          )}
+          <SectionPlaneHelper 
+            height={slicingHeight} 
+            active={isSlicing} 
+            mode={slicingMode} 
+            entities={entities} 
+          />
           
           <ContactShadows 
             position={[0, 0, 0]} 
@@ -2420,6 +2947,7 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
               if (points.length < 2 && entity.type !== 'point' && entity.type !== 'bim-csg') return null;
 
               const isMuro = entity.bimType === 'wall' || (entity as any).bimAreaType === 'muro';
+              const isElement = entity.bimType === 'element';
               const isSelected = selectedEntity?.id === entity.id;
               const isHovered = hoveredId === entity.id;
               const isFlashing = flashingId === entity.id;
@@ -2474,7 +3002,7 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
                           ) : (
                             <Wall points={points} height={heightValue} width={e.bimWidth} color={color} baseZ={baseZ} clippingPlanes={clippingPlanes} opacity={entityOpacity} />
                           );
-                        } else if (entity.bimType === 'room') {
+                        } else if (entity.bimType === 'room' || entity.bimType === 'element') {
                           return (
                             <Room 
                               points={points} 
@@ -2504,16 +3032,16 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
 
       {/* Parameter Editing Dialogs */}
       {isAreaEditOpen && selectedEntity && (
-        <AreaFunzionaleDialog
+        <BIMElementDialog
           isOpen={isAreaEditOpen}
           onClose={() => {
             setIsAreaEditOpen(false);
             setEditingEntityId(null);
           }}
           onConfirm={handleConfirmAreaEdit}
-          points={((selectedEntity as any).bimPoints || (selectedEntity as any).points || [])}
           initialData={{
-            type: (selectedEntity as any).bimAreaType || 'stanza',
+            familyId: (selectedEntity as any).bimFamilyId || (selectedEntity as any).bimAreaType || 'Fondazioni',
+            subFamily: (selectedEntity as any).bimFamily || (selectedEntity as any).bimSubFamily || '',
             name: (selectedEntity as any).bimName || '',
             color: (selectedEntity as any).backgroundColor || selectedEntity.color || '#3b82f6',
             zPlane: (selectedEntity as any).bimZPlane || 0,

@@ -1,6 +1,6 @@
 {
-  "name": "Remix: Gecolacad 20_5 infissi 3d",
-  "description": "devo riusciread impostare le fienstre e le porte in 3d cosi completiamo ",
+  "name": "Gecolacad 20_6 3d data base dei volumi ",
+  "description": "finestre 3d ok    piano di visione perfetto\n",
   "requestFramePermissions": [
     "microphone"
   ],

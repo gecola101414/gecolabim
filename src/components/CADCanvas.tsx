@@ -3839,6 +3839,8 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
     const projected = entitiesRef.current.map(getProjectedEntity);
 
     for (const ent of projected) {
+      if ((ent as any).isVisible === false) continue;
+      if ((ent as any).isFrozen === true) continue;
       const layer = layerMapForSelection.get(ent.layer);
       if (layer && (!layer.visible || layer.frozen)) continue;
 
@@ -4445,6 +4447,7 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
       
       for (const entity of projectedEntities) {
         if (entity.hideIn2D) continue;
+        if ((entity as any).isVisible === false) continue;
         const layer = layerMap.get(entity.layer);
         if (layer && !layer.visible) continue;
 
@@ -6394,6 +6397,7 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
       // --- BIM OVERLAY RENDERING PASS (STARTS) ---
       entities.forEach(entity => {
         if (!entity.isBIM) return;
+        if ((entity as any).isVisible === false) return;
 
         // Draw Room
         if (entity.bimType === 'room') {

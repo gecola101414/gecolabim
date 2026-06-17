@@ -26,6 +26,12 @@ import {
   TreePine,
   Car,
   ChevronRight,
+  Eye,
+  EyeOff,
+  Lock,
+  Unlock,
+  FolderOpen,
+  Folder,
   // Systems icons
   Lightbulb,
   Plug,
@@ -191,6 +197,42 @@ export function BIMWorkspacePanel({
   const [customRoomName, setCustomRoomName] = useState<string>("");
   const [open2DSection, setOpen2DSection] = useState<boolean>(false);
   const [active2DCat, setActive2DCat] = useState<string>('Verde');
+  const [expandedFamilies, setExpandedFamilies] = useState<Set<string>>(new Set(['Muri Portanti', 'Tramezzature']));
+
+  const bimElements = entities.filter(e => e.isBIM && (e as any).bimType === 'element');
+  
+  const elementsByFamily = React.useMemo(() => {
+    const groups: Record<string, Entity[]> = {};
+    bimElements.forEach(e => {
+        const family = (e as any).bimFamily || 'Altri Elementi';
+        if (!groups[family]) groups[family] = [];
+        groups[family].push(e);
+    });
+    return groups;
+  }, [bimElements]);
+
+  const toggleFamily = (family: string) => {
+    const next = new Set(expandedFamilies);
+    if (next.has(family)) next.delete(family);
+    else next.add(family);
+    setExpandedFamilies(next);
+  };
+
+  const toggleVisibility = (id: string) => {
+    setEntities((prev: Entity[]) => {
+      const next = prev.map(e => e.id === id ? { ...e, isVisible: !(e as any).isVisible } as any : e);
+      onCommitHistory?.(next);
+      return next;
+    });
+  };
+
+  const toggleFrozen = (id: string) => {
+    setEntities((prev: Entity[]) => {
+      const next = prev.map(e => e.id === id ? { ...e, isFrozen: !(e as any).isFrozen } as any : e);
+      onCommitHistory?.(next);
+      return next;
+    });
+  };
 
   // Live grouped symbols counting for UI rendering
   const activeSymbolsSummary = React.useMemo(() => {
@@ -721,6 +763,115 @@ export function BIMWorkspacePanel({
         </button>
       </div>
 
+      {/* BIM MANAGER - HIERARCHICAL TREE VIEW */}
+      <div className="border border-cyan-200/50 bg-white rounded-xl overflow-hidden shadow-sm">
+        <div className="bg-cyan-50/50 p-2.5 px-3 border-b border-cyan-100 flex items-center justify-between">
+          <span className="text-[10px] font-black uppercase tracking-widest text-cyan-900 font-mono flex items-center gap-1.5">
+            <Building size={13} className="text-cyan-600" />
+            BIM Manager
+          </span>
+          <span className="text-[9px] bg-white border border-cyan-200 text-cyan-700 px-1.5 py-0.5 rounded-full font-bold">
+            {bimElements.length} elementi
+          </span>
+        </div>
+
+        <div className="max-h-[350px] overflow-y-auto divide-y divide-neutral-50">
+          {Object.entries(elementsByFamily).length > 0 ? (
+            Object.entries(elementsByFamily).map(([family, members]) => {
+              const isExpanded = expandedFamilies.has(family);
+              const allVisible = members.every(m => m.isVisible !== false);
+              
+              return (
+                <div key={family} className="group/family">
+                  <div 
+                    className="flex items-center justify-between p-2 hover:bg-cyan-50/30 transition cursor-pointer"
+                    onClick={() => toggleFamily(family)}
+                  >
+                    <div className="flex items-center gap-2">
+                       {isExpanded ? <FolderOpen size={14} className="text-amber-500 fill-amber-100" /> : <Folder size={14} className="text-amber-500 fill-amber-50" />}
+                       <span className="text-[11px] font-bold text-slate-800">{family}</span>
+                       <span className="text-[9px] text-slate-400 font-medium">({members.length})</span>
+                    </div>
+                    <div className="flex items-center gap-2 opacity-40 group-hover/family:opacity-100 transition">
+                      <button 
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          const nextVisible = !allVisible;
+                          setEntities((prev: Entity[]) => {
+                            const next = prev.map(ent => members.find(m => m.id === ent.id) ? { ...ent, isVisible: nextVisible } as any : ent);
+                            onCommitHistory?.(next);
+                            return next;
+                          });
+                        }}
+                        className="p-1 hover:bg-white rounded transition"
+                        title={allVisible ? "Nascondi intera famiglia" : "Mostra intera famiglia"}
+                      >
+                        {allVisible ? <Eye size={12} className="text-cyan-600" /> : <EyeOff size={12} className="text-slate-400" />}
+                      </button>
+                      <ChevronDown size={14} className={`text-slate-400 transition-transform ${isExpanded ? "" : "-rotate-90"}`} />
+                    </div>
+                  </div>
+
+                  {isExpanded && (
+                    <div className="bg-neutral-50/30 pb-1">
+                      {members.map(member => {
+                        const isSelected = member.id === selectedId;
+                        const isHidden = (member as any).isVisible === false;
+                        const isLocked = (member as any).isFrozen === true;
+                        
+                        return (
+                          <div 
+                            key={member.id}
+                            onClick={() => onSelect(member.id)}
+                            className={`flex items-center justify-between py-1.5 pl-8 pr-2 hover:bg-white transition cursor-pointer group/item ${isSelected ? "bg-cyan-100/50" : ""}`}
+                          >
+                            <div className="flex items-center gap-1.5 min-w-0">
+                              <div className={`w-1.5 h-1.5 rounded-full ${isHidden ? 'bg-slate-300' : 'bg-cyan-500'}`} />
+                              <span className={`text-[10.5px] truncate max-w-[140px] ${isSelected ? "font-bold text-cyan-900" : "text-slate-600"} ${isHidden ? "opacity-50 line-through decoration-slate-400" : ""}`}>
+                                {member.bimName || "Elemento senza nome"}
+                              </span>
+                            </div>
+                            
+                            <div className="flex items-center gap-1.5 ">
+                              <button 
+                                onClick={(e) => { e.stopPropagation(); toggleVisibility(member.id); }}
+                                className={`p-1 rounded hover:bg-neutral-100 transition ${isHidden ? "text-slate-400" : "text-cyan-600 opacity-20 group-hover/item:opacity-100"}`}
+                              >
+                                {isHidden ? <EyeOff size={11} /> : <Eye size={11} />}
+                              </button>
+                              <button 
+                                onClick={(e) => { e.stopPropagation(); toggleFrozen(member.id); }}
+                                className={`p-1 rounded hover:bg-neutral-100 transition ${isLocked ? "text-amber-600" : "text-slate-400 opacity-20 group-hover/item:opacity-100"}`}
+                              >
+                                {isLocked ? <Lock size={11} /> : <Unlock size={11} />}
+                              </button>
+                              <button 
+                                onClick={(e) => { e.stopPropagation(); onEditArea?.(member.id); }}
+                                className="p-1 rounded hover:bg-neutral-100 transition text-slate-400 opacity-20 group-hover/item:opacity-100"
+                              >
+                                <Edit size={11} />
+                              </button>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              );
+            })
+          ) : (
+            <div className="p-8 text-center space-y-2">
+              <div className="bg-slate-50 w-10 h-10 rounded-full flex items-center justify-center mx-auto mb-2 text-slate-300 border border-slate-100 italic font-serif">
+                BIM
+              </div>
+              <p className="text-[10px] text-slate-400 font-medium">Nessun elemento strutturale rilevato.</p>
+              <p className="text-[9px] text-slate-300">Usa "Rileva Elemento" per aggiungere fondazioni, murature o finiture.</p>
+            </div>
+          )}
+        </div>
+      </div>
+
       {/* 2D SYMBOLS COMPONENT RECONCILIATION */}
       <div className="border border-slate-200 bg-slate-50/50 rounded-xl overflow-hidden shadow-sm">
         <button
@@ -801,6 +952,137 @@ export function BIMWorkspacePanel({
             >
               <Trash2 size={14} />
             </button>
+          </div>
+
+          {/* Dual Dynamic Visibility & Locking Controller (Element vs Family) */}
+          <div className="bg-white/90 border border-cyan-100 rounded-lg p-2.5 space-y-2 text-xs shadow-sm">
+            <div className="text-[8.5px] font-mono font-black text-cyan-800 uppercase tracking-widest border-b border-cyan-50 pb-1 flex items-center justify-between">
+              <span>🎛️ Filtri & Controllo Rapido</span>
+              <span className="text-[7.5px] bg-cyan-100 px-1 py-0.2 rounded text-cyan-700">Multi-Livello</span>
+            </div>
+            
+            {/* Row 1: Selected Element Control */}
+            <div className="flex items-center justify-between gap-2">
+              <div className="min-w-0 pr-1 flex-1">
+                <span className="block text-[8px] text-slate-400 uppercase tracking-wide font-black">Singolo Elemento</span>
+                <span className="block font-bold text-slate-700 truncate text-[10.5px]" title={selectedEntity.bimName || 'Elemento'}>
+                  {selectedEntity.bimName || 'Senza Nome'}
+                </span>
+              </div>
+              <div className="flex items-center gap-1 shrink-0">
+                {/* Visibility */}
+                <button
+                  onClick={() => updateSelectedBIMField('isVisible', (selectedEntity as any).isVisible === false ? true : false)}
+                  className={`p-1 rounded transition ${(selectedEntity as any).isVisible === false ? 'bg-slate-100 text-slate-400' : 'bg-cyan-50 text-cyan-600 hover:bg-cyan-100 hover:text-cyan-700'}`}
+                  title={(selectedEntity as any).isVisible === false ? "Mostra Elemento" : "Nascondi Elemento"}
+                >
+                  {(selectedEntity as any).isVisible === false ? <EyeOff size={11.5} /> : <Eye size={11.5} />}
+                </button>
+                {/* Freeze / Lock */}
+                <button
+                  onClick={() => updateSelectedBIMField('isFrozen', !(selectedEntity as any).isFrozen)}
+                  className={`p-1 rounded transition ${(selectedEntity as any).isFrozen ? 'bg-amber-100 text-amber-700 hover:bg-amber-200' : 'bg-slate-50 text-slate-400 hover:bg-slate-100 hover:text-slate-600'}`}
+                  title={(selectedEntity as any).isFrozen ? "Sblocca Elemento" : "Blocca/Congela Elemento"}
+                >
+                  {(selectedEntity as any).isFrozen ? <Lock size={11.5} /> : <Unlock size={11.5} />}
+                </button>
+                {/* Delete */}
+                <button
+                  onClick={deleteSelectedBIM}
+                  className="p-1 rounded transition bg-rose-50 text-rose-600 hover:bg-rose-100 hover:text-rose-700"
+                  title="Elimina Elemento"
+                >
+                  <Trash2 size={11.5} />
+                </button>
+              </div>
+            </div>
+
+            {/* Row 2: Selected Family Control */}
+            {(() => {
+              const familyName = (selectedEntity as any).bimFamily || (selectedEntity as any).bimAreaType || 'Altri Elementi';
+              const familyMembers = entities.filter(e => e.isBIM && (((e as any).bimFamily === familyName) || ((e as any).bimAreaType === familyName)));
+              const isFamilyVisible = familyMembers.every(m => (m as any).isVisible !== false);
+              const isFamilyFrozen = familyMembers.every(m => (m as any).isFrozen === true);
+              
+              const toggleFamilyVisibility = () => {
+                const nextVal = !isFamilyVisible;
+                if (typeof setEntities === 'function') {
+                  (setEntities as any)((prev: Entity[]) => {
+                    const next = prev.map(e => {
+                      const isMem = e.isBIM && (((e as any).bimFamily === familyName) || ((e as any).bimAreaType === familyName));
+                      return isMem ? { ...e, isVisible: nextVal } as any : e;
+                    });
+                    onCommitHistory?.(next);
+                    return next;
+                  });
+                }
+              };
+
+              const toggleFamilyFrozen = () => {
+                const nextVal = !isFamilyFrozen;
+                if (typeof setEntities === 'function') {
+                  (setEntities as any)((prev: Entity[]) => {
+                    const next = prev.map(e => {
+                      const isMem = e.isBIM && (((e as any).bimFamily === familyName) || ((e as any).bimAreaType === familyName));
+                      return isMem ? { ...e, isFrozen: nextVal } as any : e;
+                    });
+                    onCommitHistory?.(next);
+                    return next;
+                  });
+                }
+              };
+
+              const deleteFamily = () => {
+                if (confirm(`Sei sicuro di voler eliminare l'intera famiglia di elementi "${familyName}" contenente ${familyMembers.length} oggetti?`)) {
+                  if (typeof setEntities === 'function') {
+                    (setEntities as any)((prev: Entity[]) => {
+                      const next = prev.filter(e => !(e.isBIM && (((e as any).bimFamily === familyName) || ((e as any).bimAreaType === familyName))));
+                      onCommitHistory?.(next);
+                      return next;
+                    });
+                    onSelect(null);
+                  }
+                }
+              };
+
+              return (
+                <div className="flex items-center justify-between gap-2 border-t border-cyan-50 pt-2 shrink-0">
+                  <div className="min-w-0 pr-1 flex-1">
+                    <span className="block text-[8px] text-slate-400 uppercase tracking-wide font-black">Famiglia di Appartenenza</span>
+                    <span className="block font-black text-slate-800 truncate text-[10.5px]" title={familyName}>
+                      📁 {familyName}
+                    </span>
+                    <span className="text-[8.5px] text-slate-500 font-medium">({familyMembers.length} elementi)</span>
+                  </div>
+                  <div className="flex items-center gap-1 shrink-0">
+                    {/* Family Visibility */}
+                    <button
+                      onClick={toggleFamilyVisibility}
+                      className={`p-1 rounded transition ${!isFamilyVisible ? 'bg-slate-100 text-slate-400 hover:bg-slate-200' : 'bg-cyan-100 text-cyan-700 hover:bg-cyan-200 hover:text-cyan-800'}`}
+                      title={isFamilyVisible ? "Nascondi Intera Famiglia" : "Mostra Intera Famiglia"}
+                    >
+                      {!isFamilyVisible ? <EyeOff size={11} /> : <Eye size={11} />}
+                    </button>
+                    {/* Family Freezing */}
+                    <button
+                      onClick={toggleFamilyFrozen}
+                      className={`p-1 rounded transition ${isFamilyFrozen ? 'bg-amber-100 text-amber-700 hover:bg-amber-200' : 'bg-slate-100 text-slate-400 hover:bg-slate-200 hover:text-slate-600'}`}
+                      title={isFamilyFrozen ? "Sblocca Intera Famiglia" : "Congela Intera Famiglia"}
+                    >
+                      {isFamilyFrozen ? <Lock size={11} /> : <Unlock size={11} />}
+                    </button>
+                    {/* Family Deletion */}
+                    <button
+                      onClick={deleteFamily}
+                      className="p-1 rounded transition bg-rose-100 text-rose-700 hover:bg-rose-200 hover:text-rose-800"
+                      title="Elimina Tutta la Famiglia"
+                    >
+                      <Trash2 size={11} />
+                    </button>
+                  </div>
+                </div>
+              );
+            })()}
           </div>
 
           <div className="space-y-2 text-xs">

@@ -14,7 +14,7 @@ pdfjs.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjs.vers
 import { RaccordoDialog } from "./components/RaccordoDialog";
 import { DXFTextReaderDialog } from "./components/DXFTextReaderDialog";
 import { TemplatePreview } from "./components/TemplatePreview";
-import { AreaFunzionaleDialog, FinestreDialog } from "./components/BIMDialogs";
+import { BIMElementDialog, FinestreDialog } from "./components/BIMDialogs";
 import { BIMWorkspacePanel } from "./components/BIMWorkspacePanel";
 import { BIMTopBarControls } from "./components/BIMTopBarControls";
 import { BIM3DViewer } from "./components/BIM3DViewer";
@@ -498,10 +498,10 @@ const MASONRY_TYPES = [
     { id: "tav5", name: "Tavola n. 5", format: "A0", scale: 1000, unit: "cm", position: { x: 0, y: 0 }, visible: false, datiCartiglio: { progetto: "GECOLA CAD", titolo: "Tavola n. 5", autore: "Ing. Domenico Gimondo", data: "2026" } },
   ]);
   const [activeSidebarTab, setActiveSidebarTab] = useState<'penne' | 'tavole' | 'layers' | 'maschere' | 'testo' | 'gemini' | 'manuale' | 'bim'>(() => (localStorage.getItem('activeSidebarTab') as any) || 'penne');
-  const [isBIMAreaDialogOpen, setIsBIMAreaDialogOpen] = useState(false);
+  const [isBIMElementDialogOpen, setIsBIMElementDialogOpen] = useState(false);
   const [is3DViewOpen, setIs3DViewOpen] = useState(false);
   const [detectedAreaPoints, setDetectedAreaPoints] = useState<Point[] | { points: Point[], holes?: Point[][] } | null>(null);
-  const [editingAreaId, setEditingAreaId] = useState<string | null>(null);
+  const [editingEntityId, setEditingEntityId] = useState<string | null>(null);
   const [hoveredGuide, setHoveredGuide] = useState<GuideItem | null>(null);
   const [guideLockedBy, setGuideLockedBy] = useState<string | null>(null);
   const [showFloatingManual, setShowFloatingManual] = useState(false);
@@ -721,81 +721,94 @@ const MASONRY_TYPES = [
     }
   };
 
-  const handleAreaDetected = (result: { points: Point[], holes?: Point[][] }) => {
+  const handleBIMElementDetected = (result: { points: Point[], holes?: Point[][] }) => {
     setDetectedAreaPoints(result);
-    setEditingAreaId(null);
-    setIsBIMAreaDialogOpen(true);
+    setEditingEntityId(null);
+    setIsBIMElementDialogOpen(true);
   };
 
-  const handleEditBIMArea = (areaId: string) => {
-    const area = entities.find(e => e.id === areaId);
-    if (!area) return;
+  const handleEditBIMElement = (id: string) => {
+    const ent = entities.find(e => e.id === id);
+    if (!ent) return;
     
     setDetectedAreaPoints({
-      points: (area as any).bimPoints || (area as any).points || [],
-      holes: (area as any).holes
+      points: (ent as any).bimPoints || (ent as any).points || [],
+      holes: (ent as any).holes
     });
-    setEditingAreaId(areaId);
-    setIsBIMAreaDialogOpen(true);
+    setEditingEntityId(id);
+    setIsBIMElementDialogOpen(true);
   };
 
-  const handleConfirmArea = (areaData: { type: string; name: string; color: string; zPlane: number; zElevation: number; objectHeight: number; hatch: 'SOLID' | 'ANSI31' | 'CROSS' | 'NONE' }) => {
+  const handleConfirmBIMElement = (data: { 
+    familyId: string; 
+    subFamily: string;
+    name: string; 
+    color: string; 
+    zPlane: number; 
+    zElevation: number; 
+    objectHeight: number; 
+    hatch: 'SOLID' | 'ANSI31' | 'CROSS' | 'NONE' 
+  }) => {
     if (!detectedAreaPoints) return;
 
-    if (editingAreaId) {
+    if (editingEntityId) {
       // UPDATE EXISTING
       updateEntitiesWithHistory(prev => prev.map(e => {
-        if (e.id === editingAreaId) {
+        if (e.id === editingEntityId) {
           return {
             ...e,
-            bimAreaType: areaData.type as any,
-            bimName: areaData.name,
-            backgroundColor: areaData.color,
-            bimHatchPattern: areaData.hatch,
-            pattern: areaData.hatch === 'NONE' ? 'SOLID' : areaData.hatch,
-            bimHeight: areaData.objectHeight,
-            bimZPlane: areaData.zPlane,
-            bimZElevation: areaData.zElevation
+            bimFamily: data.subFamily || data.familyId,
+            bimName: data.name,
+            backgroundColor: data.color,
+            color: data.color,
+            bimHatchPattern: data.hatch as any,
+            pattern: data.hatch === 'NONE' ? 'SOLID' : data.hatch as any,
+            bimHeight: data.objectHeight,
+            height: data.objectHeight,
+            bimZPlane: data.zPlane,
+            bimZElevation: data.zElevation
           };
         }
         return e;
       }));
-      setShortcutToast(`Area ${areaData.name} aggiornata ✅`);
+      setShortcutToast(`Elemento ${data.name} aggiornato ✅`);
     } else {
       // CREATE NEW
-      if (!detectedAreaPoints) return;
       const pts = Array.isArray(detectedAreaPoints) ? detectedAreaPoints : detectedAreaPoints.points;
       const hls = Array.isArray(detectedAreaPoints) ? undefined : detectedAreaPoints.holes;
 
-      const newArea: Entity = {
-        id: `bim-area-${Date.now()}`,
+      const newElement: Entity = {
+        id: `bim-elem-${Date.now()}`,
         type: 'hatch', 
         points: pts,
         holes: hls,
-        color: 'rgba(0,0,0,0.5)',
+        color: data.color || 'rgba(0,0,0,0.5)',
         strokeWidth: 1,
-        layer: 'BIM_Aree_Funzionali',
+        layer: 'BIM_Elementi',
         isBIM: true,
-        bimType: 'room',
-        bimAreaType: areaData.type as any,
-        bimName: areaData.name,
-        backgroundColor: areaData.color,
-        bimHatchPattern: areaData.hatch,
-        pattern: areaData.hatch === 'NONE' ? 'SOLID' : areaData.hatch,
-        bimHeight: areaData.objectHeight,
-        bimZPlane: areaData.zPlane,
-        bimZElevation: areaData.zElevation,
-        timestamp: Date.now()
+        bimType: 'element',
+        bimFamily: data.subFamily || data.familyId,
+        bimName: data.name,
+        backgroundColor: data.color,
+        bimHatchPattern: data.hatch as any,
+        pattern: data.hatch === 'NONE' ? 'SOLID' : data.hatch as any,
+        bimHeight: data.objectHeight,
+        height: data.objectHeight,
+        bimZPlane: data.zPlane,
+        bimZElevation: data.zElevation,
+        timestamp: Date.now(),
+        isVisible: true,
+        isFrozen: false
       } as any;
 
-      updateEntitiesWithHistory(prev => [...prev, newArea]);
-      setShortcutToast(`Rilevata ${areaData.name} (${areaData.type}) ✅`);
+      updateEntitiesWithHistory(prev => [...prev, newElement]);
+      setShortcutToast(`Rilevato ${data.name} (${data.familyId}) ✅`);
     }
     
     setTimeout(() => setShortcutToast(null), 4000);
-    setIsBIMAreaDialogOpen(false);
+    setIsBIMElementDialogOpen(false);
     setDetectedAreaPoints(null);
-    setEditingAreaId(null);
+    setEditingEntityId(null);
   };
 
   const handleImportFile = async (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -1805,7 +1818,10 @@ const MASONRY_TYPES = [
       {/* Ribbon */}
       <header className="h-14 border-b border-neutral-300 bg-white flex">
         <div className="flex items-center px-4 border-r border-neutral-300 bg-neutral-900 text-white select-none mr-2 relative">
-          <span className="font-sans font-black tracking-wider text-sm whitespace-nowrap">GECOLA <span className="text-amber-400">CAD</span></span>
+          <div className="flex flex-col">
+            <span className="font-sans font-black tracking-wider text-sm whitespace-nowrap">GECOLA <span className="text-amber-400">CAD</span></span>
+            <span className="text-[9px] text-neutral-400 font-mono -mt-1 opacity-60">VER. 11.29</span>
+          </div>
           {fileHandle && (
             <div className="absolute top-1 right-2 flex items-center justify-center pointer-events-none">
               <div className={`w-2 h-2 rounded-full ${isSaving ? 'bg-amber-400' : 'bg-emerald-500'} transition-colors duration-300 drop-shadow-md`} title={isSaving ? "Salvataggio in corso..." : "Auto-save attivo"}></div>
@@ -2421,8 +2437,8 @@ const MASONRY_TYPES = [
                 setIsBIMPorteOpen(true);
               } else if (entity.bimType === 'window') {
                 setIsBIMFinestreOpen(true);
-              } else if (entity.bimAreaType) {
-                setIsBIMAreaDialogOpen(true);
+              } else if (entity.bimAreaType || (entity as any).bimFamily) {
+                setIsBIMElementDialogOpen(true);
               }
             }}
             eraserType={eraserType}
@@ -2458,7 +2474,7 @@ const MASONRY_TYPES = [
               setEditingRaccordo(raccordoEntity);
               setIsRaccordoDialogOpen(true);
             }}
-            onAreaDetected={handleAreaDetected}
+            onAreaDetected={handleBIMElementDetected}
             highlightedPoints={detectedAreaPoints}
             rotationEntityId={rotationEntityId}
             onSelectForRotation={(id) => {
@@ -2607,29 +2623,32 @@ const MASONRY_TYPES = [
             </div>
           )}
 
-          <AreaFunzionaleDialog
-            isOpen={isBIMAreaDialogOpen}
-            onClose={() => {
-              setIsBIMAreaDialogOpen(false);
-              setDetectedAreaPoints(null);
-              setEditingAreaId(null);
-            }}
-            onConfirm={handleConfirmArea}
-            points={detectedAreaPoints || undefined}
-            initialData={editingAreaId ? (() => {
-              const e = entities.find(ent => ent.id === editingAreaId);
-              if (!e) return undefined;
-              return {
-                type: (e as any).bimAreaType || 'stanza',
-                name: (e as any).bimName || '',
-                color: (e as any).backgroundColor || e.color,
-                zPlane: (e as any).zPlane || 0,
-                zElevation: (e as any).zElevation || 0,
-                objectHeight: (e as any).objectHeight || (e as any).height || 2.70,
-                hatch: (e as any).bimHatchPattern || 'SOLID'
-              };
-            })() : undefined}
-          />
+          {isBIMElementDialogOpen && (
+            <BIMElementDialog
+              isOpen={isBIMElementDialogOpen}
+              onClose={() => {
+                setIsBIMElementDialogOpen(false);
+                setDetectedAreaPoints(null);
+                setEditingEntityId(null);
+              }}
+              onConfirm={handleConfirmBIMElement}
+              points={detectedAreaPoints || undefined}
+              initialData={editingEntityId ? (() => {
+                const e = entities.find(ent => ent.id === editingEntityId);
+                if (!e) return undefined;
+                return {
+                  familyId: (e as any).bimAreaType || 'Fondazioni',
+                  subFamily: (e as any).bimFamily || (e as any).bimSubFamily || '',
+                  name: (e as any).bimName || '',
+                  color: (e as any).backgroundColor || e.color,
+                  zPlane: (e as any).bimZPlane || (e as any).zPlane || 0,
+                  zElevation: (e as any).bimZElevation || (e as any).zElevation || 0,
+                  objectHeight: (e as any).bimHeight || (e as any).height || 270,
+                  hatch: (e as any).bimHatchPattern || 'SOLID'
+                };
+              })() : undefined}
+            />
+          )}
           <FinestreDialog
             isOpen={isBIMFinestreOpen}
             onClose={() => {
@@ -3479,7 +3498,7 @@ const MASONRY_TYPES = [
                   onOpenElettrico={() => setIsBIMElettricoOpen(true)}
                   onOpenIdraulico={() => setIsBIMIdraulicoOpen(true)}
                   onOpenFiniture={() => setIsBIMFinitureOpen(true)}
-                  onEditArea={handleEditBIMArea}
+                  onEditArea={handleEditBIMElement}
                   onOpen3DView={() => setIs3DViewOpen(true)}
                 />
               ) : selectedTool === 'Muro' ? (

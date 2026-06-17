@@ -31,8 +31,12 @@ export interface CADEntity {
     config: { type: 'curvo' | 'rettilineo' | 'taglia'; value: number };
   };
   isBIM?: boolean;
-  bimType?: 'room' | 'door' | 'window' | 'wall' | 'electrical_symbol' | 'hydraulic_symbol' | 'functional_area';
-  bimAreaType?: 'stanza' | 'muro' | 'tramezzo' | 'giardino' | 'tetto' | 'altro';
+  bimType?: 'room' | 'door' | 'window' | 'wall' | 'electrical_symbol' | 'hydraulic_symbol' | 'functional_area' | 'bim_element' | 'element';
+  bimAreaType?: string; // Flexible for any family name
+  bimFamily?: string;   // The name of the family (e.g., 'Fondazioni')
+  bimSubFamily?: string;
+  isFrozen?: boolean;   // BIM-specific frozen state
+  isVisible?: boolean;  // BIM-specific visibility state
   bimName?: string;
   bimHeight?: number; // e.g. 2.70
   bimWidth?: number;  // e.g. 80, 90, 120
