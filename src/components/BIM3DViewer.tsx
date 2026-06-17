@@ -4,7 +4,7 @@ import { OrbitControls, PerspectiveCamera, OrthographicCamera, Grid, Stars, Floa
 import * as THREE from 'three';
 import { useThree } from '@react-three/fiber';
 import { Entity, Point, LineEntity, RectEntity } from '../types';
-import { X, ZoomIn, ZoomOut, RotateCw, Box, Layers, Database, Maximize, Home, Compass, Eye, EyeOff, Info, Settings, MousePointer2, Move, Scissors, Play, Pause, RefreshCw, ArrowDown, ArrowUp, ArrowLeft, ArrowRight, Edit, Trash2, Wand2, Lock, Unlock, FolderTree, ChevronDown, ChevronRight } from 'lucide-react';
+import { X, ZoomIn, ZoomOut, RotateCw, Box, Layers, Database, Maximize, Home, Compass, Eye, EyeOff, Info, Settings, MousePointer2, Move, Scissors, Play, Pause, RefreshCw, ArrowDown, ArrowUp, ArrowLeft, ArrowRight, Edit, Trash2, Wand2, Lock, Unlock, FolderTree, ChevronDown, ChevronRight, Sliders } from 'lucide-react';
 import { BIMElementDialog, PorteDialog, FinestreDialog } from './BIMDialogs';
 
 interface BIM3DViewerProps {
@@ -1864,8 +1864,8 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
              
              {/* Height markings */}
              <div className="absolute right-1 h-[35vh] flex flex-col justify-between py-1 pointer-events-none">
-               {[Math.ceil(maxModelHeight + 0.5), Math.ceil((maxModelHeight + 0.5) * 0.8), Math.ceil((maxModelHeight + 0.5) * 0.6), Math.ceil((maxModelHeight + 0.5) * 0.4), Math.ceil((maxModelHeight + 0.5) * 0.2), 0].map(h => (
-                 <div key={h} className="flex items-center gap-1.5">
+               {[Math.ceil(maxModelHeight + 0.5), Math.ceil((maxModelHeight + 0.5) * 0.8), Math.ceil((maxModelHeight + 0.5) * 0.6), Math.ceil((maxModelHeight + 0.5) * 0.4), Math.ceil((maxModelHeight + 0.5) * 0.2), 0].map((h, idx) => (
+                 <div key={`height-mark-${idx}`} className="flex items-center gap-1.5">
                    <div className="w-1.5 h-0.5 bg-slate-200 rounded-full" />
                    <span className="text-[8px] font-bold text-slate-300 font-mono">{h}m</span>
                  </div>
@@ -2161,49 +2161,73 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
                                 </span>
                               </div>
 
-                              {/* Action buttons (Individual Level) */}
-                              <div className="flex items-center gap-0.5 shrink-0">
-                                {/* Visibility toggle */}
-                                <button
-                                  onClick={() => {
-                                    setEntities(prev => prev.map(ent => ent.id === member.id ? { ...ent, isVisible: !isMemVisible } as any : ent));
-                                    if (selectedEntity && selectedEntity.id === member.id) {
-                                      setSelectedEntity(prev => prev ? { ...prev, isVisible: !isMemVisible } as any : null);
-                                    }
-                                  }}
-                                  className={`p-1 rounded-md transition duration-150 cursor-pointer ${
-                                    isMemVisible ? 'text-cyan-600 hover:bg-cyan-50' : 'text-slate-350 hover:bg-slate-100'
-                                  }`}
-                                  title={isMemVisible ? "Nascondi elemento" : "Mostra elemento"}
-                                >
-                                  {isMemVisible ? <Eye size={11} /> : <EyeOff size={11} />}
-                                </button>
+                               {/* Action buttons (Individual Level) */}
+                               <div className="flex items-center gap-0.5 shrink-0">
+                                 {/* Visibility toggle */}
+                                 <button
+                                   onClick={() => {
+                                     setEntities(prev => prev.map(ent => ent.id === member.id ? { ...ent, isVisible: !isMemVisible } as any : ent));
+                                     if (selectedEntity && selectedEntity.id === member.id) {
+                                       setSelectedEntity(prev => prev ? { ...prev, isVisible: !isMemVisible } as any : null);
+                                     }
+                                   }}
+                                   className={`p-1 rounded-md transition duration-150 cursor-pointer ${
+                                     isMemVisible ? 'text-cyan-600 hover:bg-cyan-50' : 'text-slate-350 hover:bg-slate-100'
+                                   }`}
+                                   title={isMemVisible ? "Nascondi elemento" : "Mostra elemento"}
+                                 >
+                                   {isMemVisible ? <Eye size={11} /> : <EyeOff size={11} />}
+                                 </button>
 
-                                {/* Freeze toggle */}
-                                <button
-                                  onClick={() => {
-                                    setEntities(prev => prev.map(ent => ent.id === member.id ? { ...ent, isFrozen: !isMemFrozen } as any : ent));
-                                    if (selectedEntity && selectedEntity.id === member.id) {
-                                      setSelectedEntity(prev => prev ? { ...prev, isFrozen: !isMemFrozen } as any : null);
-                                    }
-                                  }}
-                                  className={`p-1 rounded-md transition duration-150 cursor-pointer ${
-                                    isMemFrozen ? 'text-amber-600 hover:bg-amber-50' : 'text-slate-350 hover:bg-slate-100'
-                                  }`}
-                                  title={isMemFrozen ? "Sblocca elemento" : "Congela/Blocca elemento"}
-                                >
-                                  {isMemFrozen ? <Lock size={11} /> : <Unlock size={11} />}
-                                </button>
+                                 {/* Freeze toggle */}
+                                 <button
+                                   onClick={() => {
+                                     setEntities(prev => prev.map(ent => ent.id === member.id ? { ...ent, isFrozen: !isMemFrozen } as any : ent));
+                                     if (selectedEntity && selectedEntity.id === member.id) {
+                                       setSelectedEntity(prev => prev ? { ...prev, isFrozen: !isMemFrozen } as any : null);
+                                     }
+                                   }}
+                                   className={`p-1 rounded-md transition duration-150 cursor-pointer ${
+                                     isMemFrozen ? 'text-amber-600 hover:bg-amber-50' : 'text-slate-350 hover:bg-slate-100'
+                                   }`}
+                                   title={isMemFrozen ? "Sblocca elemento" : "Congela/Blocca elemento"}
+                                 >
+                                   {isMemFrozen ? <Lock size={11} /> : <Unlock size={11} />}
+                                 </button>
 
-                                {/* Delete single element */}
-                                <button
-                                  onClick={() => handleDeleteEntity(member.id)}
-                                  className="p-1 rounded-md text-rose-450 hover:bg-rose-50 transition duration-150 cursor-pointer"
-                                  title="Elimina elemento"
-                                >
-                                  <Trash2 size={11} />
-                                </button>
-                              </div>
+                                 {/* Properties inspect */}
+                                 <button
+                                   onClick={() => {
+                                     setSelectedEntity(member);
+                                     setInspectorOpen(true);
+                                     flashEntity(member.id);
+                                   }}
+                                   className={`p-1 rounded-md transition duration-150 cursor-pointer ${
+                                     isMemSelected ? 'text-indigo-600 bg-indigo-50' : 'text-slate-350 hover:bg-slate-100 hover:text-slate-700'
+                                   }`}
+                                   title="Parametri e Proprietà"
+                                 >
+                                   <Sliders size={11} />
+                                 </button>
+
+                                 {/* Edit parameters dialog */}
+                                 <button
+                                   onClick={() => handleOpenClickDialog(member)}
+                                   className="p-1 rounded-md text-slate-350 hover:bg-slate-100 hover:text-slate-700 transition duration-150 cursor-pointer"
+                                   title="Modifica parametri dimensionali"
+                                  >
+                                    <Edit size={11} />
+                                 </button>
+
+                                 {/* Delete single element */}
+                                 <button
+                                   onClick={() => handleDeleteEntity(member.id)}
+                                   className="p-1 rounded-md text-rose-450 hover:bg-rose-50 transition duration-150 cursor-pointer"
+                                   title="Elimina elemento"
+                                 >
+                                   <Trash2 size={11} />
+                                 </button>
+                               </div>
                             </div>
                           );
                         })}
@@ -2427,43 +2451,102 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
                   <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Altezza</span>
                   <span className="text-[13px] font-black text-slate-700">{(selectedEntity as any).bimHeight || (selectedEntity as any).height || 270} cm</span>
                 </div>
-                {((selectedEntity as any).bimType === 'room' || (selectedEntity as any).bimType === 'muro' || (selectedEntity as any).bimAreaType === 'muro' || selectedEntity.type === 'bim-csg') && (
-                  <>
-                    <div className="flex justify-between items-center px-2">
-                      <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Superficie</span>
-                      <span className="text-[13px] font-black text-slate-700">
-                        {selectedEntity.type === 'bim-csg' ? ((selectedEntity as any).bimArea || 0).toFixed(2) : getRoomAreaMq((selectedEntity as any).bimPoints || (selectedEntity as any).points).toFixed(2)} mq
-                      </span>
-                    </div>
-                    {selectedEntity.type !== 'bim-csg' && (
-                      <div className="flex justify-between items-center px-2">
-                        <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Perimetro</span>
-                        <span className="text-[13px] font-black text-slate-700">{getRoomPerimeterM((selectedEntity as any).bimPoints || (selectedEntity as any).points).toFixed(2)} m</span>
-                      </div>
-                    )}
-                    <div className="flex justify-between items-center px-2">
-                      <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Volume</span>
-                      <span className="text-[13px] font-black text-slate-700">
-                        {selectedEntity.type === 'bim-csg' ? ((selectedEntity as any).bimVolume || 0).toFixed(2) : (getRoomAreaMq((selectedEntity as any).bimPoints || (selectedEntity as any).points) * (((selectedEntity as any).bimHeight || (selectedEntity as any).height || 270) / 100)).toFixed(2)} mc
-                      </span>
-                    </div>
-                    {selectedEntity.type !== 'bim-csg' && (
-                      <div className="flex justify-between items-center px-2 py-1 bg-amber-500/5 rounded border border-amber-500/15 mt-1">
-                        <span className="text-[10px] font-bold text-amber-800 uppercase tracking-widest flex items-center gap-1">
-                          🏗️ Casseri (Armat.)
-                        </span>
-                        <span className="text-[13px] font-black text-amber-700">
-                          {(() => {
-                            const pts = (selectedEntity as any).bimPoints || (selectedEntity as any).points;
-                            const area = getRoomAreaMq(pts);
-                            const per = getRoomPerimeterM(pts);
-                            const h = ((selectedEntity as any).bimHeight || (selectedEntity as any).height || 270) / 100;
-                            return (area + (per * h)).toFixed(2);
-                          })()} mq
-                        </span>
-                      </div>
-                    )}
-                  </>
+                {((selectedEntity as any).bimType === 'room' || (selectedEntity as any).bimType === 'muro' || (selectedEntity as any).bimAreaType === 'muro' || selectedEntity.type === 'bim-csg' || (selectedEntity as any).bimType === 'door' || (selectedEntity as any).bimType === 'window') && (
+                  <div className="mt-2 border-t border-slate-200/60 pt-4 space-y-3">
+                    <span className="text-[10px] font-black text-cyan-800 uppercase tracking-widest flex items-center gap-1.5 font-mono">
+                      <Sliders size={13} className="text-cyan-600 animate-pulse" />
+                      Misure Geometriche BIM Integrali
+                    </span>
+                    
+                    {(() => {
+                      const isRoomOrWall = (selectedEntity as any).bimType === 'room' || (selectedEntity as any).bimType === 'muro' || (selectedEntity as any).bimAreaType === 'muro' || selectedEntity.type === 'bim-csg';
+                      const isOpening = (selectedEntity as any).bimType === 'door' || (selectedEntity as any).bimType === 'window';
+                      
+                      if (isRoomOrWall) {
+                        const pts = (selectedEntity as any).bimPoints || (selectedEntity as any).points || [];
+                        const isCsg = selectedEntity.type === 'bim-csg';
+                        
+                        const baseAreaMq = isCsg ? ((selectedEntity as any).bimArea || 0) : getRoomAreaMq(pts);
+                        const perimeterM = isCsg ? 0 : getRoomPerimeterM(pts);
+                        const heightM = ((selectedEntity as any).bimHeight || (selectedEntity as any).height || 270) / 100;
+                        
+                        const volumeMc = isCsg ? ((selectedEntity as any).bimVolume || 0) : (baseAreaMq * heightM);
+                        const soffittoMq = baseAreaMq; 
+                        const spondeMq = perimeterM * heightM; 
+                        const totalCasseri = baseAreaMq + spondeMq;
+                        
+                        return (
+                          <div className="grid grid-cols-2 gap-2 text-[11px] bg-slate-50 border border-slate-200/50 p-3 rounded-2xl">
+                            <div className="bg-white p-2 rounded-xl border border-slate-100/90 shadow-[0_1px_2px_rgba(0,0,0,0.02)]">
+                              <span className="block text-[8px] text-slate-450 font-extrabold uppercase tracking-wider">Pavimento (Base)</span>
+                              <span className="font-mono font-black text-slate-800 text-xs">{baseAreaMq.toFixed(2)} mq</span>
+                            </div>
+                            <div className="bg-white p-2 rounded-xl border border-slate-100/90 shadow-[0_1px_2px_rgba(0,0,0,0.02)]">
+                              <span className="block text-[8px] text-slate-450 font-extrabold uppercase tracking-wider">Soffitto</span>
+                              <span className="font-mono font-black text-slate-800 text-xs">{soffittoMq.toFixed(2)} mq</span>
+                            </div>
+                            <div className="bg-white p-2 rounded-xl border border-slate-100/90 shadow-[0_1px_2px_rgba(0,0,0,0.02)]">
+                              <span className="block text-[8px] text-slate-450 font-extrabold uppercase tracking-wider">Pareti/Spalle</span>
+                              <span className="font-mono font-black text-slate-800 text-xs">{spondeMq.toFixed(2)} mq</span>
+                            </div>
+                            <div className="bg-white p-2 rounded-xl border border-slate-100/90 shadow-[0_1px_2px_rgba(0,0,0,0.02)]">
+                              <span className="block text-[8px] text-slate-450 font-extrabold uppercase tracking-wider">Volume Netto</span>
+                              <span className="font-mono font-black text-cyan-700 text-xs">{volumeMc.toFixed(2)} mc</span>
+                            </div>
+                            <div className="bg-white p-2 rounded-xl border border-slate-100/90 shadow-[0_1px_2px_rgba(0,0,0,0.02)] col-span-2 flex justify-between items-center">
+                              <span className="text-[8px] text-slate-450 font-extrabold uppercase tracking-wider">Perimetro Sviluppo</span>
+                              <span className="font-mono font-black text-slate-800 text-xs">{perimeterM.toFixed(2)} m</span>
+                            </div>
+                            <div className="bg-amber-500/5 p-2 rounded-xl border border-amber-500/10 col-span-2 flex justify-between items-center">
+                              <span className="text-[8px] text-amber-800 font-extrabold uppercase tracking-wider flex items-center gap-1">🏗️ Sviluppo Casseri / Tot.</span>
+                              <span className="font-mono font-black text-amber-700 text-xs">{totalCasseri.toFixed(2)} mq</span>
+                            </div>
+                          </div>
+                        );
+                      } else if (isOpening) {
+                        const widthCm = (selectedEntity as any).bimWidth || 80;
+                        const heightCm = (selectedEntity as any).bimWindowHeight || (selectedEntity as any).bimHeight || ((selectedEntity as any).bimType === 'door' ? 210 : 140);
+                        const thicknessCm = (selectedEntity as any).bimThickness || 10; 
+                        
+                        const baseAreaMq = (widthCm * thicknessCm) / 10000;
+                        const soffittoMq = baseAreaMq;
+                        const spondeMq = (heightCm * thicknessCm * 2) / 10000; 
+                        const foroMq = (widthCm * heightCm) / 10000;
+                        const volumeMc = (widthCm * heightCm * thicknessCm) / 1000000;
+                        const totalSviluppo = baseAreaMq + soffittoMq + spondeMq;
+                        
+                        return (
+                          <div className="grid grid-cols-2 gap-2 text-[11px] bg-slate-50 border border-slate-200/50 p-3 rounded-2xl">
+                            <div className="bg-white p-2 rounded-xl border border-slate-100/90 shadow-[0_1px_2px_rgba(0,0,0,0.02)]">
+                              <span className="block text-[8px] text-slate-450 font-extrabold uppercase tracking-wider">Pavimento (Soglia)</span>
+                              <span className="font-mono font-black text-slate-800 text-xs">{baseAreaMq.toFixed(3)} mq</span>
+                            </div>
+                            <div className="bg-white p-2 rounded-xl border border-slate-100/90 shadow-[0_1px_2px_rgba(0,0,0,0.02)]">
+                              <span className="block text-[8px] text-slate-450 font-extrabold uppercase tracking-wider">Soffitto (Mazzetta)</span>
+                              <span className="font-mono font-black text-slate-800 text-xs">{soffittoMq.toFixed(3)} mq</span>
+                            </div>
+                            <div className="bg-white p-2 rounded-xl border border-slate-100/90 shadow-[0_1px_2px_rgba(0,0,0,0.02)]">
+                              <span className="block text-[8px] text-slate-450 font-extrabold uppercase tracking-wider">Superficie Foro</span>
+                              <span className="font-mono font-black text-indigo-700 text-xs">{foroMq.toFixed(2)} mq</span>
+                            </div>
+                            <div className="bg-white p-2 rounded-xl border border-slate-100/90 shadow-[0_1px_2px_rgba(0,0,0,0.02)]">
+                              <span className="block text-[8px] text-slate-450 font-extrabold uppercase tracking-wider">Volume Serramento</span>
+                              <span className="font-mono font-black text-cyan-700 text-xs">{volumeMc.toFixed(4)} mc</span>
+                            </div>
+                            <div className="bg-white p-2 rounded-xl border border-slate-100/90 shadow-[0_1px_2px_rgba(0,0,0,0.02)] col-span-2 flex justify-between items-center">
+                              <span className="text-[8px] text-slate-450 font-extrabold uppercase tracking-wider">Spalle Laterali</span>
+                              <span className="font-mono font-black text-slate-800 text-xs">{spondeMq.toFixed(3)} mq</span>
+                            </div>
+                            <div className="bg-slate-100 p-2 rounded-xl border border-slate-200/50 col-span-2 flex justify-between items-center">
+                              <span className="text-[8px] text-slate-600 font-extrabold uppercase tracking-wider">Sviluppo Totale</span>
+                              <span className="font-mono font-black text-slate-700 text-xs">{totalSviluppo.toFixed(3)} mq</span>
+                            </div>
+                          </div>
+                        );
+                      }
+                      return null;
+                    })()}
+                  </div>
                 )}
               </div>
 

@@ -731,12 +731,19 @@ const MASONRY_TYPES = [
     const ent = entities.find(e => e.id === id);
     if (!ent) return;
     
-    setDetectedAreaPoints({
-      points: (ent as any).bimPoints || (ent as any).points || [],
-      holes: (ent as any).holes
-    });
-    setEditingEntityId(id);
-    setIsBIMElementDialogOpen(true);
+    setSelectedId(id);
+    if ((ent as any).bimType === 'door') {
+      setIsBIMPorteOpen(true);
+    } else if ((ent as any).bimType === 'window') {
+      setIsBIMFinestreOpen(true);
+    } else {
+      setDetectedAreaPoints({
+        points: (ent as any).bimPoints || (ent as any).points || [],
+        holes: (ent as any).holes
+      });
+      setEditingEntityId(id);
+      setIsBIMElementDialogOpen(true);
+    }
   };
 
   const handleConfirmBIMElement = (data: { 

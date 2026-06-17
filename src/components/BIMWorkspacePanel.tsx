@@ -32,6 +32,8 @@ import {
   Unlock,
   FolderOpen,
   Folder,
+  FolderTree,
+  Sliders,
   // Systems icons
   Lightbulb,
   Plug,
@@ -199,12 +201,12 @@ export function BIMWorkspacePanel({
   const [active2DCat, setActive2DCat] = useState<string>('Verde');
   const [expandedFamilies, setExpandedFamilies] = useState<Set<string>>(new Set(['Muri Portanti', 'Tramezzature']));
 
-  const bimElements = entities.filter(e => e.isBIM && (e as any).bimType === 'element');
+  const bimElements = entities.filter(e => e.isBIM);
   
   const elementsByFamily = React.useMemo(() => {
     const groups: Record<string, Entity[]> = {};
     bimElements.forEach(e => {
-        const family = (e as any).bimFamily || 'Altri Elementi';
+        const family = (e as any).bimFamily || (e as any).bimAreaType || 'Altri Elementi';
         if (!groups[family]) groups[family] = [];
         groups[family].push(e);
     });
@@ -754,66 +756,142 @@ export function BIMWorkspacePanel({
         <p className="text-[11px] leading-relaxed text-slate-300">
           Traccia elementi strutturali avanzati su layer automatici dedicati, configura impianti, arredi, e pavimenti per calcoli metrici in tempo reale.
         </p>
-        <button 
-          onClick={onOpen3DView}
-          className="mt-4 w-full bg-cyan-400 hover:bg-cyan-300 text-slate-950 font-black py-2.5 rounded-lg flex items-center justify-center gap-2 text-xs tracking-widest uppercase transition-all shadow-[0_10px_20px_rgba(34,211,238,0.2)]"
-        >
-          <BoxIcon size={16} />
-          Visualizzazione 3D BIM
-        </button>
+        <div className="grid grid-cols-2 gap-2 mt-4">
+          <button 
+            onClick={onOpen3DView}
+            className="w-full bg-cyan-400 hover:bg-cyan-300 text-slate-950 font-black py-2.5 rounded-lg flex items-center justify-center gap-1.5 text-[10px] tracking-wider uppercase transition-all shadow-[0_10px_20px_rgba(34,211,238,0.15)] cursor-pointer"
+          >
+            <BoxIcon size={14} />
+            Visione 3D
+          </button>
+          <button 
+            onClick={() => {
+              const treeEl = document.getElementById('bim-manager-tree');
+              if (treeEl) {
+                treeEl.scrollIntoView({ behavior: 'smooth' });
+                treeEl.classList.add('ring-2', 'ring-cyan-450', 'ring-offset-2');
+                setTimeout(() => {
+                  treeEl.classList.remove('ring-2', 'ring-cyan-450', 'ring-offset-2');
+                }, 2000);
+              }
+            }}
+            className="w-full bg-slate-800 hover:bg-slate-750 text-cyan-400 border border-cyan-500/30 font-black py-2.5 rounded-lg flex items-center justify-center gap-1.5 text-[10px] tracking-wider uppercase transition-all cursor-pointer"
+            title="Mostra / Gestisci rami e alberature BIM"
+          >
+            <FolderTree size={14} className="text-cyan-400" />
+            Rami BIM
+          </button>
+        </div>
       </div>
 
       {/* BIM MANAGER - HIERARCHICAL TREE VIEW */}
-      <div className="border border-cyan-200/50 bg-white rounded-xl overflow-hidden shadow-sm">
+      <div id="bim-manager-tree" className="border border-cyan-200/50 bg-white rounded-xl overflow-hidden shadow-sm transition-all duration-300">
         <div className="bg-cyan-50/50 p-2.5 px-3 border-b border-cyan-100 flex items-center justify-between">
           <span className="text-[10px] font-black uppercase tracking-widest text-cyan-900 font-mono flex items-center gap-1.5">
-            <Building size={13} className="text-cyan-600" />
-            BIM Manager
+            <FolderTree size={13} className="text-cyan-600" />
+            Rami BIM (Albero Struttura)
           </span>
           <span className="text-[9px] bg-white border border-cyan-200 text-cyan-700 px-1.5 py-0.5 rounded-full font-bold">
             {bimElements.length} elementi
           </span>
         </div>
 
-        <div className="max-h-[350px] overflow-y-auto divide-y divide-neutral-50">
+        <div className="max-h-[350px] overflow-y-auto divide-y divide-slate-100">
           {Object.entries(elementsByFamily).length > 0 ? (
             Object.entries(elementsByFamily).map(([family, members]) => {
               const isExpanded = expandedFamilies.has(family);
-              const allVisible = members.every(m => m.isVisible !== false);
+              const allVisible = members.every(m => (m as any).isVisible !== false);
+              const allFrozen = members.every(m => (m as any).isFrozen === true);
               
               return (
-                <div key={family} className="group/family">
+                <div key={family} className="group/family bg-slate-50/20">
+                  {/* Family Header */}
                   <div 
-                    className="flex items-center justify-between p-2 hover:bg-cyan-50/30 transition cursor-pointer"
+                    className="flex items-center justify-between p-2.5 hover:bg-slate-50 transition cursor-pointer gap-2"
                     onClick={() => toggleFamily(family)}
                   >
-                    <div className="flex items-center gap-2">
-                       {isExpanded ? <FolderOpen size={14} className="text-amber-500 fill-amber-100" /> : <Folder size={14} className="text-amber-500 fill-amber-50" />}
-                       <span className="text-[11px] font-bold text-slate-800">{family}</span>
-                       <span className="text-[9px] text-slate-400 font-medium">({members.length})</span>
+                    <div className="flex items-center gap-1.5 min-w-0 flex-1">
+                      <span className="text-slate-400 select-none shrink-0 transition-transform duration-205">
+                        {isExpanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+                      </span>
+                      {isExpanded ? (
+                        <FolderOpen size={13.5} className="text-amber-500 fill-amber-100 shrink-0" />
+                      ) : (
+                        <Folder size={13.5} className="text-amber-500 fill-amber-50 shrink-0" />
+                      )}
+                      <span className="text-[11px] font-extrabold text-slate-850 truncate" title={family}>
+                        {family}
+                      </span>
+                      <span className="text-[9px] text-slate-450 font-bold font-mono">({members.length})</span>
                     </div>
-                    <div className="flex items-center gap-2 opacity-40 group-hover/family:opacity-100 transition">
+
+                    {/* Actions on family level */}
+                    <div className="flex items-center gap-1.5 shrink-0 opacity-80 group-hover/family:opacity-100 transition duration-200" onClick={(e) => e.stopPropagation()}>
+                      {/* Family Visibility */}
                       <button 
-                        onClick={(e) => {
-                          e.stopPropagation();
+                        onClick={() => {
                           const nextVisible = !allVisible;
                           setEntities((prev: Entity[]) => {
-                            const next = prev.map(ent => members.find(m => m.id === ent.id) ? { ...ent, isVisible: nextVisible } as any : ent);
+                            const next = prev.map(ent => {
+                              const isMem = ent.isBIM && (((ent as any).bimFamily || (ent as any).bimAreaType || 'Altri Elementi') === family);
+                              return isMem ? { ...ent, isVisible: nextVisible } as any : ent;
+                            });
                             onCommitHistory?.(next);
                             return next;
                           });
                         }}
-                        className="p-1 hover:bg-white rounded transition"
-                        title={allVisible ? "Nascondi intera famiglia" : "Mostra intera famiglia"}
+                        className={`p-1 rounded-md transition-all duration-200 cursor-pointer ${
+                          allVisible ? 'text-cyan-600 hover:bg-white border border-transparent hover:border-cyan-100' : 'text-slate-400 hover:bg-white border border-transparent'
+                        }`}
+                        title={allVisible ? "Nascondi tutta la famiglia" : "Mostra tutta la famiglia"}
                       >
-                        {allVisible ? <Eye size={12} className="text-cyan-600" /> : <EyeOff size={12} className="text-slate-400" />}
+                        {allVisible ? <Eye size={12.5} /> : <EyeOff size={12.5} />}
                       </button>
-                      <ChevronDown size={14} className={`text-slate-400 transition-transform ${isExpanded ? "" : "-rotate-90"}`} />
+
+                      {/* Family Freezing */}
+                      <button 
+                        onClick={() => {
+                          const nextFrozen = !allFrozen;
+                          setEntities((prev: Entity[]) => {
+                            const next = prev.map(ent => {
+                              const isMem = ent.isBIM && (((ent as any).bimFamily || (ent as any).bimAreaType || 'Altri Elementi') === family);
+                              return isMem ? { ...ent, isFrozen: nextFrozen } as any : ent;
+                            });
+                            onCommitHistory?.(next);
+                            return next;
+                          });
+                        }}
+                        className={`p-1 rounded-md transition-all duration-200 cursor-pointer ${
+                          allFrozen ? 'text-amber-600 hover:bg-white border border-transparent hover:border-amber-100' : 'text-slate-400 hover:bg-white border border-transparent'
+                        }`}
+                        title={allFrozen ? "Sblocca tutta la famiglia" : "Congela/Blocca tutta la famiglia"}
+                      >
+                        {allFrozen ? <Lock size={12.5} /> : <Unlock size={12.5} />}
+                      </button>
+
+                      {/* Delete Family */}
+                      <button 
+                        onClick={() => {
+                          if (confirm(`Sei sicuro di voler eliminare interamente la famiglia "${family}" insieme a tutti i suoi ${members.length} oggetti?`)) {
+                            setEntities((prev: Entity[]) => {
+                              const next = prev.filter(ent => !(ent.isBIM && (((ent as any).bimFamily || (ent as any).bimAreaType || 'Altri Elementi') === family)));
+                              onCommitHistory?.(next);
+                              return next;
+                            });
+                            onSelect(null);
+                          }
+                        }}
+                        className="p-1 rounded-md hover:bg-rose-50 text-rose-500 hover:text-rose-750 transition-all duration-200 cursor-pointer"
+                        title="Elimina intera famiglia"
+                      >
+                        <Trash2 size={12.5} />
+                      </button>
                     </div>
                   </div>
 
+                  {/* Member elements under the family */}
                   {isExpanded && (
-                    <div className="bg-neutral-50/30 pb-1">
+                    <div className="bg-white pb-1 border-t border-slate-100/50 divide-y divide-slate-50">
                       {members.map(member => {
                         const isSelected = member.id === selectedId;
                         const isHidden = (member as any).isVisible === false;
@@ -823,33 +901,83 @@ export function BIMWorkspacePanel({
                           <div 
                             key={member.id}
                             onClick={() => onSelect(member.id)}
-                            className={`flex items-center justify-between py-1.5 pl-8 pr-2 hover:bg-white transition cursor-pointer group/item ${isSelected ? "bg-cyan-100/50" : ""}`}
+                            className={`flex items-center justify-between py-1.5 pl-6 pr-2 hover:bg-indigo-50/20 transition cursor-pointer group/item select-none ${
+                              isSelected ? "bg-cyan-50/60 border-l-2 border-cyan-500" : ""
+                            }`}
                           >
-                            <div className="flex items-center gap-1.5 min-w-0">
-                              <div className={`w-1.5 h-1.5 rounded-full ${isHidden ? 'bg-slate-300' : 'bg-cyan-500'}`} />
-                              <span className={`text-[10.5px] truncate max-w-[140px] ${isSelected ? "font-bold text-cyan-900" : "text-slate-600"} ${isHidden ? "opacity-50 line-through decoration-slate-400" : ""}`}>
-                                {member.bimName || "Elemento senza nome"}
+                            <div className="flex items-center gap-1.5 min-w-0 flex-1">
+                              <span 
+                                className="w-2 h-2 rounded-full shrink-0" 
+                                style={{ backgroundColor: (member as any).backgroundColor || member.color || '#06b6d4' }} 
+                              />
+                              <span className={`text-[10.5px] truncate max-w-[105px] ${
+                                isSelected ? "font-black text-cyan-950" : "text-slate-650 font-medium"
+                              } ${isHidden ? "opacity-45 line-through decoration-slate-400" : ""}`}>
+                                {(member as any).bimName || "Elemento senza nome"}
                               </span>
                             </div>
                             
-                            <div className="flex items-center gap-1.5 ">
+                            <div className="flex items-center gap-0.5 shrink-0" onClick={(e) => e.stopPropagation()}>
+                              {/* Member Visibility */}
                               <button 
-                                onClick={(e) => { e.stopPropagation(); toggleVisibility(member.id); }}
-                                className={`p-1 rounded hover:bg-neutral-100 transition ${isHidden ? "text-slate-400" : "text-cyan-600 opacity-20 group-hover/item:opacity-100"}`}
+                                onClick={() => toggleVisibility(member.id)}
+                                className={`p-1 rounded transition-colors cursor-pointer ${
+                                  isHidden ? "text-slate-350 hover:bg-slate-100" : "text-cyan-600 hover:bg-cyan-50"
+                                }`}
+                                title={isHidden ? "Mostra elemento" : "Nascondi elemento"}
                               >
                                 {isHidden ? <EyeOff size={11} /> : <Eye size={11} />}
                               </button>
+
+                              {/* Member Lock */}
                               <button 
-                                onClick={(e) => { e.stopPropagation(); toggleFrozen(member.id); }}
-                                className={`p-1 rounded hover:bg-neutral-100 transition ${isLocked ? "text-amber-600" : "text-slate-400 opacity-20 group-hover/item:opacity-100"}`}
+                                onClick={() => toggleFrozen(member.id)}
+                                className={`p-1 rounded transition-colors cursor-pointer ${
+                                  isLocked ? "text-amber-600 hover:bg-amber-50" : "text-slate-350 hover:bg-slate-100"
+                                }`}
+                                title={isLocked ? "Sblocca elemento" : "Congela elemento"}
                               >
                                 {isLocked ? <Lock size={11} /> : <Unlock size={11} />}
                               </button>
+
+                              {/* Member Properties */}
                               <button 
-                                onClick={(e) => { e.stopPropagation(); onEditArea?.(member.id); }}
-                                className="p-1 rounded hover:bg-neutral-100 transition text-slate-400 opacity-20 group-hover/item:opacity-100"
+                                onClick={() => onSelect(member.id)}
+                                className={`p-1 rounded transition-colors cursor-pointer ${
+                                  isSelected ? "text-cyan-700 bg-cyan-100/50" : "text-slate-355 hover:bg-slate-100 hover:text-slate-750"
+                                }`}
+                                title="Parametri e Proprietà"
+                              >
+                                <Sliders size={11} />
+                              </button>
+
+                              {/* Member Edit (Pencil) */}
+                              <button 
+                                onClick={() => onEditArea?.(member.id)}
+                                className="p-1 rounded hover:bg-slate-100 text-slate-355 hover:text-slate-750 transition-colors cursor-pointer"
+                                title="Modifica parametri grafici"
                               >
                                 <Edit size={11} />
+                              </button>
+
+                              {/* Delete Member */}
+                              <button 
+                                onClick={() => {
+                                  if (confirm(`Sei sicuro di voler eliminare l'elemento "${(member as any).bimName || 'Bimpl'}"?`)) {
+                                    setEntities((prev: Entity[]) => {
+                                      const next = prev.filter(e => e.id !== member.id);
+                                      onCommitHistory?.(next);
+                                      return next;
+                                    });
+                                    if (selectedId === member.id) {
+                                      onSelect(null);
+                                    }
+                                  }
+                                }}
+                                className="p-1 rounded hover:bg-rose-50 text-rose-450 hover:text-rose-650 transition-colors cursor-pointer"
+                                title="Elimina elemento"
+                              >
+                                <Trash2 size={11} />
                               </button>
                             </div>
                           </div>
@@ -1353,6 +1481,105 @@ export function BIMWorkspacePanel({
                   <CopyIcon size={12} />
                   Copia parametri come oggetto
                 </button>
+              </div>
+            )}
+
+            {/* MISURE GEOMETRICHE BIM INTEGRALI */}
+            {((selectedEntity as any).bimType === 'room' || (selectedEntity as any).bimType === 'muro' || (selectedEntity as any).bimAreaType === 'muro' || selectedEntity.type === 'bim-csg' || (selectedEntity as any).bimType === 'door' || (selectedEntity as any).bimType === 'window') && (
+              <div className="mt-4 border-t border-slate-150 pt-3.5 space-y-2">
+                <span className="text-[10px] font-black text-cyan-800 uppercase tracking-widest flex items-center gap-1.5 font-mono">
+                  <Sliders size={13} className="text-cyan-600 animate-pulse" />
+                  Misure Geometriche BIM Integrali
+                </span>
+                
+                {(() => {
+                  const isRoomOrWall = (selectedEntity as any).bimType === 'room' || (selectedEntity as any).bimType === 'muro' || (selectedEntity as any).bimAreaType === 'muro' || selectedEntity.type === 'bim-csg';
+                  const isOpening = (selectedEntity as any).bimType === 'door' || (selectedEntity as any).bimType === 'window';
+                  
+                  if (isRoomOrWall) {
+                    const pts = (selectedEntity as any).bimPoints || (selectedEntity as any).points || [];
+                    const isCsg = selectedEntity.type === 'bim-csg';
+                    
+                    const baseAreaMq = isCsg ? ((selectedEntity as any).bimArea || 0) : getRoomAreaMq(pts);
+                    const perimeterM = isCsg ? 0 : getRoomPerimeterM(pts);
+                    const heightM = (selectedEntity.bimHeight || 2.70);
+                    
+                    const volumeMc = isCsg ? ((selectedEntity as any).bimVolume || 0) : (baseAreaMq * heightM);
+                    const soffittoMq = baseAreaMq; 
+                    const spondeMq = perimeterM * heightM; 
+                    const totalCasseri = baseAreaMq + spondeMq;
+                    
+                    return (
+                      <div className="grid grid-cols-2 gap-1.5 text-[10.5px] bg-slate-50 border border-slate-200/50 p-2.5 rounded-xl">
+                        <div className="bg-white p-2 rounded-lg border border-slate-100">
+                          <span className="block text-[7.5px] text-slate-400 font-extrabold uppercase tracking-wider">Pavimento (Base)</span>
+                          <span className="font-mono font-black text-slate-800 text-[11px]">{baseAreaMq.toFixed(2)} mq</span>
+                        </div>
+                        <div className="bg-white p-2 rounded-lg border border-slate-100">
+                          <span className="block text-[7.5px] text-slate-400 font-extrabold uppercase tracking-wider">Soffitto</span>
+                          <span className="font-mono font-black text-slate-800 text-[11px]">{soffittoMq.toFixed(2)} mq</span>
+                        </div>
+                        <div className="bg-white p-2 rounded-lg border border-slate-100">
+                          <span className="block text-[7.5px] text-slate-400 font-extrabold uppercase tracking-wider">Pareti/Spalle</span>
+                          <span className="font-mono font-black text-slate-800 text-[11px]">{spondeMq.toFixed(2)} mq</span>
+                        </div>
+                        <div className="bg-white p-2 rounded-lg border border-slate-100">
+                          <span className="block text-[7.5px] text-slate-400 font-extrabold uppercase tracking-wider">Volume Netto</span>
+                          <span className="font-mono font-black text-cyan-700 text-[11px]">{volumeMc.toFixed(2)} mc</span>
+                        </div>
+                        <div className="bg-white p-2 rounded-lg border border-slate-100 col-span-2 flex justify-between items-center">
+                          <span className="text-[7.5px] text-slate-400 font-extrabold uppercase tracking-wider">Perimetro Sviluppo</span>
+                          <span className="font-mono font-black text-slate-800 text-[11px]">{perimeterM.toFixed(2)} m</span>
+                        </div>
+                        <div className="bg-amber-500/5 p-2 rounded-lg border border-amber-500/10 col-span-2 flex justify-between items-center">
+                          <span className="text-[7.5px] text-amber-800 font-extrabold uppercase tracking-wider flex items-center gap-1">🏗️ Sviluppo Casseri / Tot.</span>
+                          <span className="font-mono font-black text-amber-700 text-[11px]">{totalCasseri.toFixed(2)} mq</span>
+                        </div>
+                      </div>
+                    );
+                  } else if (isOpening) {
+                    const widthCm = (selectedEntity as any).bimWidth || 80;
+                    const heightCm = (selectedEntity as any).bimWindowHeight || (selectedEntity as any).bimHeight || ((selectedEntity as any).bimType === 'door' ? 210 : 140);
+                    const thicknessCm = (selectedEntity as any).bimThickness || 10; 
+                    
+                    const baseAreaMq = (widthCm * thicknessCm) / 10000;
+                    const soffittoMq = baseAreaMq;
+                    const spondeMq = (heightCm * thicknessCm * 2) / 10000; 
+                    const foroMq = (widthCm * heightCm) / 10000;
+                    const volumeMc = (widthCm * heightCm * thicknessCm) / 1000000;
+                    const totalSviluppo = baseAreaMq + soffittoMq + spondeMq;
+                    
+                    return (
+                      <div className="grid grid-cols-2 gap-1.5 text-[10.5px] bg-slate-50 border border-slate-200/50 p-2.5 rounded-xl">
+                        <div className="bg-white p-2 rounded-lg border border-slate-100">
+                          <span className="block text-[7.5px] text-slate-450 font-extrabold uppercase tracking-wider">Pavimento (Soglia)</span>
+                          <span className="font-mono font-black text-slate-800 text-[11px]">{baseAreaMq.toFixed(3)} mq</span>
+                        </div>
+                        <div className="bg-white p-2 rounded-lg border border-slate-100">
+                          <span className="block text-[7.5px] text-slate-450 font-extrabold uppercase tracking-wider">Soffitto (Mazzetta)</span>
+                          <span className="font-mono font-black text-slate-800 text-[11px]">{soffittoMq.toFixed(3)} mq</span>
+                        </div>
+                        <div className="bg-white p-2 rounded-lg border border-slate-100">
+                          <span className="block text-[7.5px] text-slate-450 font-extrabold uppercase tracking-wider">Superficie Foro</span>
+                          <span className="font-mono font-black text-indigo-700 text-[11px]">{foroMq.toFixed(2)} mq</span>
+                        </div>
+                        <div className="bg-white p-2 rounded-lg border border-slate-100">
+                          <span className="block text-[7.5px] text-slate-450 font-extrabold uppercase tracking-wider">Volume Serramento</span>
+                          <span className="font-mono font-black text-cyan-700 text-[11px]">{volumeMc.toFixed(4)} mc</span>
+                        </div>
+                        <div className="bg-white p-2 rounded-lg border border-slate-100 col-span-2 flex justify-between items-center">
+                          <span className="text-[7.5px] text-slate-450 font-extrabold uppercase tracking-wider">Spalle Laterali</span>
+                          <span className="font-mono font-black text-slate-800 text-[11px]">{spondeMq.toFixed(3)} mq</span>
+                        </div>
+                        <div className="bg-slate-100 p-2 rounded-lg border border-slate-200/50 col-span-2 flex justify-between items-center">
+                          <span className="text-[7.5px] text-slate-600 font-extrabold uppercase tracking-wider">Sviluppo Totale</span>
+                          <span className="font-mono font-black text-slate-700 text-[11px]">{totalSviluppo.toFixed(3)} mq</span>
+                        </div>
+                      </div>
+                    );
+                  }
+                  return null;
+                })()}
               </div>
             )}
           </div>
