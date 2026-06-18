@@ -77,7 +77,8 @@ import {
   Target,
   Settings2,
   Maximize,
-  RefreshCw
+  RefreshCw,
+  Sliders
 } from "lucide-react";
 
 const RotateScaleIcon = ({ size = 16 }: { size?: number }) => (
@@ -4467,6 +4468,170 @@ const MASONRY_TYPES = [
                           ))}
                         </div>
                       </label>
+
+                      {/* MISURE GEOMETRICHE CAD DEDICATE */}
+                      {selectedEntity && ['line', 'rectangle', 'circle', 'arc', 'hatch'].includes(selectedEntity.type) && (
+                        <div className="mt-4 border-t border-neutral-100 pt-3.5 space-y-2 font-sans text-neutral-800">
+                          <span className="text-[10px] font-black text-indigo-800 uppercase tracking-widest flex items-center gap-1.5 font-mono">
+                            <Sliders size={12} className="text-indigo-600 animate-pulse" />
+                            Misure Geometriche Elemento
+                          </span>
+                          {(() => {
+                            const type = selectedEntity.type as string;
+                            if (type === 'line') {
+                              const line = selectedEntity as any;
+                              const start = line.start || { x: 0, y: 0 };
+                              const end = line.end || { x: 0, y: 0 };
+                              const lengthCm = Math.hypot(end.x - start.x, end.y - start.y);
+                              const lengthM = lengthCm / 100;
+                              
+                              return (
+                                <div className="space-y-1.5 bg-indigo-50/50 border border-indigo-100/50 p-2.5 rounded-xl">
+                                  <div className="flex justify-between items-center text-[10.5px]">
+                                    <span className="text-neutral-500 font-semibold">Lunghezza Reale:</span>
+                                    <span className="font-mono font-black text-indigo-950 text-[11px] bg-white border border-indigo-100 px-2 py-0.5 rounded">
+                                      {lengthCm.toFixed(1)} cm / {lengthM.toFixed(3)} m
+                                    </span>
+                                  </div>
+                                  <div className="grid grid-cols-2 gap-1.5 pt-1 border-t border-indigo-50/50 text-[9px]">
+                                    <div className="flex justify-between">
+                                      <span className="text-neutral-400 font-mono">X1: {start.x.toFixed(0)}</span>
+                                      <span className="text-neutral-400 font-mono">Y1: {start.y.toFixed(0)}</span>
+                                    </div>
+                                    <div className="flex justify-between">
+                                      <span className="text-neutral-400 font-mono">X2: {end.x.toFixed(0)}</span>
+                                      <span className="text-neutral-400 font-mono">Y2: {end.y.toFixed(0)}</span>
+                                    </div>
+                                  </div>
+                                </div>
+                              );
+                            }
+                            if (type === 'rectangle') {
+                              const rect = selectedEntity as any;
+                              const p1 = rect.p1 || { x: 0, y: 0 };
+                              const p2 = rect.p2 || { x: 0, y: 0 };
+                              const w = Math.abs(p2.x - p1.x);
+                              const h = Math.abs(p2.y - p1.y);
+                              
+                              const areaSqCm = w * h;
+                              const areaSqM = areaSqCm / 10000;
+                              const perimeterCm = 2 * (w + h);
+                              const perimeterM = perimeterCm / 100;
+                              
+                              return (
+                                <div className="grid grid-cols-2 gap-1.5 text-[10px] bg-slate-50 border border-neutral-200/50 p-2.5 rounded-xl">
+                                  <div className="bg-white p-2 rounded-lg border border-neutral-100">
+                                    <span className="block text-[7.5px] text-neutral-400 font-extrabold uppercase tracking-wider">Superficie Base</span>
+                                    <span className="font-mono font-black text-neutral-800 text-[10.5px]">{areaSqM.toFixed(3)} mq</span>
+                                  </div>
+                                  <div className="bg-white p-2 rounded-lg border border-neutral-100">
+                                    <span className="block text-[7.5px] text-neutral-400 font-extrabold uppercase tracking-wider">Perimetro</span>
+                                    <span className="font-mono font-black text-neutral-800 text-[10.5px]">{perimeterM.toFixed(2)} m</span>
+                                  </div>
+                                  <div className="bg-white p-2 rounded-lg border border-neutral-100 col-span-2 flex justify-between items-center px-2 py-1.5 align-middle">
+                                    <span className="text-[7.5px] text-neutral-400 font-extrabold uppercase tracking-wider">Dimensioni Lati</span>
+                                    <span className="font-mono font-black text-indigo-700 text-[10.5px]">{w.toFixed(1)} × {h.toFixed(1)} cm</span>
+                                  </div>
+                                </div>
+                              );
+                            }
+                            if (type === 'circle') {
+                              const circle = selectedEntity as any;
+                              const r = circle.radius || 0;
+                              const d = 2 * r;
+                              const circCm = 2 * Math.PI * r;
+                              const circM = circCm / 100;
+                              const areaSqCm = Math.PI * r * r;
+                              const areaSqM = areaSqCm / 10000;
+                              
+                              return (
+                                <div className="grid grid-cols-2 gap-1.5 text-[10px] bg-slate-50 border border-neutral-200/50 p-2.5 rounded-xl">
+                                  <div className="bg-white p-2 rounded-lg border border-neutral-100">
+                                    <span className="block text-[7.5px] text-neutral-400 font-extrabold uppercase tracking-wider">Superficie Area</span>
+                                    <span className="font-mono font-black text-neutral-800 text-[10.5px]">{areaSqM.toFixed(3)} mq</span>
+                                  </div>
+                                  <div className="bg-white p-2 rounded-lg border border-neutral-100">
+                                    <span className="block text-[7.5px] text-neutral-400 font-extrabold uppercase tracking-wider">Circonferenza</span>
+                                    <span className="font-mono font-black text-neutral-800 text-[10.5px]">{circM.toFixed(2)} m</span>
+                                  </div>
+                                  <div className="bg-white p-2 rounded-lg border border-neutral-100 flex justify-between items-center col-span-2 px-2 py-1">
+                                    <span className="text-[7.5px] text-neutral-400 font-extrabold uppercase tracking-wider">Raggio</span>
+                                    <span className="font-mono font-black text-indigo-700 text-[10.5px]">{r.toFixed(1)} cm</span>
+                                  </div>
+                                  <div className="bg-white p-2 rounded-lg border border-neutral-100 flex justify-between items-center col-span-2 px-2 py-1">
+                                    <span className="text-[7.5px] text-neutral-400 font-extrabold uppercase tracking-wider">Diametro</span>
+                                    <span className="font-mono font-black text-indigo-700 text-[10.5px]">{d.toFixed(1)} cm</span>
+                                  </div>
+                                </div>
+                              );
+                            }
+                            if (type === 'arc') {
+                              const arc = selectedEntity as any;
+                              const r = arc.radius || 0;
+                              const spanAng = Math.abs(arc.endAngle - arc.startAngle) || 0;
+                              const arcLenCm = r * spanAng * Math.PI / 180;
+                              const arcLenM = arcLenCm / 100;
+                              
+                              return (
+                                <div className="grid grid-cols-2 gap-1.5 text-[10px] bg-slate-50 border border-neutral-200/50 p-2.5 rounded-xl">
+                                  <div className="bg-white p-2 rounded-lg border border-neutral-100">
+                                    <span className="block text-[7.5px] text-neutral-400 font-extrabold uppercase tracking-wider font-sans">Sviluppo Arco</span>
+                                    <span className="font-mono font-black text-indigo-750 text-[10.5px]">{arcLenM.toFixed(3)} m</span>
+                                  </div>
+                                  <div className="bg-white p-2 rounded-lg border border-neutral-100">
+                                    <span className="block text-[7.5px] text-neutral-400 font-extrabold uppercase tracking-wider font-sans">Apertura Angolo</span>
+                                    <span className="font-mono font-black text-neutral-800 text-[10.5px]">{spanAng.toFixed(1)}°</span>
+                                  </div>
+                                  <div className="bg-white p-2 rounded-lg border border-neutral-100 flex justify-between items-center col-span-2 px-2 py-1">
+                                    <span className="text-[7.5px] text-neutral-400 font-extrabold uppercase tracking-wider">Raggio dell'Arco</span>
+                                    <span className="font-mono font-black text-indigo-700 text-[10.5px]">{r.toFixed(1)} cm</span>
+                                  </div>
+                                </div>
+                              );
+                            }
+                            if (type === 'hatch') {
+                              const hatch = selectedEntity as any;
+                              const pts = hatch.points || [];
+                              
+                              let area = 0;
+                              const len = pts.length;
+                              for (let i = 0; i < len; i++) {
+                                const p1 = pts[i];
+                                const p2 = pts[(i + 1) % len];
+                                area += p1.x * p2.y - p2.x * p1.y;
+                              }
+                              const areaSqM = Math.abs(area) / 20000;
+                              
+                              let perimeter = 0;
+                              for (let i = 0; i < len; i++) {
+                                const p = pts[i];
+                                const nextP = pts[(i + 1) % len];
+                                perimeter += Math.sqrt((nextP.x - p.x)**2 + (nextP.y - p.y)**2);
+                              }
+                              const perimeterM = perimeter / 100;
+                              
+                              return (
+                                <div className="grid grid-cols-2 gap-1.5 text-[10px] bg-slate-50 border border-neutral-200/50 p-2.5 rounded-xl">
+                                  <div className="bg-white p-2 rounded-lg border border-neutral-100">
+                                    <span className="block text-[7.5px] text-neutral-400 font-extrabold uppercase tracking-wider">Superficie Campitura</span>
+                                    <span className="font-mono font-black text-neutral-800 text-[10.5px]">{areaSqM.toFixed(3)} mq</span>
+                                  </div>
+                                  <div className="bg-white p-2 rounded-lg border border-neutral-100">
+                                    <span className="block text-[7.5px] text-neutral-400 font-extrabold uppercase tracking-wider">Perimetro</span>
+                                    <span className="font-mono font-black text-neutral-800 text-[10.5px]">{perimeterM.toFixed(2)} m</span>
+                                  </div>
+                                  <div className="bg-white p-2 rounded-lg border border-neutral-100 flex justify-between items-center col-span-2 px-2 py-1">
+                                    <span className="text-[7.5px] text-neutral-400 font-extrabold uppercase tracking-wider">Numero Vertici</span>
+                                    <span className="font-mono font-black text-indigo-700 text-[10.5px]">{len} punti</span>
+                                  </div>
+                                </div>
+                              );
+                            }
+                            return null;
+                          })()}
+                        </div>
+                      )}
+
                       {selectedEntity.type === "dimension" && (
                         <div className="space-y-4 pt-2 border-t border-neutral-100 font-sans">
                           {/* Testo Personalizzato */}

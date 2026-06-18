@@ -26,8 +26,6 @@ import {
   TreePine,
   Car,
   ChevronRight,
-  Eye,
-  EyeOff,
   Lock,
   Unlock,
   FolderOpen,
@@ -36,6 +34,7 @@ import {
   Sliders,
   // Systems icons
   Lightbulb,
+  LightbulbOff,
   Plug,
   Tv,
   Wifi,
@@ -61,6 +60,7 @@ import {
 import { TEMPLATES } from "../data/templates";
 import { TemplatePreview } from "./TemplatePreview";
 import { getBIMSymbolEntities } from "./CADCanvas";
+import { BIMPropertyCardDialog } from "./BIMPropertyCardDialog";
 
 const BIM_SYSTEMS_DICTIONARY: Record<string, { label: string; system: 'elettrico' | 'idraulico' }> = {
   // Elettrico
@@ -200,6 +200,7 @@ export function BIMWorkspacePanel({
   const [open2DSection, setOpen2DSection] = useState<boolean>(false);
   const [active2DCat, setActive2DCat] = useState<string>('Verde');
   const [expandedFamilies, setExpandedFamilies] = useState<Set<string>>(new Set(['Muri Portanti', 'Tramezzature']));
+  const [showPropertyDialogId, setShowPropertyDialogId] = useState<string | null>(null);
 
   const bimElements = entities.filter(e => e.isBIM);
   
@@ -841,11 +842,11 @@ export function BIMWorkspacePanel({
                           });
                         }}
                         className={`p-1 rounded-md transition-all duration-200 cursor-pointer ${
-                          allVisible ? 'text-cyan-600 hover:bg-white border border-transparent hover:border-cyan-100' : 'text-slate-400 hover:bg-white border border-transparent'
+                          allVisible ? 'text-amber-500 hover:bg-white border border-transparent hover:border-amber-100' : 'text-slate-400 hover:bg-white border border-transparent'
                         }`}
-                        title={allVisible ? "Nascondi tutta la famiglia" : "Mostra tutta la famiglia"}
+                        title={allVisible ? "Spegni tutta la famiglia" : "Accendi tutta la famiglia"}
                       >
-                        {allVisible ? <Eye size={12.5} /> : <EyeOff size={12.5} />}
+                        {allVisible ? <Lightbulb size={12.5} /> : <LightbulbOff size={12.5} />}
                       </button>
 
                       {/* Family Freezing */}
@@ -922,11 +923,11 @@ export function BIMWorkspacePanel({
                               <button 
                                 onClick={() => toggleVisibility(member.id)}
                                 className={`p-1 rounded transition-colors cursor-pointer ${
-                                  isHidden ? "text-slate-350 hover:bg-slate-100" : "text-cyan-600 hover:bg-cyan-50"
+                                  isHidden ? "text-slate-350 hover:bg-slate-100" : "text-amber-500 hover:bg-amber-50"
                                 }`}
-                                title={isHidden ? "Mostra elemento" : "Nascondi elemento"}
+                                title={isHidden ? "Accendi lampadina elemento" : "Spegni lampadina elemento"}
                               >
-                                {isHidden ? <EyeOff size={11} /> : <Eye size={11} />}
+                                {isHidden ? <LightbulbOff size={11} /> : <Lightbulb size={11} />}
                               </button>
 
                               {/* Member Lock */}
@@ -942,7 +943,10 @@ export function BIMWorkspacePanel({
 
                               {/* Member Properties */}
                               <button 
-                                onClick={() => onSelect(member.id)}
+                                onClick={() => {
+                                  onSelect(member.id);
+                                  setShowPropertyDialogId(member.id);
+                                }}
                                 className={`p-1 rounded transition-colors cursor-pointer ${
                                   isSelected ? "text-cyan-700 bg-cyan-100/50" : "text-slate-355 hover:bg-slate-100 hover:text-slate-750"
                                 }`}
@@ -1068,18 +1072,28 @@ export function BIMWorkspacePanel({
       {/* INSPECTOR RANGE FOR SELECTED ELEMENTS */}
       {isBIMSelected && selectedEntity ? (
         <div className="bg-cyan-50/50 border border-cyan-200 rounded-xl p-4 space-y-3">
-          <div className="flex justify-between items-center border-b border-cyan-100 pb-1">
-            <h5 className="text-[10px] font-mono font-bold uppercase text-cyan-800 flex items-center gap-1">
-              <Building size={12} />
-              Ispezione Elemento BIM
+          <div className="flex justify-between items-center border-b border-cyan-100 pb-1.5 gap-2">
+            <h5 className="text-[10px] font-mono font-bold uppercase text-cyan-800 flex items-center gap-1 min-w-0 truncate">
+              <Building size={12} className="shrink-0" />
+              Ispezione Elemento
             </h5>
-            <button
-              onClick={deleteSelectedBIM}
-              title="Elimina Elemento BIM"
-              className="text-rose-600 hover:text-rose-800 p-1 hover:bg-rose-50 rounded transition-colors cursor-pointer"
-            >
-              <Trash2 size={14} />
-            </button>
+            <div className="flex items-center gap-1 shrink-0">
+              <button
+                onClick={() => setShowPropertyDialogId(selectedEntity.id)}
+                title="Apri Scheda Tecnica BIM Avanzata"
+                className="bg-cyan-600 hover:bg-cyan-700 text-white font-bold py-0.5 px-1.5 rounded text-[8.5px] uppercase flex items-center gap-0.5 transition-all shadow-sm cursor-pointer"
+              >
+                <Sliders size={8.5} />
+                SCHEDA BIM 🚀
+              </button>
+              <button
+                onClick={deleteSelectedBIM}
+                title="Elimina Elemento BIM"
+                className="text-rose-600 hover:text-rose-800 p-1 hover:bg-rose-50 rounded transition-colors cursor-pointer"
+              >
+                <Trash2 size={13} />
+              </button>
+            </div>
           </div>
 
           {/* Dual Dynamic Visibility & Locking Controller (Element vs Family) */}
@@ -1104,7 +1118,7 @@ export function BIMWorkspacePanel({
                   className={`p-1 rounded transition ${(selectedEntity as any).isVisible === false ? 'bg-slate-100 text-slate-400' : 'bg-cyan-50 text-cyan-600 hover:bg-cyan-100 hover:text-cyan-700'}`}
                   title={(selectedEntity as any).isVisible === false ? "Mostra Elemento" : "Nascondi Elemento"}
                 >
-                  {(selectedEntity as any).isVisible === false ? <EyeOff size={11.5} /> : <Eye size={11.5} />}
+                  {(selectedEntity as any).isVisible === false ? <LightbulbOff size={11.5} /> : <Lightbulb size={11.5} />}
                 </button>
                 {/* Freeze / Lock */}
                 <button
@@ -1186,10 +1200,10 @@ export function BIMWorkspacePanel({
                     {/* Family Visibility */}
                     <button
                       onClick={toggleFamilyVisibility}
-                      className={`p-1 rounded transition ${!isFamilyVisible ? 'bg-slate-100 text-slate-400 hover:bg-slate-200' : 'bg-cyan-100 text-cyan-700 hover:bg-cyan-200 hover:text-cyan-800'}`}
-                      title={isFamilyVisible ? "Nascondi Intera Famiglia" : "Mostra Intera Famiglia"}
+                      className={`p-1 rounded transition ${!isFamilyVisible ? 'bg-slate-105 text-slate-400 hover:bg-slate-200' : 'bg-amber-100 text-amber-700 hover:bg-amber-200'}`}
+                      title={isFamilyVisible ? "Spegni Intera Famiglia" : "Accendi Intera Famiglia"}
                     >
-                      {!isFamilyVisible ? <EyeOff size={11} /> : <Eye size={11} />}
+                      {!isFamilyVisible ? <LightbulbOff size={11} /> : <Lightbulb size={11} />}
                     </button>
                     {/* Family Freezing */}
                     <button
@@ -1485,7 +1499,7 @@ export function BIMWorkspacePanel({
             )}
 
             {/* MISURE GEOMETRICHE BIM INTEGRALI */}
-            {((selectedEntity as any).bimType === 'room' || (selectedEntity as any).bimType === 'muro' || (selectedEntity as any).bimAreaType === 'muro' || selectedEntity.type === 'bim-csg' || (selectedEntity as any).bimType === 'door' || (selectedEntity as any).bimType === 'window') && (
+            {((selectedEntity as any).bimType === 'room' || (selectedEntity as any).bimType === 'muro' || (selectedEntity as any).bimType === 'wall' || (selectedEntity as any).bimAreaType === 'muro' || selectedEntity.type === 'bim-csg' || (selectedEntity as any).bimType === 'door' || (selectedEntity as any).bimType === 'window') && (
               <div className="mt-4 border-t border-slate-150 pt-3.5 space-y-2">
                 <span className="text-[10px] font-black text-cyan-800 uppercase tracking-widest flex items-center gap-1.5 font-mono">
                   <Sliders size={13} className="text-cyan-600 animate-pulse" />
@@ -1493,20 +1507,47 @@ export function BIMWorkspacePanel({
                 </span>
                 
                 {(() => {
-                  const isRoomOrWall = (selectedEntity as any).bimType === 'room' || (selectedEntity as any).bimType === 'muro' || (selectedEntity as any).bimAreaType === 'muro' || selectedEntity.type === 'bim-csg';
+                  const isRoomOrWall = (selectedEntity as any).bimType === 'room' || (selectedEntity as any).bimType === 'muro' || (selectedEntity as any).bimType === 'wall' || (selectedEntity as any).bimAreaType === 'muro' || selectedEntity.type === 'bim-csg';
                   const isOpening = (selectedEntity as any).bimType === 'door' || (selectedEntity as any).bimType === 'window';
                   
                   if (isRoomOrWall) {
                     const pts = (selectedEntity as any).bimPoints || (selectedEntity as any).points || [];
                     const isCsg = selectedEntity.type === 'bim-csg';
                     
-                    const baseAreaMq = isCsg ? ((selectedEntity as any).bimArea || 0) : getRoomAreaMq(pts);
-                    const perimeterM = isCsg ? 0 : getRoomPerimeterM(pts);
-                    const heightM = (selectedEntity.bimHeight || 2.70);
+                    // Safe unit handling for height (meters vs centimeters)
+                    const rawHeight = (selectedEntity as any).bimHeight || (selectedEntity as any).height || 2.70;
+                    const heightM = rawHeight > 10 ? rawHeight / 100 : rawHeight;
+
+                    // Safe unit handling for thickness (cm vs meters)
+                    const rawThickness = (selectedEntity as any).bimWidth || (selectedEntity as any).width || 15;
+                    const thicknessM = rawThickness > 3 ? rawThickness / 100 : rawThickness;
+
+                    const isWallLine = selectedEntity.type === 'line';
                     
-                    const volumeMc = isCsg ? ((selectedEntity as any).bimVolume || 0) : (baseAreaMq * heightM);
-                    const soffittoMq = baseAreaMq; 
-                    const spondeMq = perimeterM * heightM; 
+                    let baseAreaMq = 0;
+                    let perimeterM = 0;
+                    let soffittoMq = 0;
+                    let spondeMq = 0;
+                    let volumeMc = 0;
+
+                    if (isWallLine) {
+                      const start = (selectedEntity as any).start || { x: 0, y: 0 };
+                      const end = (selectedEntity as any).end || { x: 0, y: 0 };
+                      const lengthCm = Math.hypot(end.x - start.x, end.y - start.y);
+                      const lengthM = lengthCm / 100;
+                      
+                      baseAreaMq = lengthM * thicknessM;
+                      perimeterM = lengthM;
+                      soffittoMq = baseAreaMq;
+                      spondeMq = 2 * lengthM * heightM; 
+                      volumeMc = lengthM * thicknessM * heightM;
+                    } else {
+                      baseAreaMq = isCsg ? ((selectedEntity as any).bimArea || 0) : getRoomAreaMq(pts);
+                      perimeterM = isCsg ? 0 : getRoomPerimeterM(pts);
+                      soffittoMq = baseAreaMq; 
+                      spondeMq = perimeterM * heightM; 
+                      volumeMc = isCsg ? ((selectedEntity as any).bimVolume || 0) : (baseAreaMq * heightM);
+                    }
                     const totalCasseri = baseAreaMq + spondeMq;
                     
                     return (
@@ -1528,7 +1569,9 @@ export function BIMWorkspacePanel({
                           <span className="font-mono font-black text-cyan-700 text-[11px]">{volumeMc.toFixed(2)} mc</span>
                         </div>
                         <div className="bg-white p-2 rounded-lg border border-slate-100 col-span-2 flex justify-between items-center">
-                          <span className="text-[7.5px] text-slate-400 font-extrabold uppercase tracking-wider">Perimetro Sviluppo</span>
+                          <span className="text-[7.5px] text-slate-400 font-extrabold uppercase tracking-wider">
+                            {isWallLine ? "Sviluppo / Lunghezza Muro" : "Perimetro Sviluppo"}
+                          </span>
                           <span className="font-mono font-black text-slate-800 text-[11px]">{perimeterM.toFixed(2)} m</span>
                         </div>
                         <div className="bg-amber-500/5 p-2 rounded-lg border border-amber-500/10 col-span-2 flex justify-between items-center">
@@ -1846,6 +1889,21 @@ export function BIMWorkspacePanel({
           Esporta Computo Metrico BIM
         </button>
       </div>
+
+      {showPropertyDialogId && (() => {
+        const ent = entities.find(item => item.id === showPropertyDialogId);
+        if (!ent) return null;
+        return (
+          <BIMPropertyCardDialog 
+            entity={ent}
+            entities={entities}
+            onClose={() => setShowPropertyDialogId(null)}
+            onUpdateField={(id, field, value) => {
+              setEntities((prevUps: Entity[]) => prevUps.map(x => x.id === id ? { ...x, [field]: value } as any : x));
+            }}
+          />
+        );
+      })()}
     </div>
   );
 }

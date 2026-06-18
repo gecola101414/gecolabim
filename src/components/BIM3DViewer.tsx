@@ -4,8 +4,9 @@ import { OrbitControls, PerspectiveCamera, OrthographicCamera, Grid, Stars, Floa
 import * as THREE from 'three';
 import { useThree } from '@react-three/fiber';
 import { Entity, Point, LineEntity, RectEntity } from '../types';
-import { X, ZoomIn, ZoomOut, RotateCw, Box, Layers, Database, Maximize, Home, Compass, Eye, EyeOff, Info, Settings, MousePointer2, Move, Scissors, Play, Pause, RefreshCw, ArrowDown, ArrowUp, ArrowLeft, ArrowRight, Edit, Trash2, Wand2, Lock, Unlock, FolderTree, ChevronDown, ChevronRight, Sliders } from 'lucide-react';
+import { X, ZoomIn, ZoomOut, RotateCw, Box, Layers, Database, Maximize, Home, Compass, Eye, EyeOff, Lightbulb, LightbulbOff, Info, Settings, MousePointer2, Move, Scissors, Play, Pause, RefreshCw, ArrowDown, ArrowUp, ArrowLeft, ArrowRight, Edit, Trash2, Wand2, Lock, Unlock, FolderTree, ChevronDown, ChevronRight, Sliders } from 'lucide-react';
 import { BIMElementDialog, PorteDialog, FinestreDialog } from './BIMDialogs';
+import { BIMPropertyCardDialog } from './BIMPropertyCardDialog';
 
 interface BIM3DViewerProps {
   entities: Entity[];
@@ -126,7 +127,27 @@ const CADCubeIcon = ({
   );
 };
 
-const Wall = ({ points, height, width, color, baseZ, clippingPlanes = [], opacity = 1 }: { points: Point[], height: number, width?: number, color: string, baseZ: number, clippingPlanes?: THREE.Plane[], opacity?: number }) => {
+const Wall = ({ 
+  points, 
+  height, 
+  width, 
+  color, 
+  baseZ, 
+  clippingPlanes = [], 
+  opacity = 1,
+  globalOpacityMode = 'WORK',
+  globalWallOpacityVal = 0.50
+}: { 
+  points: Point[], 
+  height: number, 
+  width?: number, 
+  color: string, 
+  baseZ: number, 
+  clippingPlanes?: THREE.Plane[], 
+  opacity?: number,
+  globalOpacityMode?: 'WORK' | 'SOLID',
+  globalWallOpacityVal?: number
+}) => {
   const segments = useMemo(() => {
     const result = [];
     const h = height / 100; // Convert to meters
@@ -152,6 +173,10 @@ const Wall = ({ points, height, width, color, baseZ, clippingPlanes = [], opacit
     return result;
   }, [points, height, width, baseZ]);
 
+  const finalOpacity = globalOpacityMode === 'SOLID' 
+    ? 1.0 
+    : (opacity < 1 ? opacity * globalWallOpacityVal : globalWallOpacityVal);
+
   return (
     <group>
       {segments.map((seg, i) => (
@@ -161,9 +186,9 @@ const Wall = ({ points, height, width, color, baseZ, clippingPlanes = [], opacit
             <boxGeometry args={seg.args} />
             <meshStandardMaterial 
               color={color} 
-              transparent={opacity < 1}
-              opacity={opacity}
-              metalness={0.15} 
+              transparent={finalOpacity < 1}
+              opacity={finalOpacity}
+              metalness={0.155} 
               roughness={0.4} 
               envMapIntensity={1}
               clippingPlanes={clippingPlanes}
@@ -183,7 +208,33 @@ const Wall = ({ points, height, width, color, baseZ, clippingPlanes = [], opacit
   );
 };
 
-const Room = ({ points, holes, height, color, name, areaType, baseZ, clippingPlanes = [], opacity = 1 }: { points: Point[], holes?: Point[][], height: number, color: string, name?: string, areaType?: string, baseZ: number, clippingPlanes?: THREE.Plane[], opacity?: number }) => {
+const Room = ({ 
+  points, 
+  holes, 
+  height, 
+  color, 
+  name, 
+  areaType, 
+  baseZ, 
+  clippingPlanes = [], 
+  opacity = 1,
+  globalOpacityMode = 'WORK',
+  globalRoomOpacityVal = 0.25,
+  globalWallOpacityVal = 0.50
+}: { 
+  points: Point[], 
+  holes?: Point[][], 
+  height: number, 
+  color: string, 
+  name?: string, 
+  areaType?: string, 
+  baseZ: number, 
+  clippingPlanes?: THREE.Plane[], 
+  opacity?: number,
+  globalOpacityMode?: 'WORK' | 'SOLID',
+  globalRoomOpacityVal?: number,
+  globalWallOpacityVal?: number
+}) => {
   const h = height / 100; // Convert to meters
   const zBase = baseZ / 100;
   const shape = useMemo(() => {
@@ -226,8 +277,18 @@ const Room = ({ points, holes, height, color, name, areaType, baseZ, clippingPla
   }, [points, h, zBase]);
 
   const isWall = areaType === 'muro';
-  const finalOpacity = opacity < 1 ? opacity : (isWall ? 0.95 : 0.25);
-  const finalFloorOpacity = opacity < 1 ? Math.min(opacity, 0.4) : 0.4;
+  
+  let finalOpacity;
+  let finalFloorOpacity;
+  
+  if (globalOpacityMode === 'SOLID') {
+    finalOpacity = isWall ? 1.0 : 0.85;
+    finalFloorOpacity = 0.9;
+  } else {
+    const baseOpacity = isWall ? globalWallOpacityVal : globalRoomOpacityVal;
+    finalOpacity = opacity < 1 ? opacity * baseOpacity : baseOpacity;
+    finalFloorOpacity = opacity < 1 ? Math.min(opacity * baseOpacity, 0.4) : Math.min(baseOpacity, 0.4);
+  }
 
   return (
     <group position={[0, zBase, 0]}>
@@ -236,9 +297,9 @@ const Room = ({ points, holes, height, color, name, areaType, baseZ, clippingPla
         <extrudeGeometry args={[shape, extrudeSettings]} />
         <meshStandardMaterial 
           color={color} 
-          transparent={!isWall || opacity < 1} 
+          transparent={finalOpacity < 1} 
           opacity={finalOpacity} 
-          metalness={isWall ? 0.3 : 0.1}
+          metalness={isWall ? 0.25 : 0.15}
           roughness={isWall ? 0.4 : 0.3}
           envMapIntensity={1.2}
           clippingPlanes={clippingPlanes}
@@ -528,7 +589,21 @@ const BIMSymbol = ({ entity, onPointerOver, onPointerOut, clippingPlanes = [], o
 };
 
 
-const CSGMeshRender = ({ entity, color, clippingPlanes = [], opacity = 1 }: { entity: any, color: string, clippingPlanes?: THREE.Plane[], opacity?: number }) => {
+const CSGMeshRender = ({ 
+  entity, 
+  color, 
+  clippingPlanes = [], 
+  opacity = 1,
+  globalOpacityMode = 'WORK',
+  globalWallOpacityVal = 0.50
+}: { 
+  entity: any, 
+  color: string, 
+  clippingPlanes?: THREE.Plane[], 
+  opacity?: number,
+  globalOpacityMode?: 'WORK' | 'SOLID',
+  globalWallOpacityVal?: number
+}) => {
   const geom = useMemo(() => {
     const geo = new THREE.BufferGeometry();
     if (entity.geometryData?.positions) {
@@ -547,13 +622,17 @@ const CSGMeshRender = ({ entity, color, clippingPlanes = [], opacity = 1 }: { en
     return geo;
   }, [entity]);
 
+  const finalOpacity = globalOpacityMode === 'SOLID' 
+    ? 1.0 
+    : (opacity < 1 ? opacity * globalWallOpacityVal : globalWallOpacityVal);
+
   return (
     <group>
       <mesh geometry={geom} castShadow receiveShadow>
         <meshStandardMaterial 
           color={color} 
-          transparent={opacity < 1}
-          opacity={opacity}
+          transparent={finalOpacity < 1}
+          opacity={finalOpacity}
           metalness={0.15} 
           roughness={0.4} 
           envMapIntensity={1}
@@ -873,6 +952,7 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
   const [isCSGOperating, setIsCSGOperating] = useState(false);
   const [isBimTreeOpen, setIsBimTreeOpen] = useState(false);
   const [expandedFamilies, setExpandedFamilies] = useState<{[key: string]: boolean}>({});
+  const [showPropertyDialogId, setShowPropertyDialogId] = useState<string | null>(null);
 
   const bimTreeFamilies = useMemo(() => {
     const f: { [key: string]: Entity[] } = {};
@@ -908,6 +988,9 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
   const [isWindowEditOpen, setIsWindowEditOpen] = useState(false);
   const [editingEntityId, setEditingEntityId] = useState<string | null>(null);
   const [isRealistic, setIsRealistic] = useState(false);
+  const [globalOpacityMode, setGlobalOpacityMode] = useState<'WORK' | 'SOLID'>('WORK');
+  const [globalRoomOpacityVal, setGlobalRoomOpacityVal] = useState<number>(0.25);
+  const [globalWallOpacityVal, setGlobalWallOpacityVal] = useState<number>(0.50);
   const [transparentEntities, setTransparentEntities] = useState<Set<string>>(new Set());
   const [stepCm, setStepCm] = useState(10);
 
@@ -2080,12 +2163,12 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
                           }}
                           className={`p-1.5 rounded-lg transition-all duration-200 cursor-pointer ${
                             allVisible 
-                              ? 'bg-cyan-500/10 text-cyan-600 hover:bg-cyan-500/20' 
+                              ? 'bg-amber-500/10 text-amber-500 hover:bg-amber-500/20' 
                               : 'bg-slate-200/60 text-slate-400 hover:bg-slate-200'
                           }`}
-                          title={allVisible ? "Nascondi tutta la famiglia" : "Mostra tutta la famiglia"}
+                          title={allVisible ? "Spegni tutta la famiglia" : "Accendi tutta la famiglia"}
                         >
-                          {allVisible ? <Eye size={12.5} /> : <EyeOff size={12.5} />}
+                          {allVisible ? <Lightbulb size={12.5} /> : <LightbulbOff size={12.5} />}
                         </button>
 
                         {/* Freeze toggle (Family Level) */}
@@ -2170,13 +2253,13 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
                                      if (selectedEntity && selectedEntity.id === member.id) {
                                        setSelectedEntity(prev => prev ? { ...prev, isVisible: !isMemVisible } as any : null);
                                      }
-                                   }}
-                                   className={`p-1 rounded-md transition duration-150 cursor-pointer ${
-                                     isMemVisible ? 'text-cyan-600 hover:bg-cyan-50' : 'text-slate-350 hover:bg-slate-100'
+                                    }}
+                                    className={`p-1 rounded-md transition duration-150 cursor-pointer ${
+                                     isMemVisible ? 'text-amber-500 hover:bg-amber-50' : 'text-slate-355 hover:bg-slate-100'
                                    }`}
-                                   title={isMemVisible ? "Nascondi elemento" : "Mostra elemento"}
+                                   title={isMemVisible ? "Spegni lampadina elemento" : "Accendi lampadina elemento"}
                                  >
-                                   {isMemVisible ? <Eye size={11} /> : <EyeOff size={11} />}
+                                   {isMemVisible ? <Lightbulb size={11} /> : <LightbulbOff size={11} />}
                                  </button>
 
                                  {/* Freeze toggle */}
@@ -2201,6 +2284,7 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
                                      setSelectedEntity(member);
                                      setInspectorOpen(true);
                                      flashEntity(member.id);
+                                     setShowPropertyDialogId(member.id);
                                    }}
                                    className={`p-1 rounded-md transition duration-150 cursor-pointer ${
                                      isMemSelected ? 'text-indigo-600 bg-indigo-50' : 'text-slate-350 hover:bg-slate-100 hover:text-slate-700'
@@ -2302,6 +2386,15 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
             )
           ) : (
             <div className="space-y-6 overflow-y-auto pr-1 flex-1 max-h-[calc(80vh-10rem)] scrollbar-thin">
+              {/* Advanced BIM Property card trigger */}
+              <button
+                onClick={() => setShowPropertyDialogId(selectedEntity.id)}
+                className="w-full py-3.5 bg-gradient-to-r from-amber-500 via-orange-500 to-indigo-600 text-white font-black rounded-3xl shadow-lg shadow-amber-500/10 hover:shadow-indigo-500/20 active:scale-95 transition-all text-xs uppercase tracking-wider flex items-center justify-center gap-2 mb-1 cursor-pointer border-none shrink-0"
+              >
+                <Database size={15} />
+                <span>SCHEDA BIM COMPLETA 🚀</span>
+              </button>
+
               <div className="bg-slate-50 p-5 rounded-3xl border border-slate-100">
                 <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest block mb-1">Nome Elemento</span>
                 <div className="text-base font-black text-slate-800 break-words">
@@ -2451,7 +2544,7 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
                   <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Altezza</span>
                   <span className="text-[13px] font-black text-slate-700">{(selectedEntity as any).bimHeight || (selectedEntity as any).height || 270} cm</span>
                 </div>
-                {((selectedEntity as any).bimType === 'room' || (selectedEntity as any).bimType === 'muro' || (selectedEntity as any).bimAreaType === 'muro' || selectedEntity.type === 'bim-csg' || (selectedEntity as any).bimType === 'door' || (selectedEntity as any).bimType === 'window') && (
+                {((selectedEntity as any).bimType === 'room' || (selectedEntity as any).bimType === 'muro' || (selectedEntity as any).bimType === 'wall' || (selectedEntity as any).bimAreaType === 'muro' || selectedEntity.type === 'bim-csg' || (selectedEntity as any).bimType === 'door' || (selectedEntity as any).bimType === 'window') && (
                   <div className="mt-2 border-t border-slate-200/60 pt-4 space-y-3">
                     <span className="text-[10px] font-black text-cyan-800 uppercase tracking-widest flex items-center gap-1.5 font-mono">
                       <Sliders size={13} className="text-cyan-600 animate-pulse" />
@@ -2459,20 +2552,47 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
                     </span>
                     
                     {(() => {
-                      const isRoomOrWall = (selectedEntity as any).bimType === 'room' || (selectedEntity as any).bimType === 'muro' || (selectedEntity as any).bimAreaType === 'muro' || selectedEntity.type === 'bim-csg';
+                      const isRoomOrWall = (selectedEntity as any).bimType === 'room' || (selectedEntity as any).bimType === 'muro' || (selectedEntity as any).bimType === 'wall' || (selectedEntity as any).bimAreaType === 'muro' || selectedEntity.type === 'bim-csg';
                       const isOpening = (selectedEntity as any).bimType === 'door' || (selectedEntity as any).bimType === 'window';
                       
                       if (isRoomOrWall) {
                         const pts = (selectedEntity as any).bimPoints || (selectedEntity as any).points || [];
                         const isCsg = selectedEntity.type === 'bim-csg';
                         
-                        const baseAreaMq = isCsg ? ((selectedEntity as any).bimArea || 0) : getRoomAreaMq(pts);
-                        const perimeterM = isCsg ? 0 : getRoomPerimeterM(pts);
-                        const heightM = ((selectedEntity as any).bimHeight || (selectedEntity as any).height || 270) / 100;
+                        // Safe unit handling for height (meters vs centimeters)
+                        const rawHeight = (selectedEntity as any).bimHeight || (selectedEntity as any).height || 270;
+                        const heightM = rawHeight > 10 ? rawHeight / 100 : rawHeight;
+
+                        // Safe unit handling for thickness (cm vs meters)
+                        const rawThickness = (selectedEntity as any).bimWidth || (selectedEntity as any).width || 15;
+                        const thicknessM = rawThickness > 3 ? rawThickness / 100 : rawThickness;
+
+                        const isWallLine = selectedEntity.type === 'line';
                         
-                        const volumeMc = isCsg ? ((selectedEntity as any).bimVolume || 0) : (baseAreaMq * heightM);
-                        const soffittoMq = baseAreaMq; 
-                        const spondeMq = perimeterM * heightM; 
+                        let baseAreaMq = 0;
+                        let perimeterM = 0;
+                        let soffittoMq = 0;
+                        let spondeMq = 0;
+                        let volumeMc = 0;
+
+                        if (isWallLine) {
+                          const start = (selectedEntity as any).start || { x: 0, y: 0 };
+                          const end = (selectedEntity as any).end || { x: 0, y: 0 };
+                          const lengthCm = Math.hypot(end.x - start.x, end.y - start.y);
+                          const lengthM = lengthCm / 100;
+                          
+                          baseAreaMq = lengthM * thicknessM;
+                          perimeterM = lengthM;
+                          soffittoMq = baseAreaMq;
+                          spondeMq = 2 * lengthM * heightM; 
+                          volumeMc = lengthM * thicknessM * heightM;
+                        } else {
+                          baseAreaMq = isCsg ? ((selectedEntity as any).bimArea || 0) : getRoomAreaMq(pts);
+                          perimeterM = isCsg ? 0 : getRoomPerimeterM(pts);
+                          soffittoMq = baseAreaMq; 
+                          spondeMq = perimeterM * heightM; 
+                          volumeMc = isCsg ? ((selectedEntity as any).bimVolume || 0) : (baseAreaMq * heightM);
+                        }
                         const totalCasseri = baseAreaMq + spondeMq;
                         
                         return (
@@ -2494,7 +2614,9 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
                               <span className="font-mono font-black text-cyan-700 text-xs">{volumeMc.toFixed(2)} mc</span>
                             </div>
                             <div className="bg-white p-2 rounded-xl border border-slate-100/90 shadow-[0_1px_2px_rgba(0,0,0,0.02)] col-span-2 flex justify-between items-center">
-                              <span className="text-[8px] text-slate-450 font-extrabold uppercase tracking-wider">Perimetro Sviluppo</span>
+                              <span className="text-[8px] text-slate-450 font-extrabold uppercase tracking-wider">
+                                {isWallLine ? "Sviluppo / Lunghezza Muro" : "Perimetro Sviluppo"}
+                              </span>
                               <span className="font-mono font-black text-slate-800 text-xs">{perimeterM.toFixed(2)} m</span>
                             </div>
                             <div className="bg-amber-500/5 p-2 rounded-xl border border-amber-500/10 col-span-2 flex justify-between items-center">
@@ -2889,6 +3011,104 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
         </div>
       </div>
 
+      {/* CONTROLLI OPACITÀ E RENDERING VOLUME (CORPO DI FABBRICA REALE) */}
+      <div className="absolute bottom-8 left-8 z-50 flex flex-col gap-3 bg-white/95 backdrop-blur-2xl p-4.5 rounded-[2rem] border border-slate-200/60 shadow-[0_20px_50px_-15px_rgba(0,0,0,0.15)] pointer-events-auto w-80 animate-in fade-in slide-in-from-left-8 duration-500">
+        <div className="flex items-center justify-between border-b border-slate-100 pb-2.5">
+          <div className="flex items-center gap-2">
+            <Box size={18} className="text-indigo-600 animate-pulse" />
+            <span className="text-[11px] font-black text-slate-800 uppercase tracking-wider">CORPO DI FABBRICA EDIFICIO</span>
+          </div>
+          <span className="text-[9px] font-black bg-indigo-50 text-indigo-600 px-2 py-0.5 rounded-full uppercase">BIM</span>
+        </div>
+
+        {/* Modalità Selector Toggles */}
+        <div className="grid grid-cols-2 gap-1.5 bg-slate-100/80 p-1 rounded-2xl">
+          <button
+            onClick={() => {
+              setGlobalOpacityMode('WORK');
+              setGlobalRoomOpacityVal(0.25);
+              setGlobalWallOpacityVal(0.50);
+            }}
+            className={`py-2 text-[10px] font-black uppercase tracking-wider rounded-xl transition-all cursor-pointer flex items-center justify-center gap-1.5 border-none ${
+              globalOpacityMode === 'WORK'
+                ? 'bg-white text-slate-800 shadow-sm font-extrabold'
+                : 'text-slate-400 hover:text-slate-600 hover:bg-white/50'
+            }`}
+          >
+            <Settings size={12} />
+            <span>⚒️ Lavorazione</span>
+          </button>
+          
+          <button
+            onClick={() => {
+              setGlobalOpacityMode('SOLID');
+            }}
+            className={`py-2 text-[10px] font-black uppercase tracking-wider rounded-xl transition-all cursor-pointer flex items-center justify-center gap-1.5 border-none ${
+              globalOpacityMode === 'SOLID'
+                ? 'bg-gradient-to-r from-indigo-600 to-indigo-700 text-white shadow-md shadow-indigo-200 font-extrabold'
+                : 'text-slate-400 hover:text-slate-600 hover:bg-white/50'
+            }`}
+          >
+            <Compass size={12} />
+            <span>🏢 Corpo Reale</span>
+          </button>
+        </div>
+
+        <div className="space-y-3">
+          {globalOpacityMode === 'SOLID' ? (
+            <div className="bg-emerald-500/5 border border-emerald-500/10 p-3 rounded-2xl text-center">
+              <p className="text-[10px] font-bold text-emerald-700 leading-normal">
+                ✨ **Corpo di Fabbrica Reale Attivato**: Tutto il volume è stato renderizzato come solido pieno (Opacità 100%) per visualizzare l'ingombro architettonico reale.
+              </p>
+            </div>
+          ) : (
+            <>
+              {/* Opacità Muri */}
+              <div className="space-y-1">
+                <div className="flex justify-between items-center text-[10px] font-bold text-slate-600">
+                  <span className="uppercase tracking-wider flex items-center gap-1">🧱 Muri e Strutture</span>
+                  <span className="font-mono text-indigo-600">{Math.round(globalWallOpacityVal * 100)}%</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="range"
+                    min="10"
+                    max="100"
+                    step="5"
+                    value={globalWallOpacityVal * 100}
+                    onChange={(e) => setGlobalWallOpacityVal(parseFloat(e.target.value) / 100)}
+                    className="flex-1 accent-indigo-600 h-1 bg-slate-100 rounded-lg cursor-pointer appearance-none"
+                  />
+                </div>
+              </div>
+
+              {/* Opacità Ambienti */}
+              <div className="space-y-1">
+                <div className="flex justify-between items-center text-[10px] font-bold text-slate-600">
+                  <span className="uppercase tracking-wider flex items-center gap-1">📐 Locali e Volumi</span>
+                  <span className="font-mono text-indigo-600">{Math.round(globalRoomOpacityVal * 100)}%</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="range"
+                    min="5"
+                    max="100"
+                    step="5"
+                    value={globalRoomOpacityVal * 100}
+                    onChange={(e) => setGlobalRoomOpacityVal(parseFloat(e.target.value) / 100)}
+                    className="flex-1 accent-indigo-600 h-1 bg-slate-100 rounded-lg cursor-pointer appearance-none"
+                  />
+                </div>
+              </div>
+              
+              <p className="text-[9px] font-medium text-slate-400 leading-normal">
+                💡 *In fase di lavorazione, una semitrasparenza (es. 50% Muri e 25% Stanze) rende visibili gli elementi interni.*
+              </p>
+            </>
+          )}
+        </div>
+      </div>
+
       {/* Navigation Help */}
       <div className="absolute bottom-8 right-8 z-50 flex items-center gap-4 bg-white/80 backdrop-blur-xl p-3 px-6 rounded-full border border-slate-200 shadow-lg pointer-events-auto">
         <div className="flex items-center gap-2 text-[10px] font-bold text-slate-500">
@@ -2937,6 +3157,11 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
             minDistance={0.01}
             maxDistance={2000}
             makeDefault
+            mouseButtons={{
+              LEFT: THREE.MOUSE.ROTATE,
+              MIDDLE: THREE.MOUSE.PAN,
+              RIGHT: THREE.MOUSE.DOLLY
+            }}
           />
           
           <GizmoHelper
@@ -3078,12 +3303,43 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
                         const heightValue = e.bimHeight || e.height || 270;
                         
                         if (entity.type === 'bim-csg') {
-                          return <CSGMeshRender entity={entity} color={color} clippingPlanes={clippingPlanes} opacity={entityOpacity} />;
+                          return (
+                            <CSGMeshRender 
+                              entity={entity} 
+                              color={color} 
+                              clippingPlanes={clippingPlanes} 
+                              opacity={entityOpacity} 
+                              globalOpacityMode={globalOpacityMode}
+                              globalWallOpacityVal={globalWallOpacityVal}
+                            />
+                          );
                         } else if (isMuro) {
                           return points.length >= 3 && (entity as any).type === 'hatch' ? (
-                            <Room points={points} holes={e.holes} height={heightValue} color={color} areaType="muro" baseZ={baseZ} clippingPlanes={clippingPlanes} opacity={entityOpacity} />
+                            <Room 
+                              points={points} 
+                              holes={e.holes} 
+                              height={heightValue} 
+                              color={color} 
+                              areaType="muro" 
+                              baseZ={baseZ} 
+                              clippingPlanes={clippingPlanes} 
+                              opacity={entityOpacity} 
+                              globalOpacityMode={globalOpacityMode}
+                              globalRoomOpacityVal={globalRoomOpacityVal}
+                              globalWallOpacityVal={globalWallOpacityVal}
+                            />
                           ) : (
-                            <Wall points={points} height={heightValue} width={e.bimWidth} color={color} baseZ={baseZ} clippingPlanes={clippingPlanes} opacity={entityOpacity} />
+                            <Wall 
+                              points={points} 
+                              height={heightValue} 
+                              width={e.bimWidth} 
+                              color={color} 
+                              baseZ={baseZ} 
+                              clippingPlanes={clippingPlanes} 
+                              opacity={entityOpacity} 
+                              globalOpacityMode={globalOpacityMode}
+                              globalWallOpacityVal={globalWallOpacityVal}
+                            />
                           );
                         } else if (entity.bimType === 'room' || entity.bimType === 'element') {
                           return (
@@ -3096,6 +3352,9 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
                               baseZ={baseZ}
                               clippingPlanes={clippingPlanes}
                               opacity={entityOpacity}
+                              globalOpacityMode={globalOpacityMode}
+                              globalRoomOpacityVal={globalRoomOpacityVal}
+                              globalWallOpacityVal={globalWallOpacityVal}
                             />
                           );
                         } else if (entity.bimType === 'door' || entity.bimType === 'window') {
@@ -3168,6 +3427,25 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
           onDelete={() => handleDeleteEntity(selectedEntity.id)}
         />
       )}
+
+      {showPropertyDialogId && (() => {
+        const ent = entities.find(item => item.id === showPropertyDialogId);
+        if (!ent) return null;
+        return (
+          <BIMPropertyCardDialog 
+            entity={ent}
+            entities={entities}
+            onClose={() => setShowPropertyDialogId(null)}
+            onUpdateField={(id, field, value) => {
+              setEntities((prevUps: Entity[]) => prevUps.map(x => x.id === id ? { ...x, [field]: value } as any : x));
+              // Also update selectedEntity if it's currently selected
+              if (selectedEntity && selectedEntity.id === id) {
+                setSelectedEntity(prev => prev ? { ...prev, [field]: value } as any : null);
+              }
+            }}
+          />
+        );
+      })()}
 
       {/* Selection Glow Indicator */}
       <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 pointer-events-none">
