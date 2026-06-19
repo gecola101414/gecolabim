@@ -208,11 +208,18 @@ export const performCSG = (entityA: Entity, entityB: Entity, operation: 'union' 
     bimType: bimType,
     bimVolume: volume,
     bimArea: area,
+    points: entityA.points || (entityA as any).bimPoints,
+    holes: (entityA as any).holes,
+    bimWidth: (entityA as any).bimWidth || (entityA as any).width,
+    bimHeight: (entityA as any).bimHeight || (entityA as any).height,
+    bimZPlane: (entityA as any).bimZPlane,
+    bimZElevation: (entityA as any).bimZElevation,
+    bimRenderMode: (entityA as any).bimRenderMode,
     geometryData: {
       positions,
       normals,
       uvs,
       indices
     }
-  } as CSGMeshEntity;
+  } as any;
 };

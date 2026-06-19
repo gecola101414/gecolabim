@@ -4,7 +4,7 @@ import { OrbitControls, PerspectiveCamera, OrthographicCamera, Grid, Stars, Floa
 import * as THREE from 'three';
 import { useThree } from '@react-three/fiber';
 import { Entity, Point, LineEntity, RectEntity } from '../types';
-import { X, ZoomIn, ZoomOut, RotateCw, Box, Layers, Database, Maximize, Home, Compass, Eye, EyeOff, Lightbulb, LightbulbOff, Info, Settings, MousePointer2, Move, Scissors, Play, Pause, RefreshCw, ArrowDown, ArrowUp, ArrowLeft, ArrowRight, Edit, Trash2, Wand2, Lock, Unlock, FolderTree, ChevronDown, ChevronRight, Sliders } from 'lucide-react';
+import { X, ZoomIn, ZoomOut, RotateCw, Box, Layers, Database, Maximize, Home, Compass, Eye, EyeOff, Lightbulb, LightbulbOff, Info, Settings, MousePointer2, Move, Scissors, Play, Pause, RefreshCw, ArrowDown, ArrowUp, ArrowLeft, ArrowRight, Edit, Trash2, Wand2, Lock, Unlock, FolderTree, ChevronDown, ChevronRight, Sliders, Layers3 } from 'lucide-react';
 import { BIMElementDialog, PorteDialog, FinestreDialog } from './BIMDialogs';
 import { BIMPropertyCardDialog } from './BIMPropertyCardDialog';
 
@@ -136,7 +136,12 @@ const Wall = ({
   clippingPlanes = [], 
   opacity = 1,
   globalOpacityMode = 'WORK',
-  globalWallOpacityVal = 0.50
+  globalWallOpacityVal = 0.50,
+  isSlicing = false,
+  slicingHeight = 0,
+  slicingMode = 'HIDE_ABOVE',
+  windowThickness = 0.5,
+  renderMode = 'solid'
 }: { 
   points: Point[], 
   height: number, 
@@ -145,8 +150,13 @@ const Wall = ({
   baseZ: number, 
   clippingPlanes?: THREE.Plane[], 
   opacity?: number,
+  isSlicing?: boolean,
+  slicingHeight?: number,
+  slicingMode?: 'HIDE_ABOVE' | 'HIDE_BELOW' | 'WINDOW',
+  windowThickness?: number,
   globalOpacityMode?: 'WORK' | 'SOLID',
-  globalWallOpacityVal?: number
+  globalWallOpacityVal?: number,
+  renderMode?: 'solid' | 'transparent'
 }) => {
   const segments = useMemo(() => {
     const result = [];
@@ -168,6 +178,11 @@ const Wall = ({
         position: [centerX / 100, zBase + h / 2, -centerY / 100] as [number, number, number],
         rotation: [0, -angle, 0] as [number, number, number],
         args: [length / 100, h, (width || 15) / 100] as [number, number, number],
+        length: length / 100,
+        thickness: (width || 15) / 100,
+        centerX: centerX / 100,
+        centerY: centerY / 100,
+        angle: angle
       });
     }
     return result;
@@ -177,17 +192,48 @@ const Wall = ({
     ? 1.0 
     : (opacity < 1 ? opacity * globalWallOpacityVal : globalWallOpacityVal);
 
+  const h = height / 100;
+  const zBase = baseZ / 100;
+  
+  const isCappingEnabled = isSlicing && (renderMode !== 'transparent' || globalOpacityMode === 'SOLID');
+  
+  let showCapTop = false;
+  let showCapBottom = false;
+  let capYTop = 0;
+  let capYBottom = 0;
+
+  if (isCappingEnabled) {
+    if (slicingMode === 'HIDE_ABOVE') {
+      showCapBottom = slicingHeight > zBase && slicingHeight < zBase + h;
+      capYBottom = slicingHeight - 0.001;
+    } else if (slicingMode === 'HIDE_BELOW') {
+      showCapTop = slicingHeight > zBase && slicingHeight < zBase + h;
+      capYTop = slicingHeight + 0.001;
+    } else if (slicingMode === 'WINDOW') {
+      const wHalf = (windowThickness || 0.5) / 2;
+      const tY = slicingHeight + wHalf;
+      const bY = slicingHeight - wHalf;
+      
+      showCapTop = tY > zBase && tY < zBase + h;
+      capYTop = tY - 0.001;
+      
+      showCapBottom = bY > zBase && bY < zBase + h;
+      capYBottom = bY + 0.001;
+    }
+  }
+
   return (
     <group>
       {segments.map((seg, i) => (
-        <group key={i}>
+         <group key={i}>
           {/* Solid Clipped Part */}
           <mesh position={seg.position} rotation={seg.rotation} castShadow receiveShadow>
             <boxGeometry args={seg.args} />
             <meshStandardMaterial 
               color={color} 
-              transparent={finalOpacity < 1}
-              opacity={finalOpacity}
+              transparent={renderMode === 'transparent' || finalOpacity < 1}
+              wireframe={renderMode === 'transparent'}
+              opacity={renderMode === 'transparent' ? 0.3 : finalOpacity}
               metalness={0.155} 
               roughness={0.4} 
               envMapIntensity={1}
@@ -196,11 +242,38 @@ const Wall = ({
               side={THREE.DoubleSide}
             />
           </mesh>
+          {/* Flat horizontal cap matching the cut exactly so there's no visual hollow space */}
+          {showCapBottom && (
+            <mesh 
+              position={[seg.centerX, capYBottom, -seg.centerY]} 
+              rotation={[-Math.PI / 2, 0, -seg.angle]}
+            >
+              <planeGeometry args={[seg.length, seg.thickness]} />
+              <meshBasicMaterial 
+                color={color} 
+                side={THREE.DoubleSide} 
+                transparent={false}
+              />
+            </mesh>
+          )}
+          {showCapTop && (
+            <mesh 
+              position={[seg.centerX, capYTop, -seg.centerY]} 
+              rotation={[-Math.PI / 2, 0, -seg.angle]}
+            >
+              <planeGeometry args={[seg.length, seg.thickness]} />
+              <meshBasicMaterial 
+                color={color} 
+                side={THREE.DoubleSide} 
+                transparent={false}
+              />
+            </mesh>
+          )}
           {/* Wireframe Reference - Unclipped */}
           <mesh position={seg.position} rotation={seg.rotation}>
             <boxGeometry args={seg.args} />
             <meshBasicMaterial transparent opacity={0} depthWrite={false} color={color} />
-            <Edges color="#475569" threshold={15} transparent opacity={0.4} />
+            <Edges color="#e2e8f0" threshold={5} transparent opacity={globalOpacityMode === 'SOLID' ? 0.9 : 0.4} />
           </mesh>
         </group>
       ))}
@@ -216,11 +289,16 @@ const Room = ({
   name, 
   areaType, 
   baseZ, 
+  renderMode,
   clippingPlanes = [], 
   opacity = 1,
   globalOpacityMode = 'WORK',
   globalRoomOpacityVal = 0.25,
-  globalWallOpacityVal = 0.50
+  globalWallOpacityVal = 0.50,
+  isSlicing = false,
+  slicingHeight = 0,
+  slicingMode = 'HIDE_ABOVE',
+  windowThickness = 0.5
 }: { 
   points: Point[], 
   holes?: Point[][], 
@@ -229,11 +307,16 @@ const Room = ({
   name?: string, 
   areaType?: string, 
   baseZ: number, 
+  renderMode?: 'solid' | 'transparent', 
   clippingPlanes?: THREE.Plane[], 
   opacity?: number,
   globalOpacityMode?: 'WORK' | 'SOLID',
   globalRoomOpacityVal?: number,
-  globalWallOpacityVal?: number
+  globalWallOpacityVal?: number,
+  isSlicing?: boolean,
+  slicingHeight?: number,
+  slicingMode?: 'HIDE_ABOVE' | 'HIDE_BELOW' | 'WINDOW',
+  windowThickness?: number
 }) => {
   const h = height / 100; // Convert to meters
   const zBase = baseZ / 100;
@@ -290,6 +373,33 @@ const Room = ({
     finalFloorOpacity = opacity < 1 ? Math.min(opacity * baseOpacity, 0.4) : Math.min(baseOpacity, 0.4);
   }
 
+  const isCappingEnabled = isSlicing && (renderMode !== 'transparent' || globalOpacityMode === 'SOLID') && isWall;
+  
+  let showCapTop = false;
+  let showCapBottom = false;
+  let capYTop = 0;
+  let capYBottom = 0;
+
+  if (isCappingEnabled) {
+    if (slicingMode === 'HIDE_ABOVE') {
+      showCapBottom = slicingHeight > zBase && slicingHeight < zBase + h;
+      capYBottom = slicingHeight - 0.001;
+    } else if (slicingMode === 'HIDE_BELOW') {
+      showCapTop = slicingHeight > zBase && slicingHeight < zBase + h;
+      capYTop = slicingHeight + 0.001;
+    } else if (slicingMode === 'WINDOW') {
+      const wHalf = (windowThickness || 0.5) / 2;
+      const tY = slicingHeight + wHalf;
+      const bY = slicingHeight - wHalf;
+      
+      showCapTop = tY > zBase && tY < zBase + h;
+      capYTop = tY - 0.001;
+      
+      showCapBottom = bY > zBase && bY < zBase + h;
+      capYBottom = bY + 0.001;
+    }
+  }
+
   return (
     <group position={[0, zBase, 0]}>
       {/* Solid Clipped part */}
@@ -297,8 +407,9 @@ const Room = ({
         <extrudeGeometry args={[shape, extrudeSettings]} />
         <meshStandardMaterial 
           color={color} 
-          transparent={finalOpacity < 1} 
-          opacity={finalOpacity} 
+          transparent={renderMode === 'transparent' || finalOpacity < 1} 
+          wireframe={renderMode === 'transparent'}
+          opacity={renderMode === 'transparent' ? 0.3 : finalOpacity} 
           metalness={isWall ? 0.25 : 0.15}
           roughness={isWall ? 0.4 : 0.3}
           envMapIntensity={1.2}
@@ -308,11 +419,39 @@ const Room = ({
         />
       </mesh>
 
+      {/* Flat section cap matching the sliced segment perfectly */}
+      {showCapBottom && (
+        <mesh 
+          position={[0, capYBottom - zBase, 0]} 
+          rotation={[-Math.PI / 2, 0, 0]}
+        >
+          <shapeGeometry args={[shape]} />
+          <meshBasicMaterial 
+            color={color} 
+            side={THREE.DoubleSide}
+            transparent={false}
+          />
+        </mesh>
+      )}
+      {showCapTop && (
+        <mesh 
+          position={[0, capYTop - zBase, 0]} 
+          rotation={[-Math.PI / 2, 0, 0]}
+        >
+          <shapeGeometry args={[shape]} />
+          <meshBasicMaterial 
+            color={color} 
+            side={THREE.DoubleSide}
+            transparent={false}
+          />
+        </mesh>
+      )}
+
       {/* Wireframe Reference - Unclipped */}
       <mesh rotation={[-Math.PI / 2, 0, 0]}>
         <extrudeGeometry args={[shape, extrudeSettings]} />
         <meshBasicMaterial transparent opacity={0} depthWrite={false} />
-        <Edges color="#475569" threshold={15} transparent opacity={0.4} />
+        <Edges color="#e2e8f0" threshold={5} transparent opacity={globalOpacityMode === 'SOLID' ? 0.9 : 0.4} />
       </mesh>
       
       {/* Floor Highlight - Clipped */}
@@ -589,20 +728,36 @@ const BIMSymbol = ({ entity, onPointerOver, onPointerOut, clippingPlanes = [], o
 };
 
 
+const HatchMaterial = ({ color, clippingPlanes }: { color: string, clippingPlanes: THREE.Plane[] }) => {
+  return (
+    <meshNormalMaterial transparent opacity={0.5} clippingPlanes={clippingPlanes} />
+  );
+};
+
 const CSGMeshRender = ({ 
   entity, 
   color, 
   clippingPlanes = [], 
   opacity = 1,
   globalOpacityMode = 'WORK',
-  globalWallOpacityVal = 0.50
+  globalWallOpacityVal = 0.50,
+  isSlicing = false,
+  slicingHeight = 0,
+  slicingMode = 'HIDE_ABOVE',
+  windowThickness = 0.5,
+  renderMode = 'solid'
 }: { 
   entity: any, 
   color: string, 
   clippingPlanes?: THREE.Plane[], 
   opacity?: number,
   globalOpacityMode?: 'WORK' | 'SOLID',
-  globalWallOpacityVal?: number
+  globalWallOpacityVal?: number,
+  isSlicing?: boolean,
+  slicingHeight?: number,
+  slicingMode?: 'HIDE_ABOVE' | 'HIDE_BELOW' | 'WINDOW',
+  windowThickness?: number,
+  renderMode?: 'solid' | 'transparent'
 }) => {
   const geom = useMemo(() => {
     const geo = new THREE.BufferGeometry();
@@ -626,6 +781,94 @@ const CSGMeshRender = ({
     ? 1.0 
     : (opacity < 1 ? opacity * globalWallOpacityVal : globalWallOpacityVal);
 
+  // Compute capping if structure is recognized
+  const points = entity.points || [];
+  const height = entity.bimHeight || entity.height || 270;
+  const width = entity.bimWidth || 15;
+  const baseZ = (entity.bimZPlane || 0) + (entity.bimZElevation || 0);
+
+  const h = height / 100;
+  const zBase = baseZ / 100;
+
+  const isWall = entity.bimType === 'wall' || entity.bimAreaType === 'muro' || entity.bimType === 'element';
+  const isCappingEnabled = isSlicing && (renderMode !== 'transparent' || globalOpacityMode === 'SOLID') && isWall;
+
+  let showCapTop = false;
+  let showCapBottom = false;
+  let capYTop = 0;
+  let capYBottom = 0;
+
+  if (isCappingEnabled) {
+    if (slicingMode === 'HIDE_ABOVE') {
+      showCapBottom = slicingHeight > zBase && slicingHeight < zBase + h;
+      capYBottom = slicingHeight - 0.001;
+    } else if (slicingMode === 'HIDE_BELOW') {
+      showCapTop = slicingHeight > zBase && slicingHeight < zBase + h;
+      capYTop = slicingHeight + 0.001;
+    } else if (slicingMode === 'WINDOW') {
+      const wHalf = (windowThickness || 0.5) / 2;
+      const tY = slicingHeight + wHalf;
+      const bY = slicingHeight - wHalf;
+      
+      showCapTop = tY > zBase && tY < zBase + h;
+      capYTop = tY - 0.001;
+      
+      showCapBottom = bY > zBase && bY < zBase + h;
+      capYBottom = bY + 0.001;
+    }
+  }
+
+  // Segment generation for Wall capping
+  const segments = useMemo(() => {
+    if (!isWall || points.length < 2 || (points.length >= 3 && entity.type === 'hatch') || entity.bimAreaType === 'muro') return [];
+    const result = [];
+    for (let i = 0; i < points.length - 1; i++) {
+      const p1 = points[i];
+      const p2 = points[i+1];
+      const dx = p2.x - p1.x;
+      const dy = p2.y - p1.y;
+      const length = Math.sqrt(dx*dx + dy*dy);
+      const angle = Math.atan2(dy, dx);
+      const centerX = (p1.x + p2.x) / 2;
+      const centerY = (p1.y + p2.y) / 2;
+      
+      result.push({
+        length: length / 100,
+        thickness: (width || 15) / 100,
+        centerX: centerX / 100,
+        centerY: centerY / 100,
+        angle: angle
+      });
+    }
+    return result;
+  }, [isWall, points, width]);
+
+  // Shape generation for Area/Room capping
+  const roomShape = useMemo(() => {
+    if (points.length < 3) return null;
+    if (isWall && segments.length > 0) return null; // Already capped via segments
+    const s = new THREE.Shape();
+    s.moveTo(points[0].x / 100, points[0].y / 100);
+    for (let i = 1; i < points.length; i++) {
+        s.lineTo(points[i].x / 100, points[i].y / 100);
+    }
+    s.closePath();
+
+    if (entity.holes && entity.holes.length > 0) {
+      entity.holes.forEach((holePoints: any) => {
+        if (holePoints.length < 3) return;
+        const holePath = new THREE.Path();
+        holePath.moveTo(holePoints[0].x / 100, holePoints[0].y / 100);
+        for (let i = 1; i < holePoints.length; i++) {
+          holePath.lineTo(holePoints[i].x / 100, holePoints[i].y / 100);
+        }
+        holePath.closePath();
+        s.holes.push(holePath);
+      });
+    }
+    return s;
+  }, [points, entity.holes, isWall, segments]);
+
   return (
     <group>
       <mesh geometry={geom} castShadow receiveShadow>
@@ -641,9 +884,55 @@ const CSGMeshRender = ({
           side={THREE.DoubleSide}
         />
       </mesh>
+      {/* Capping Plates for CSG wall segments */}
+      {segments.map((seg, i) => (
+        <group key={`cap-${i}`}>
+          {showCapBottom && (
+            <mesh 
+              position={[seg.centerX, capYBottom, -seg.centerY]} 
+              rotation={[-Math.PI / 2, 0, -seg.angle]}
+            >
+              <planeGeometry args={[seg.length, seg.thickness]} />
+              <meshBasicMaterial color={color} side={THREE.DoubleSide} transparent={false} />
+            </mesh>
+          )}
+          {showCapTop && (
+            <mesh 
+              position={[seg.centerX, capYTop, -seg.centerY]} 
+              rotation={[-Math.PI / 2, 0, -seg.angle]}
+            >
+              <planeGeometry args={[seg.length, seg.thickness]} />
+              <meshBasicMaterial color={color} side={THREE.DoubleSide} transparent={false} />
+            </mesh>
+          )}
+        </group>
+      ))}
+      {/* Capping Plate for Room/Area CSG */}
+      {roomShape && (
+        <group>
+          {showCapBottom && (
+            <mesh 
+              position={[0, capYBottom, 0]} 
+              rotation={[-Math.PI / 2, 0, 0]}
+            >
+              <shapeGeometry args={[roomShape]} />
+              <meshBasicMaterial color={color} side={THREE.DoubleSide} transparent={false} />
+            </mesh>
+          )}
+          {showCapTop && (
+            <mesh 
+              position={[0, capYTop, 0]} 
+              rotation={[-Math.PI / 2, 0, 0]}
+            >
+              <shapeGeometry args={[roomShape]} />
+              <meshBasicMaterial color={color} side={THREE.DoubleSide} transparent={false} />
+            </mesh>
+          )}
+        </group>
+      )}
       {/* Wireframe Reference - Unclipped */}
       <mesh geometry={geom}>
-        <meshBasicMaterial transparent opacity={0} depthWrite={false} />
+        <meshBasicMaterial transparent opacity={0} depthWrite={false} color={color} />
         <Edges color="#475569" threshold={15} transparent opacity={0.4} />
       </mesh>
     </group>
@@ -923,8 +1212,13 @@ const SectionPlaneHelper = ({ height, active, mode, entities }: { height: number
       {/* PROFESSIONAL SECTION OUTLINE (THE BORDER) */}
       <mesh rotation={[-Math.PI / 2, 0, 0]}>
         <planeGeometry args={[size.x + 10.1, size.z + 10.1]} />
-        <meshBasicMaterial transparent opacity={0} depthWrite={false} side={THREE.DoubleSide} />
-        <Edges color="#6366f1" opacity={0.7} transparent />
+        <meshBasicMaterial color="#f8fafc" side={THREE.DoubleSide} transparent opacity={0} />
+      </mesh>
+      
+      {/* PROFESSIONAL SECTION OUTLINE (THE BORDER) */}
+      <mesh rotation={[-Math.PI / 2, 0, 0]}>
+        <planeGeometry args={[size.x + 10.1, size.z + 10.1]} />
+        <meshBasicMaterial color="#334155" wireframe={true} transparent opacity={0.3} />
       </mesh>
 
       {/* Height Label */}
@@ -987,8 +1281,18 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
   const [isDoorEditOpen, setIsDoorEditOpen] = useState(false);
   const [isWindowEditOpen, setIsWindowEditOpen] = useState(false);
   const [editingEntityId, setEditingEntityId] = useState<string | null>(null);
+  const [isSectionMode, setIsSectionMode] = useState(false);
   const [isRealistic, setIsRealistic] = useState(false);
   const [globalOpacityMode, setGlobalOpacityMode] = useState<'WORK' | 'SOLID'>('WORK');
+
+  // Force solid rendering if section mode is active
+  useEffect(() => {
+    if (isSectionMode) {
+      setGlobalOpacityMode('SOLID');
+    } else {
+      setGlobalOpacityMode('WORK');
+    }
+  }, [isSectionMode]);
   const [globalRoomOpacityVal, setGlobalRoomOpacityVal] = useState<number>(0.25);
   const [globalWallOpacityVal, setGlobalWallOpacityVal] = useState<number>(0.50);
   const [transparentEntities, setTransparentEntities] = useState<Set<string>>(new Set());
@@ -1802,11 +2106,11 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
         {/* REALISTIC AND SLICING CONTROLS */}
         <div className="flex items-center gap-1.5 bg-slate-50/50 p-1 rounded-xl border border-slate-200/50">
           <button 
-            onClick={() => setIsRealistic(!isRealistic)}
-            className={`p-2.5 rounded-lg transition-all ${isRealistic ? 'bg-amber-500 text-white shadow-lg shadow-amber-200' : 'hover:bg-white text-slate-400'}`}
-            title="Render Realistico"
+            onClick={() => setIsSectionMode(!isSectionMode)}
+            className={`p-2.5 rounded-lg transition-all ${isSectionMode ? 'bg-purple-500 text-white shadow-lg shadow-purple-200' : 'hover:bg-white text-slate-400'}`}
+            title="Visuale Sezione (Solido)"
           >
-            <Wand2 size={20} />
+            <Layers3 size={20} />
           </button>
           
           <div className="w-px h-6 bg-slate-200/50 mx-1" />
@@ -2008,18 +2312,18 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
           Sotto
         </button>
 
-        {/* MEASURE TOOL - REMOVED */}
+        {/* MEASURE TOOL - Section - ADDED */}
         <button
-          onClick={() => { setViewMode('PERSPECTIVE'); setCameraViewMode('FRONT'); setCameraPreset('FRONT'); }}
+          onClick={() => { setIsSectionMode(!isSectionMode); }}
           className={`flex items-center gap-2 px-3 py-1.5 rounded-2xl text-[10.5px] font-black uppercase transition-all duration-300 active:scale-95 cursor-pointer ${
-            cameraViewMode === 'FRONT'
-              ? 'bg-blue-50 text-blue-600 shadow-[0_4px_12px_rgba(59,130,246,0.15)] border border-blue-200'
+            isSectionMode
+              ? 'bg-purple-50 text-purple-600 shadow-[0_4px_12px_rgba(168,85,247,0.15)] border border-purple-200'
               : 'hover:bg-slate-50 text-slate-600 border border-transparent'
           }`}
-          title="Vista Frontale"
+          title="Vista Sezione (Retino)"
         >
-          <CADCubeIcon highlightFace="front" isActive={cameraViewMode === 'FRONT'} />
-          Fronte
+          <Layers3 size={16} />
+          Sezione
         </button>
 
         {/* BACK VIEW */}
@@ -3311,11 +3615,17 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
                               opacity={entityOpacity} 
                               globalOpacityMode={globalOpacityMode}
                               globalWallOpacityVal={globalWallOpacityVal}
+                              isSlicing={isSlicing}
+                              slicingHeight={slicingHeight}
+                              slicingMode={slicingMode}
+                              windowThickness={windowThickness}
+                              renderMode={e.bimRenderMode || 'solid'}
                             />
                           );
                         } else if (isMuro) {
                           return points.length >= 3 && (entity as any).type === 'hatch' ? (
                             <Room 
+                              renderMode={e.bimRenderMode}
                               points={points} 
                               holes={e.holes} 
                               height={heightValue} 
@@ -3327,6 +3637,10 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
                               globalOpacityMode={globalOpacityMode}
                               globalRoomOpacityVal={globalRoomOpacityVal}
                               globalWallOpacityVal={globalWallOpacityVal}
+                              isSlicing={isSlicing}
+                              slicingHeight={slicingHeight}
+                              slicingMode={slicingMode}
+                              windowThickness={windowThickness}
                             />
                           ) : (
                             <Wall 
@@ -3339,11 +3653,17 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
                               opacity={entityOpacity} 
                               globalOpacityMode={globalOpacityMode}
                               globalWallOpacityVal={globalWallOpacityVal}
+                              isSlicing={isSlicing}
+                              slicingHeight={slicingHeight}
+                              slicingMode={slicingMode}
+                              windowThickness={windowThickness}
+                              renderMode={e.bimRenderMode}
                             />
                           );
                         } else if (entity.bimType === 'room' || entity.bimType === 'element') {
                           return (
                             <Room 
+                              renderMode={e.bimRenderMode}
                               points={points} 
                               holes={e.holes}
                               height={heightValue} 
@@ -3355,6 +3675,10 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
                               globalOpacityMode={globalOpacityMode}
                               globalRoomOpacityVal={globalRoomOpacityVal}
                               globalWallOpacityVal={globalWallOpacityVal}
+                              isSlicing={isSlicing}
+                              slicingHeight={slicingHeight}
+                              slicingMode={slicingMode}
+                              windowThickness={windowThickness}
                             />
                           );
                         } else if (entity.bimType === 'door' || entity.bimType === 'window') {
@@ -3433,6 +3757,7 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
         if (!ent) return null;
         return (
           <BIMPropertyCardDialog 
+            key={ent.id}
             entity={ent}
             entities={entities}
             onClose={() => setShowPropertyDialogId(null)}

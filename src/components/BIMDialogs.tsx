@@ -102,7 +102,7 @@ interface MuriDialogProps {
   onClose: () => void;
   lastWallThickness: number;
   setBIMWallThickness: (t: number) => void;
-  onActivateWallDrawing: (thickness: number) => void;
+  onActivateWallDrawing: (thickness: number, renderMode: 'solid' | 'transparent') => void;
 }
 export const MuriDialog: React.FC<MuriDialogProps> = ({
   isOpen,
@@ -116,13 +116,14 @@ export const MuriDialog: React.FC<MuriDialogProps> = ({
   const [wallHeight, setWallHeight] = useState<number>(270);
   const [wallStyle, setWallStyle] = useState<'standard' | 'double' | 'filled'>('standard');
   const [insulation, setInsulation] = useState<'none' | 'cappotto' | 'cavity'>('none');
+  const [renderMode, setRenderMode] = useState<'solid' | 'transparent'>('solid');
 
   if (!isOpen) return null;
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     setBIMWallThickness(thickness);
-    onActivateWallDrawing(thickness);
+    onActivateWallDrawing(thickness, renderMode);
   };
 
   const presetSpessori = [10, 15, 30, 40];
@@ -216,6 +217,14 @@ export const MuriDialog: React.FC<MuriDialogProps> = ({
                 {st === 'standard' ? 'Standard' : st === 'double' ? 'Doppia riga' : 'Riempito'}
               </button>
             ))}
+          </div>
+        </div>
+
+        <div>
+          <label className="block text-[9px] text-slate-400 font-bold uppercase tracking-wider mb-1">Rendering 3D</label>
+          <div className="flex gap-2">
+            <button type="button" onClick={() => setRenderMode('solid')} className={`flex-1 py-1.5 text-[10px] rounded border ${renderMode === 'solid' ? 'bg-cyan-600/20 border-cyan-500' : 'bg-slate-900 border-slate-800'}`}>Solido (Pieno)</button>
+            <button type="button" onClick={() => setRenderMode('transparent')} className={`flex-1 py-1.5 text-[10px] rounded border ${renderMode === 'transparent' ? 'bg-cyan-600/20 border-cyan-500' : 'bg-slate-900 border-slate-800'}`}>Trasparente (Parete)</button>
           </div>
         </div>
 
@@ -1061,6 +1070,7 @@ interface BIMElementDialogProps {
     zElevation: number;
     objectHeight: number;
     hatch: 'SOLID' | 'ANSI31' | 'CROSS' | 'NONE';
+    bimRenderMode?: 'solid' | 'transparent';
   }) => void;
   points?: Point[] | { points: Point[], holes?: Point[][] };
   initialData?: {
@@ -1072,6 +1082,7 @@ interface BIMElementDialogProps {
     zElevation: number;
     objectHeight: number;
     hatch: 'SOLID' | 'ANSI31' | 'CROSS' | 'NONE';
+    bimRenderMode?: 'solid' | 'transparent';
   };
   onDelete?: () => void;
 }
@@ -1095,6 +1106,7 @@ export const BIMElementDialog: React.FC<BIMElementDialogProps> = ({
   const [zElevation, setZElevation] = useState(0);
   const [objectHeight, setObjectHeight] = useState(2.70);
   const [hatch, setHatch] = useState<'SOLID' | 'ANSI31' | 'CROSS' | 'NONE'>('SOLID');
+  const [bimRenderMode, setBimRenderMode] = useState<'solid' | 'transparent'>('solid');
   
   const [customFamilyMode, setCustomFamilyMode] = useState(false);
   const [customFamilyName, setCustomFamilyName] = useState('');
@@ -1112,6 +1124,7 @@ export const BIMElementDialog: React.FC<BIMElementDialogProps> = ({
         setZElevation(initialData.zElevation);
         setObjectHeight(initialData.objectHeight);
         setHatch(initialData.hatch);
+        setBimRenderMode(initialData.bimRenderMode || 'solid');
       } else {
         const lastFam = localStorage.getItem('last_bim_family') || BIM_FAMILIES[0].id;
         const famObj = BIM_FAMILIES.find(f => f.id === lastFam);
@@ -1124,6 +1137,7 @@ export const BIMElementDialog: React.FC<BIMElementDialogProps> = ({
         setZElevation(parseFloat(localStorage.getItem('last_bim_zElevation') || '0'));
         setObjectHeight(parseFloat(localStorage.getItem('last_bim_height') || '270'));
         setHatch('SOLID');
+        setBimRenderMode('solid');
       }
     }
   }, [isOpen, initialData]);
@@ -1154,7 +1168,8 @@ export const BIMElementDialog: React.FC<BIMElementDialogProps> = ({
       zPlane, 
       zElevation, 
       objectHeight: parseFloat(objectHeight.toString()), 
-      hatch 
+      hatch,
+      bimRenderMode
     });
   };
 
@@ -1298,6 +1313,13 @@ export const BIMElementDialog: React.FC<BIMElementDialogProps> = ({
                 onChange={(e) => setObjectHeight(parseFloat(e.target.value) || 270)}
                 className="w-full bg-white/5 border border-white/10 text-white rounded p-2 text-xs font-mono font-bold focus:outline-none focus:border-indigo-500 transition-all"
               />
+            </div>
+          </div>
+          <div className="col-span-2 pt-4 border-t border-white/5">
+            <label className="block text-[10px] text-slate-400 font-black uppercase tracking-widest mb-2 font-mono italic">Rendering 3D</label>
+            <div className="flex gap-2">
+              <button type="button" onClick={() => setBimRenderMode('solid')} className={`flex-1 py-3 text-[10px] rounded-lg border font-bold ${bimRenderMode === 'solid' ? 'bg-cyan-600/20 border-cyan-500 text-white' : 'bg-slate-900 border-slate-700 text-slate-400'}`}>Solido (Pieno)</button>
+              <button type="button" onClick={() => setBimRenderMode('transparent')} className={`flex-1 py-3 text-[10px] rounded-lg border font-bold ${bimRenderMode === 'transparent' ? 'bg-cyan-600/20 border-cyan-500 text-white' : 'bg-slate-900 border-slate-700 text-slate-400'}`}>Trasparente (Parete)</button>
             </div>
           </div>
         </div>

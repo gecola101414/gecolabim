@@ -465,6 +465,7 @@ export default function App() {
   // BIM top bar reactive parameters
   const [bimWallThickness, setBimWallThickness] = useState<number>(() => parseFloat(localStorage.getItem('lastWallThickness') || '15'));
   const [bimWallHeight, setBimWallHeight] = useState<number>(() => parseFloat(localStorage.getItem('lastWallHeight') || '270'));
+  const [bimWallRenderMode, setBimWallRenderMode] = useState<'solid' | 'transparent'>(() => (localStorage.getItem('lastWallRenderMode') as 'solid' | 'transparent') || 'solid');
   const [bimWallType, setBimWallType] = useState<string>(() => localStorage.getItem('lastWallType') || "Forati (Laterizio)");
   
 const MASONRY_TYPES = [
@@ -755,7 +756,8 @@ const MASONRY_TYPES = [
     zPlane: number; 
     zElevation: number; 
     objectHeight: number; 
-    hatch: 'SOLID' | 'ANSI31' | 'CROSS' | 'NONE' 
+    hatch: 'SOLID' | 'ANSI31' | 'CROSS' | 'NONE';
+    bimRenderMode?: 'solid' | 'transparent';
   }) => {
     if (!detectedAreaPoints) return;
 
@@ -774,7 +776,8 @@ const MASONRY_TYPES = [
             bimHeight: data.objectHeight,
             height: data.objectHeight,
             bimZPlane: data.zPlane,
-            bimZElevation: data.zElevation
+            bimZElevation: data.zElevation,
+            bimRenderMode: data.bimRenderMode || 'solid'
           };
         }
         return e;
@@ -804,6 +807,7 @@ const MASONRY_TYPES = [
         height: data.objectHeight,
         bimZPlane: data.zPlane,
         bimZElevation: data.zElevation,
+        bimRenderMode: data.bimRenderMode || 'solid',
         timestamp: Date.now(),
         isVisible: true,
         isFrozen: false
@@ -2473,6 +2477,7 @@ const MASONRY_TYPES = [
             bimWindowHeight={bimWindowHeight}
             bimWallThickness={bimWallThickness}
             bimWallType={bimWallType}
+            bimWallRenderMode={bimWallRenderMode}
             onActionStart={() => {
               setHoveredGuide(null);
               setGuideLockedBy(null);
@@ -2652,7 +2657,8 @@ const MASONRY_TYPES = [
                   zPlane: (e as any).bimZPlane || (e as any).zPlane || 0,
                   zElevation: (e as any).bimZElevation || (e as any).zElevation || 0,
                   objectHeight: (e as any).bimHeight || (e as any).height || 270,
-                  hatch: (e as any).bimHatchPattern || 'SOLID'
+                  hatch: (e as any).bimHatchPattern || 'SOLID',
+                  bimRenderMode: (e as any).bimRenderMode || 'solid'
                 };
               })() : undefined}
             />
@@ -3541,6 +3547,21 @@ const MASONRY_TYPES = [
                         className="w-full bg-neutral-50 border border-neutral-300 rounded p-2 text-xs font-mono"
                       />
                     </div>
+                  </div>
+                  <div className="space-y-1">
+                      <label className="text-[10px] font-black uppercase text-neutral-400 tracking-widest block font-mono">Render 3D</label>
+                      <div className="flex gap-1">
+                        <button type="button" onClick={() => {
+                          setBimWallRenderMode('solid');
+                          localStorage.setItem('lastWallRenderMode', 'solid');
+                          localStorage.setItem('bimWallRenderMode', 'solid');
+                        }} className={`flex-1 text-[9px] font-bold py-1.5 rounded border ${bimWallRenderMode === 'solid' ? 'bg-cyan-500/20 border-cyan-500' : 'bg-neutral-100 border-neutral-300'}`}>Solido</button>
+                        <button type="button" onClick={() => {
+                          setBimWallRenderMode('transparent');
+                          localStorage.setItem('lastWallRenderMode', 'transparent');
+                          localStorage.setItem('bimWallRenderMode', 'transparent');
+                        }} className={`flex-1 text-[9px] font-bold py-1.5 rounded border ${bimWallRenderMode === 'transparent' ? 'bg-cyan-500/20 border-cyan-500' : 'bg-neutral-100 border-neutral-300'}`}>Parete</button>
+                      </div>
                   </div>
                   <div className="space-y-1">
                       <label className="text-[10px] font-black uppercase text-neutral-400 tracking-widest block font-mono">Tipo Muratura</label>

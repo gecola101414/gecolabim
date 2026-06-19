@@ -2467,9 +2467,10 @@ interface CADCanvasProps {
   bimWallType?: string;
   rotationEntityId?: string | null;
   onSelectForRotation?: (id: string | null) => void;
+  bimWallRenderMode?: 'solid' | 'transparent';
 }
 
-export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entities, activeTool, setActiveTool, setEntities, setEntitiesSilent, onCommitHistory, onSelect, onContextMenu, activeLayerId, layers, defaultLineStyle, setDefaultLineStyle, defaultHatchStyle, defaultTextStyle = { fontFamily: 'sans-serif', fontSize: 14, fontWeight: 'normal', textAlign: 'left' }, eraserRadius, setEraserRadius, eraserType = 'pencil', setEraserType, eraserIntensity = 55, setEraserIntensity, onMouseMovePosition, rulerStyle = 'tecnigrafo', orthoMode = false, setOrthoMode, isContinuousMode = false, cancelTrigger = 0, parallelTrigger = 0, tavole, onUpdateTavole, onDoubleClickTavola, selectedTemplateId, selectedEntityId, selectedBIMSymbolType, setSelectedBIMSymbolType, bimSymbolScale = 1, raccordoConfig, dimensionScale = 1, dimensionDecimals = 2, dimensionMode = 'two-points', dimensionStyle = 'linear', selectionMode = 'manual', onEditRaccordo, onDoubleClickDimension, onDoubleClickBIMElement, onActionStart, onAreaDetected, onSelectionComplete, initialSelectedIds, selectedEntityIds = [], highlightedPoints, rotationEntityId, onSelectForRotation, bimWallHeight = 270, bimDoorHeight = 210, bimWindowHeight = 140, bimWallThickness = 15, bimWallType = 'Forati (Laterizio)' }, ref) => {
+export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entities, activeTool, setActiveTool, setEntities, setEntitiesSilent, onCommitHistory, onSelect, onContextMenu, activeLayerId, layers, defaultLineStyle, setDefaultLineStyle, defaultHatchStyle, defaultTextStyle = { fontFamily: 'sans-serif', fontSize: 14, fontWeight: 'normal', textAlign: 'left' }, eraserRadius, setEraserRadius, eraserType = 'pencil', setEraserType, eraserIntensity = 55, setEraserIntensity, onMouseMovePosition, rulerStyle = 'tecnigrafo', orthoMode = false, setOrthoMode, isContinuousMode = false, cancelTrigger = 0, parallelTrigger = 0, tavole, onUpdateTavole, onDoubleClickTavola, selectedTemplateId, selectedEntityId, selectedBIMSymbolType, setSelectedBIMSymbolType, bimSymbolScale = 1, raccordoConfig, dimensionScale = 1, dimensionDecimals = 2, dimensionMode = 'two-points', dimensionStyle = 'linear', selectionMode = 'manual', onEditRaccordo, onDoubleClickDimension, onDoubleClickBIMElement, onActionStart, onAreaDetected, onSelectionComplete, initialSelectedIds, selectedEntityIds = [], highlightedPoints, rotationEntityId, onSelectForRotation, bimWallHeight = 270, bimDoorHeight = 210, bimWindowHeight = 140, bimWallThickness = 15, bimWallType = 'Forati (Laterizio)', bimWallRenderMode = 'solid' }, ref) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const entitiesRef = useRef(entities);
   useEffect(() => {
@@ -2752,6 +2753,12 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
   const [positioningEntityStartPos, setPositioningEntityStartPos] = useState<Point | null>(null);
   const [showManualInput, setShowManualInput] = useState(false);
   const [lastWallThickness, setLastWallThickness] = useState(() => parseFloat(localStorage.getItem('lastWallThickness') || '15'));
+  const [lastWallRenderMode, setLastWallRenderMode] = useState(() => (localStorage.getItem('bimWallRenderMode') as 'solid' | 'transparent') || 'solid');
+  useEffect(() => {
+    if (bimWallRenderMode) {
+      setLastWallRenderMode(bimWallRenderMode);
+    }
+  }, [bimWallRenderMode]);
   const [lastDoorWidth, setLastDoorWidth] = useState(() => parseFloat(localStorage.getItem('lastDoorWidth') || '80'));
   const [lastDoorHeight, setLastDoorHeight] = useState(() => parseFloat(localStorage.getItem('lastDoorHeight') || '210'));
   const [lastWindowWidth, setLastWindowWidth] = useState(() => parseFloat(localStorage.getItem('lastWindowWidth') || '120'));
@@ -9471,6 +9478,7 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
                     bimName: `Muro sp.${thickness} cm`,
                     bimWidth: thickness,
                     bimHeight: bimWallHeight,
+                    bimRenderMode: lastWallRenderMode,
                     start: drawing.start,
                     end: endPoint,
                     color: '#4b5563',

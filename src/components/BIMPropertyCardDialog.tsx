@@ -54,6 +54,7 @@ export const BIMPropertyCardDialog: React.FC<BIMPropertyCardDialogProps> = ({
   onClose,
   onUpdateField
 }) => {
+  console.log('Rendering entity:', entity);
   const [activeTab, setActiveTab] = useState<'geom' | 'iden' | 'comp' | 'prest'>('geom');
 
   // Derive stable metadata from ID
@@ -174,37 +175,65 @@ export const BIMPropertyCardDialog: React.FC<BIMPropertyCardDialogProps> = ({
     let volumeMc = 0;
     let spessoreCm = (entity as any).bimWidth || (entity as any).width || 12;
 
-    const isCsg = entity.type === 'bim-csg';
-
-    if (entity.bimType as string === 'room') {
-      const pts = (entity as any).bimPoints || (entity as any).points || [];
-      areaMq = isCsg ? ((entity as any).bimArea || 0) : getRoomAreaMq(pts);
-      perimetroM = isCsg ? 0 : getRoomPerimeterM(pts);
-      volumeMc = areaMq * altezzaM;
-    } else if (entity.bimType as string === 'wall' || entity.bimType as string === 'muro' || entity.type === 'line') {
-      // Wall represented as line
+    // Try to derive dimensions from geometry if not defined in BIM properties
+    const points = (entity as any).bimPoints || (entity as any).points || [];
+    
+    if (points && points.length > 2) {
+        // Handle any entity with points (rooms, areas, hatches, polylines)
+        areaMq = getRoomAreaMq(points);
+        perimetroM = getRoomPerimeterM(points);
+        volumeMc = areaMq * altezzaM;
+        if (!spessoreCm) spessoreCm = 15; // default
+    } else if (entity.type === 'rectangle') {
+        const rect = entity as any;
+        // Direct calculation of w and h, ensuring floating point precision doesn't cause issues
+        const rawW = Math.abs(rect.p2.x - rect.p1.x);
+        const rawH = Math.abs(rect.p2.y - rect.p1.y);
+        const w = rawW / 100;
+        const h = rawH / 100;
+        
+        areaMq = Math.round(w * h * 100) / 100;
+        perimetroM = Math.round(2 * (w + h) * 100) / 100;
+        
+        // Keep spessoreCm reasonable, don't derive from W/H for Foundations/etc
+        spessoreCm = (entity as any).bimWidth || 15; 
+        volumeMc = areaMq * altezzaM;
+    } else if (entity.type === 'circle') {
+        const circ = entity as any;
+        const r = circ.radius / 100;
+        areaMq = Math.PI * r * r;
+        perimetroM = 2 * Math.PI * r;
+        volumeMc = areaMq * altezzaM;
+    } else if (entity.type === 'line') {
+      // Line (or Wall)
       const line = entity as any;
       const start = line.start || { x: 0, y: 0 };
       const end = line.end || { x: 0, y: 0 };
       const lengthM = Math.hypot(end.x - start.x, end.y - start.y) / 100;
-      spessoreCm = (entity as any).bimWidth || (entity as any).width || 15;
-      const thicknessM = spessoreCm / 100;
+      const thicknessM = (spessoreCm || 15) / 100;
       
       areaMq = lengthM * thicknessM;
       perimetroM = lengthM;
-      volumeMc = lengthM * thicknessM * altezzaM;
+      volumeMc = areaMq * altezzaM;
     } else if (entity.bimType === 'door' || entity.bimType === 'window') {
-      const wCm = (entity as any).bimWidth || 80;
+      const wCm = (entity as any).bimWidth || (entity as any).width || 80;
       const hCm = (entity as any).bimWindowHeight || (entity as any).bimHeight || (entity.bimType === 'door' ? 210 : 140);
       areaMq = (wCm * hCm) / 10000;
       perimetroM = (2 * (wCm + hCm)) / 100;
-      volumeMc = areaMq * 0.12; // pseudo-thickness unit
-    } else {
-      // Default point or shape or symbol
-      areaMq = 0.50; // generic/standard default
-      perimetroM = 2.0;
+      volumeMc = areaMq * altezzaM; // Solid volume
+    } else if (entity.type === 'bim-csg' && (entity as any).bimArea) {
+      // Special case for CSG if bimArea is precomputed
+      areaMq = (entity as any).bimArea;
+      perimetroM = 0;
       volumeMc = areaMq * altezzaM;
+    } else {
+      // Default (point/text/other) - don't force generic defaults
+      areaMq = 0; 
+      perimetroM = 0;
+      volumeMc = 0;
     }
+
+    if (volumeMc === 0 && areaMq > 0) volumeMc = areaMq * altezzaM;
 
     const casseriMq = areaMq + (perimetroM * altezzaM);
     const intonacoMq = (perimetroM * altezzaM);

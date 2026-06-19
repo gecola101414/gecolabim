@@ -1895,6 +1895,7 @@ export function BIMWorkspacePanel({
         if (!ent) return null;
         return (
           <BIMPropertyCardDialog 
+            key={ent.id}
             entity={ent}
             entities={entities}
             onClose={() => setShowPropertyDialogId(null)}
