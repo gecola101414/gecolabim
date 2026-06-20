@@ -2411,7 +2411,7 @@ interface CADCanvasProps {
   setEntities: React.Dispatch<React.SetStateAction<Entity[]>>;
   setEntitiesSilent?: React.Dispatch<React.SetStateAction<Entity[]>>;
   onCommitHistory?: (entities: Entity[]) => void;
-  onSelect: (id: string | null, entity?: Entity) => void;
+  onSelect: (id: string | null, entity?: Entity, clickPoint?: Point) => void;
   onContextMenu?: (e: React.MouseEvent) => void;
   activeLayerId: string;
   layers: Layer[];
@@ -2468,9 +2468,12 @@ interface CADCanvasProps {
   rotationEntityId?: string | null;
   onSelectForRotation?: (id: string | null) => void;
   bimWallRenderMode?: 'solid' | 'transparent';
+  selectedLine?: LineEntity | null;
+  selectedLineClickPoint?: Point | null;
+  referenceLine?: LineEntity | null;
 }
 
-export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entities, activeTool, setActiveTool, setEntities, setEntitiesSilent, onCommitHistory, onSelect, onContextMenu, activeLayerId, layers, defaultLineStyle, setDefaultLineStyle, defaultHatchStyle, defaultTextStyle = { fontFamily: 'sans-serif', fontSize: 14, fontWeight: 'normal', textAlign: 'left' }, eraserRadius, setEraserRadius, eraserType = 'pencil', setEraserType, eraserIntensity = 55, setEraserIntensity, onMouseMovePosition, rulerStyle = 'tecnigrafo', orthoMode = false, setOrthoMode, isContinuousMode = false, cancelTrigger = 0, parallelTrigger = 0, tavole, onUpdateTavole, onDoubleClickTavola, selectedTemplateId, selectedEntityId, selectedBIMSymbolType, setSelectedBIMSymbolType, bimSymbolScale = 1, raccordoConfig, dimensionScale = 1, dimensionDecimals = 2, dimensionMode = 'two-points', dimensionStyle = 'linear', selectionMode = 'manual', onEditRaccordo, onDoubleClickDimension, onDoubleClickBIMElement, onActionStart, onAreaDetected, onSelectionComplete, initialSelectedIds, selectedEntityIds = [], highlightedPoints, rotationEntityId, onSelectForRotation, bimWallHeight = 270, bimDoorHeight = 210, bimWindowHeight = 140, bimWallThickness = 15, bimWallType = 'Forati (Laterizio)', bimWallRenderMode = 'solid' }, ref) => {
+export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entities, activeTool, setActiveTool, setEntities, setEntitiesSilent, onCommitHistory, onSelect, onContextMenu, activeLayerId, layers, defaultLineStyle, setDefaultLineStyle, defaultHatchStyle, defaultTextStyle = { fontFamily: 'sans-serif', fontSize: 14, fontWeight: 'normal', textAlign: 'left' }, eraserRadius, setEraserRadius, eraserType = 'pencil', setEraserType, eraserIntensity = 55, setEraserIntensity, onMouseMovePosition, rulerStyle = 'tecnigrafo', orthoMode = false, setOrthoMode, isContinuousMode = false, cancelTrigger = 0, parallelTrigger = 0, tavole, onUpdateTavole, onDoubleClickTavola, selectedTemplateId, selectedEntityId, selectedBIMSymbolType, setSelectedBIMSymbolType, bimSymbolScale = 1, raccordoConfig, dimensionScale = 1, dimensionDecimals = 2, dimensionMode = 'two-points', dimensionStyle = 'linear', selectionMode = 'manual', onEditRaccordo, onDoubleClickDimension, onDoubleClickBIMElement, onActionStart, onAreaDetected, onSelectionComplete, initialSelectedIds, selectedEntityIds = [], highlightedPoints, rotationEntityId, onSelectForRotation, bimWallHeight = 270, bimDoorHeight = 210, bimWindowHeight = 140, bimWallThickness = 15, bimWallType = 'Forati (Laterizio)', bimWallRenderMode = 'solid', sketchParams = [], highlightedSketchId = null, selectedLine = null, selectedLineClickPoint = null, referenceLine = null }, ref) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const entitiesRef = useRef(entities);
   useEffect(() => {
@@ -7017,6 +7020,116 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
               ctx.restore();
           }
       }
+
+      // Draw yellow reference distance indicator on physical drawing space
+      if (selectedLine && referenceLine) {
+          ctx.save();
+          ctx.translate(view.pan.x, view.pan.y);
+          ctx.scale(view.zoom, view.zoom);
+
+          const liveSelectedLine = (entities.find(e => e.id === selectedLine.id) as LineEntity) || selectedLine;
+
+          const cx = selectedLineClickPoint ? selectedLineClickPoint.x : (liveSelectedLine.start.x + liveSelectedLine.end.x) / 2;
+          const cy = selectedLineClickPoint ? selectedLineClickPoint.y : (liveSelectedLine.start.y + liveSelectedLine.end.y) / 2;
+
+          const A = referenceLine.start;
+          const B = referenceLine.end;
+          const dx = B.x - A.x;
+          const dy = B.y - A.y;
+          const lenSq = dx * dx + dy * dy;
+          
+          let projX = cx;
+          let projY = cy;
+          if (lenSq > 0) {
+              const t = ((cx - A.x) * dx + (cy - A.y) * dy) / lenSq;
+              projX = A.x + t * dx;
+              projY = A.y + t * dy;
+          }
+
+          const connX = projX - cx;
+          const connY = projY - cy;
+          const connLen = Math.hypot(connX, connY);
+
+          // Draw a faint infinite line to show the reference plane if needed
+          ctx.strokeStyle = '#ca8a04'; 
+          ctx.lineWidth = 1 / view.zoom;
+          ctx.globalAlpha = 0.3;
+          ctx.beginPath();
+          ctx.moveTo(A.x - dx * 1000, A.y - dy * 1000);
+          ctx.lineTo(A.x + dx * 1000, A.y + dy * 1000);
+          ctx.stroke();
+          ctx.globalAlpha = 1.0;
+
+          // Draw the yellow line connecting the two parallels
+          ctx.strokeStyle = '#ca8a04'; // Muted dark yellow/amber for strong contrast on off-white
+          ctx.lineWidth = 2 / view.zoom;
+          ctx.setLineDash([5 / view.zoom, 3 / view.zoom]);
+          ctx.beginPath();
+          ctx.moveTo(cx, cy);
+          ctx.lineTo(projX, projY);
+          ctx.stroke();
+
+          // Connectors with solid yellow dots
+          ctx.setLineDash([]);
+          ctx.fillStyle = '#f59e0b'; // Amber-500
+          ctx.strokeStyle = '#78350f'; // Dark brown-amber border
+          ctx.lineWidth = 1 / view.zoom;
+          
+          ctx.beginPath();
+          ctx.arc(cx, cy, 5 / view.zoom, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.stroke();
+
+          ctx.beginPath();
+          ctx.arc(projX, projY, 5 / view.zoom, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.stroke();
+
+          // Draw small perpendicular tick bars at ends
+          if (connLen > 0.1) {
+              const nx = -connY / connLen;
+              const ny = connX / connLen;
+              const tickH = 8 / view.zoom;
+              ctx.strokeStyle = '#78350f';
+              ctx.lineWidth = 1.5 / view.zoom;
+              ctx.beginPath();
+              
+              ctx.moveTo(cx - nx * tickH, cy - ny * tickH);
+              ctx.lineTo(cx + nx * tickH, cy + ny * tickH);
+              
+              ctx.moveTo(projX - nx * tickH, projY - ny * tickH);
+              ctx.lineTo(projX + nx * tickH, projY + ny * tickH);
+              
+              ctx.stroke();
+          }
+
+          // Draw clean rounded textbox with background
+          const distanceVal = Math.round(connLen * 100) / 100;
+          const label = `${distanceVal} mm`;
+          ctx.font = `bold ${12 / view.zoom}px sans-serif`;
+          const textMetrics = ctx.measureText(label);
+          const paddingX = 6 / view.zoom;
+          const paddingY = 4 / view.zoom;
+          const boxW = textMetrics.width + paddingX * 2;
+          const boxH = 18 / view.zoom;
+          const textMidX = (cx + projX) / 2;
+          const textMidY = (cy + projY) / 2;
+
+          ctx.fillStyle = '#fef08a'; // Bright yellow bg
+          ctx.strokeStyle = '#a16207'; // Yellow-700 border
+          ctx.lineWidth = 1 / view.zoom;
+          ctx.beginPath();
+          ctx.roundRect(textMidX - boxW / 2, textMidY - boxH / 2, boxW, boxH, 4 / view.zoom);
+          ctx.fill();
+          ctx.stroke();
+
+          ctx.fillStyle = '#713f12'; // Dark brown text for maximum contrast
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.fillText(label, textMidX, textMidY);
+
+          ctx.restore();
+      }
     };
 
     renderRef.current = render;
@@ -7024,7 +7137,7 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
   }, [entities, layers, view, flashIds, flashIntensity, selectedParallelLine, blink, selectedEntityId, 
       positioningGroupId, positioningEntityId, selectedRaccordoLineIds, dragEntityIds, highlightedTrimLine, 
       highlightedTrimSegment, activeTool, specchioMode, specchioSelectedIds, copySourceEntityIds, eraserPos, 
-      tecnigrafoOrigin, tecnigrafoLock, manualRoomPoints, drawing, highlightedPoints]);
+      tecnigrafoOrigin, tecnigrafoLock, manualRoomPoints, drawing, highlightedPoints, selectedLine, referenceLine]);
 
 
   // BASIC PAN/ZOOM HANDLING
@@ -8886,14 +8999,16 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
                 // We just proceed to the next block which activates movement.
             }
 
-            // Click activates movement for BIM/Arredo immediately (always movable)
-            onSelect(found.id);
-            if (found.groupId) {
-                setPositioningGroupId(found.groupId);
-                setPositioningGroupStartPos(rawPoint);
-            } else {
-                setPositioningEntityId(found.id);
-                setPositioningEntityStartPos(rawPoint);
+            // Click activates movement for BIM/Arredo immediately
+            onSelect(found.id, undefined, rawPoint);
+            if (isBIMDoorWindow || isArredo) {
+                if (found.groupId) {
+                    setPositioningGroupId(found.groupId);
+                    setPositioningGroupStartPos(rawPoint);
+                } else {
+                    setPositioningEntityId(found.id);
+                    setPositioningEntityStartPos(rawPoint);
+                }
             }
             return;
         } else {
@@ -11962,7 +12077,7 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
           const layer = layers.find(l => l.id === ent.layer);
           if (layer && !layer.visible) return null;
 
-          const isSelected = selectedEntityId === ent.id || dragEntityIds.includes(ent.id);
+          const isSelected = selectedEntityId === ent.id || dragEntityIds.includes(ent.id) || highlightedSketchId === ent.id;
           const isInteractive = activeTool === 'Select';
 
           return (

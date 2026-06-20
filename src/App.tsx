@@ -13,6 +13,8 @@ pdfjs.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjs.vers
 
 import { RaccordoDialog } from "./components/RaccordoDialog";
 import { DXFTextReaderDialog } from "./components/DXFTextReaderDialog";
+import { LineEditorDialog } from "./components/LineEditorDialog";
+import { LineEntity } from "./types";
 import { TemplatePreview } from "./components/TemplatePreview";
 import { BIMElementDialog, FinestreDialog } from "./components/BIMDialogs";
 import { BIMWorkspacePanel } from "./components/BIMWorkspacePanel";
@@ -22,6 +24,7 @@ import { TEMPLATES } from './data/templates';
 import { GUIDE_DATABASE, GuideItem } from './data/guides';
 import { Entity, Point, Layer, Measurement, Tavola } from "./types";
 import { mergeAllSegments } from "./utils/entityUtils";
+import { trimEntities } from "./utils";
 import { parseScriptToEntities, updateScriptVariables } from "./utils/parametricParser";
 import { contours } from "d3-contour";
 import { simplifyPoints } from "./utils/simplify";
@@ -432,6 +435,11 @@ export default function App() {
   const [measurements, setMeasurements] = useState<Measurement[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
    const [isRaccordoDialogOpen, setIsRaccordoDialogOpen] = useState(false);
+  const [isLineEditorOpen, setIsLineEditorOpen] = useState(false);
+  const [selectedLine, setSelectedLine] = useState<LineEntity | null>(null);
+  const [selectedLineClickPoint, setSelectedLineClickPoint] = useState<Point | null>(null);
+  const [originalLine, setOriginalLine] = useState<LineEntity | null>(null);
+  const [referenceLine, setReferenceLine] = useState<LineEntity | null>(null);
   const [isDXFTextReaderOpen, setIsDXFTextReaderOpen] = useState(false);
   const [selectedBIMSymbolType, setSelectedBIMSymbolType] = useState<string | null>(null);
   const [dimensionScale, setDimensionScale] = useState(() => parseFloat(localStorage.getItem('dimensionScale') || '1.0'));
@@ -2396,13 +2404,81 @@ const MASONRY_TYPES = [
             setActiveTool={setSelectedTool}
             setEntities={updateEntitiesWithHistory}
             setEntitiesSilent={updateEntitiesSilent}
+            selectedLine={selectedLine}
+            referenceLine={referenceLine}
             defaultTextStyle={defaultTextStyle}
             onCommitHistory={commitToHistory}
-            onSelect={(id, entity) => {
+            onSelect={(id, entity, clickPoint) => {
               setSelectedId(id);
               if (id) {
-                setShowProperties(true);
                 const ent = entity || entities.find(e => e.id === id);
+                if (ent && ent.type === 'line') {
+                    const lineEnt = ent as LineEntity;
+                    
+                    // Find opposite (parallel) line
+                    let minDistance = Infinity;
+                    let minDistanceGeneral = Infinity;
+                    let oppositeLineStrict: LineEntity | null = null;
+                    let oppositeLineGeneral: LineEntity | null = null;
+                    
+                    entities.forEach(other => {
+                        if (other.type === 'line' && other.id !== lineEnt.id) {
+                            const angle1 = Math.atan2(lineEnt.end.y - lineEnt.start.y, lineEnt.end.x - lineEnt.start.x);
+                            const angle2 = Math.atan2(other.end.y - other.start.y, other.end.x - other.start.x);
+                            
+                            // Check if they are parallel
+                            if (Math.abs(Math.sin(angle1 - angle2)) < 0.1) {
+                                const A = other.start.y - other.end.y;
+                                const B = other.end.x - other.start.x;
+                                const C = other.start.x * other.end.y - other.end.x * other.start.y;
+                                const lenSq = A*A + B*B;
+                                const len = Math.hypot(A, B);
+                                
+                                if (len > 0) {
+                                    // Distance from click point (or midpoint) to the other infinite line
+                                    const refX = clickPoint ? clickPoint.x : (lineEnt.start.x + lineEnt.end.x) / 2;
+                                    const refY = clickPoint ? clickPoint.y : (lineEnt.start.y + lineEnt.end.y) / 2;
+                                    
+                                    const dist = Math.abs(A * refX + B * refY + C) / len;
+                                    
+                                    // Make sure distance is not near zero (don't snap to itself or collinear segments)
+                                    if (dist > 0.001) {
+                                        // Find projection of ref point onto the other line
+                                        const projX = (B * (B * refX - A * refY) - A * C) / lenSq;
+                                        const projY = (A * (-B * refX + A * refY) - B * C) / lenSq;
+                                        
+                                        // Check if projection is within the bounds of the other segment
+                                        const t = Math.abs(other.end.x - other.start.x) > Math.abs(other.end.y - other.start.y) 
+                                            ? (projX - other.start.x) / (other.end.x - other.start.x)
+                                            : (projY - other.start.y) / (other.end.y - other.start.y);
+                                            
+                                        const isStrictlyFacing = t >= -0.05 && t <= 1.05;
+
+                                        if (isStrictlyFacing && dist < minDistance) {
+                                            minDistance = dist;
+                                            oppositeLineStrict = other as LineEntity;
+                                        }
+                                        
+                                        if (dist < minDistanceGeneral) {
+                                            minDistanceGeneral = dist;
+                                            oppositeLineGeneral = other as LineEntity;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    });
+                    
+                    const finalOppositeLine = oppositeLineStrict || oppositeLineGeneral;
+                    
+                    setSelectedLine(lineEnt);
+                    setSelectedLineClickPoint(clickPoint || null);
+                    setOriginalLine(lineEnt);
+                    setReferenceLine(finalOppositeLine);
+                    setIsLineEditorOpen(true);
+                }
+                
+                setShowProperties(true);
                 if (ent && ent.type === 'text') {
                   setActiveSidebarTab('testo');
                 } else if (ent && ent.isBIM) {
@@ -2410,6 +2486,10 @@ const MASONRY_TYPES = [
                 } else {
                   setActiveSidebarTab('penne');
                 }
+              } else {
+                setSelectedLine(null);
+                setSelectedLineClickPoint(null);
+                setIsLineEditorOpen(false);
               }
             }}
             onContextMenu={handleRightClickShortcut}
@@ -5726,6 +5806,29 @@ const MASONRY_TYPES = [
         </div>
       )}
 
+      {isLineEditorOpen && selectedLine && (
+          <LineEditorDialog
+            line={selectedLine}
+            referenceLine={referenceLine}
+            onClose={() => {
+                if (originalLine) {
+                 setEntities(prev => prev.map(e => e.id === originalLine.id ? originalLine : e));
+                }
+                setIsLineEditorOpen(false);
+                setSelectedLine(null);
+                setOriginalLine(null);
+            }}
+            onPreview={(previewLine) => {
+                updateEntitiesSilent(prev => prev.map(e => e.id === previewLine.id ? previewLine : e));
+            }}
+            onUpdate={(updatedLine) => {
+                updateEntitiesWithHistory(prev => prev.map(e => e.id === updatedLine.id ? updatedLine : e));
+                setIsLineEditorOpen(false);
+                setSelectedLine(null);
+                setOriginalLine(null);
+            }}
+          />
+      )}
       <AnimatePresence>
         {quickActions && (
           <motion.div
@@ -5796,6 +5899,22 @@ const MASONRY_TYPES = [
             >
               <Link size={16} />
               <span className="text-xs font-medium">Join</span>
+            </button>
+            <div className="w-[1px] h-6 bg-neutral-200 dark:bg-neutral-700 mx-0.5" />
+            <div className="w-[1px] h-6 bg-neutral-200 dark:bg-neutral-700 mx-0.5" />
+            <button 
+              onClick={() => {
+                const trimmed = trimEntities(entities, quickActions.ids);
+                updateEntitiesWithHistory(trimmed);
+                setShortcutToast("Taglio bordi (AI) applicato!");
+                setTimeout(() => setShortcutToast(null), 2000);
+              }}
+              className="p-2 hover:bg-purple-50 dark:hover:bg-purple-900/20 rounded-full transition-colors text-purple-600 flex items-center gap-1.5 px-3 relative"
+              title="Trim Edges (AI ✂️)"
+            >
+              <Scissors size={16} />
+              <Sparkles size={10} className="absolute top-1 right-1 text-amber-500" />
+              <span className="text-xs font-medium">Trim (AI)</span>
             </button>
             <div className="w-[1px] h-6 bg-neutral-200 dark:bg-neutral-700 mx-0.5" />
             <button 

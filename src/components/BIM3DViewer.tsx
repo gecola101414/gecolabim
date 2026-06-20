@@ -1,6 +1,6 @@
 import React, { useMemo, useRef, useEffect, useState, useCallback } from 'react';
 import { Canvas, useFrame } from '@react-three/fiber';
-import { OrbitControls, PerspectiveCamera, OrthographicCamera, Grid, Stars, Float, Text, Html, ContactShadows, Environment, Edges, GizmoHelper, GizmoViewcube } from '@react-three/drei';
+import { OrbitControls, PerspectiveCamera, OrthographicCamera, Grid, Stars, Float, Text, Html, ContactShadows, Environment, Edges, GizmoHelper, GizmoViewcube, Line } from '@react-three/drei';
 import * as THREE from 'three';
 import { useThree } from '@react-three/fiber';
 import { Entity, Point, LineEntity, RectEntity } from '../types';
@@ -127,6 +127,449 @@ const CADCubeIcon = ({
   );
 };
 
+
+const SmartCappingWrapper = ({
+  parentPivot = [0, 0, 0],
+  parentRotation = [0, 0, 0],
+  localCenterX,
+  localCenterZ,
+  localAngle = 0,
+  slicingHeight,
+  isCapTop = false,
+  slicingMode,
+  windowThickness,
+  children
+}: {
+  parentPivot?: [number, number, number];
+  parentRotation?: [number, number, number];
+  localCenterX: number;
+  localCenterZ: number;
+  localAngle?: number;
+  slicingHeight: number;
+  isCapTop?: boolean;
+  slicingMode: string;
+  windowThickness: number;
+  children: React.ReactNode;
+}) => {
+  const [px, py, pz] = parentPivot;
+  const [rx, ry, rz] = parentRotation;
+
+  const transform = useMemo(() => {
+    // 1. Parent local-to-world transform
+    const tPivot = new THREE.Matrix4().makeTranslation(px, py, pz);
+    const rParent = new THREE.Matrix4().makeRotationFromEuler(new THREE.Euler(rx, ry, rz, 'YXZ'));
+    const tPivotInv = new THREE.Matrix4().makeTranslation(-px, -py, -pz);
+    
+    const localToWorld = new THREE.Matrix4()
+      .multiply(tPivot)
+      .multiply(rParent)
+      .multiply(tPivotInv);
+
+    // 2. Find target world height for this capping plane
+    let hWorld = slicingHeight;
+    if (slicingMode === 'WINDOW') {
+      const half = windowThickness / 2;
+      hWorld = isCapTop ? (slicingHeight + half - 0.001) : (slicingHeight - half + 0.001);
+    } else {
+      hWorld = isCapTop ? (slicingHeight + 0.001) : (slicingHeight - 0.001);
+    }
+
+    // 3. Find the vertical axis of the wall segment/mesh in local space
+    // Any point is L(y) = [localCenterX, y, -localCenterZ]
+    // In local space, the axis passes through V0 = [localCenterX, 0, -localCenterZ]
+    const v0 = new THREE.Vector3(localCenterX, 0, -localCenterZ);
+    // Expand the "effective" center to avoid edge-clipping issues
+    const w0 = v0.clone().applyMatrix4(localToWorld);
+    
+    // Directed local vertical direction is [0, 1, 0]
+    const uLocal = new THREE.Vector3(0, 1, 0);
+    const uWorld = uLocal.clone().transformDirection(localToWorld); // Get directory vector in world space
+
+    // Now solve for local height y: w0.y + y * uWorld.y = hWorld
+    let y = 0;
+    if (Math.abs(uWorld.y) > 0.001) {
+      y = (hWorld - w0.y) / uWorld.y;
+    } else {
+      // Fallback if completely horizontal: assume local height is local center of entity
+      y = py;
+    }
+
+    // World position of the cut center
+    // We add a tiny epsilon to the world position and scale if needed to ensure 
+    // the capping geometry completely covers the cut even if slightly rotated/tilted
+    const wCut = w0.clone().add(uWorld.clone().multiplyScalar(y));
+    // Ensure world height is exactly hWorld to avoid floating point errors
+    wCut.y = hWorld;
+
+    // 4. Find the horizontal direction of the wall segment in world space
+    // Local wall direction is [cos(localAngle), 0, sin(localAngle)]
+    const wallDirLocal = new THREE.Vector3(Math.cos(localAngle), 0, Math.sin(localAngle));
+    const wallDirWorld = wallDirLocal.clone().transformDirection(localToWorld);
+    
+    // Project direction onto world horizontal plane (X, Z) and find angle
+    const worldYaw = Math.atan2(-wallDirWorld.z, wallDirWorld.x);
+
+    // 5. Build target world matrix of the capping mesh
+    // World rotation: flat horizontal, with combined yaw
+    const worldEuler = new THREE.Euler(-Math.PI / 2, 0, worldYaw, 'YXZ');
+    const worldQuat = new THREE.Quaternion().setFromEuler(worldEuler);
+    
+    // Ensure covering - slightly scale up to ensure it covers even when tilted
+    const targetWorldMatrix = new THREE.Matrix4().compose(
+      wCut,
+      worldQuat,
+      new THREE.Vector3(1.2, 1.2, 1.2)
+    );
+
+    // 6. Map target world matrix back to local space of the parent group
+    const worldToLocal = localToWorld.clone().invert();
+    const resultingLocalMatrix = new THREE.Matrix4().multiplyMatrices(worldToLocal, targetWorldMatrix);
+
+    // Decompose to get local position and rotation for our mesh
+    const localPos = new THREE.Vector3();
+    const localQuat = new THREE.Quaternion();
+    const localScale = new THREE.Vector3();
+    resultingLocalMatrix.decompose(localPos, localQuat, localScale);
+
+    const localRot = new THREE.Euler().setFromQuaternion(localQuat);
+
+    return {
+      position: [localPos.x, localPos.y, localPos.z] as [number, number, number],
+      rotation: [localRot.x, localRot.y, localRot.z] as [number, number, number],
+      quaternion: localQuat.clone()
+    };
+  }, [px, py, pz, rx, ry, rz, localCenterX, localCenterZ, localAngle, slicingHeight, isCapTop, slicingMode, windowThickness]);
+
+  // Clone children and inject the corrected position, rotation, and quaternion
+  return React.cloneElement(children as React.ReactElement<{ position?: [number, number, number]; rotation?: [number, number, number]; quaternion?: THREE.Quaternion }>, {
+    position: transform.position,
+    rotation: transform.rotation,
+    quaternion: transform.quaternion
+  });
+};
+
+
+const HatchCappingPlaneMesh = ({
+  position,
+  rotation,
+  quaternion,
+  length,
+  thickness,
+  color,
+  outlineColor = '#000000',
+  sectionHatchMode = true,
+  perimeterThickness = 5.5,
+  hatchDensity = 4.0,
+  hatchThickness = 2.0,
+  hatchLineColor = '#000000',
+  hatchBgColorMode = 'white',
+  hatchBgColorCustom = '#ffffff',
+  hatchPatternMode = 'diagonal'
+}: {
+  position: [number, number, number];
+  rotation?: [number, number, number];
+  quaternion?: [number, number, number, number] | THREE.Quaternion;
+  length: number;
+  thickness: number;
+  color: string;
+  outlineColor?: string;
+  sectionHatchMode?: boolean;
+  perimeterThickness?: number;
+  hatchDensity?: number;
+  hatchThickness?: number;
+  hatchLineColor?: string;
+  hatchBgColorMode?: 'white' | 'entity' | 'gray' | 'custom';
+  hatchBgColorCustom?: string;
+  hatchPatternMode?: 'diagonal' | 'horizontal' | 'vertical' | 'cross';
+}) => {
+  const [texture, setTexture] = useState<THREE.CanvasTexture | null>(null);
+
+  const computedBg = useMemo(() => {
+    switch (hatchBgColorMode) {
+      case 'entity':
+        return color || '#334155';
+      case 'gray':
+        return '#f1f5f9';
+      case 'custom':
+        return hatchBgColorCustom || '#ffffff';
+      case 'white':
+      default:
+        return '#ffffff';
+    }
+  }, [hatchBgColorMode, color, hatchBgColorCustom]);
+
+  useEffect(() => {
+    if (!sectionHatchMode) {
+      setTexture(null);
+      return;
+    }
+    const canvas = document.createElement('canvas');
+    canvas.width = 128;
+    canvas.height = 128;
+    const ctx = canvas.getContext('2d');
+    if (ctx) {
+      ctx.fillStyle = computedBg;
+      ctx.fillRect(0, 0, 128, 128);
+      
+      ctx.strokeStyle = hatchLineColor;
+      ctx.lineWidth = hatchThickness; 
+      ctx.beginPath();
+      const spacing = 16;
+      if (hatchPatternMode === 'diagonal') {
+        for (let i = -128; i < 256; i += spacing) {
+          ctx.moveTo(i, 0);
+          ctx.lineTo(i + 128, 128);
+        }
+      } else if (hatchPatternMode === 'horizontal') {
+        for (let y = 0; y < 128; y += spacing) {
+          ctx.moveTo(0, y);
+          ctx.lineTo(128, y);
+        }
+      } else if (hatchPatternMode === 'vertical') {
+        for (let x = 0; x < 128; x += spacing) {
+          ctx.moveTo(x, 0);
+          ctx.lineTo(x, 128);
+        }
+      } else if (hatchPatternMode === 'cross') {
+        for (let y = 0; y < 128; y += spacing) {
+          ctx.moveTo(0, y);
+          ctx.lineTo(128, y);
+        }
+        for (let x = 0; x < 128; x += spacing) {
+          ctx.moveTo(x, 0);
+          ctx.lineTo(x, 128);
+        }
+      }
+      ctx.stroke();
+    }
+
+    const tex = new THREE.CanvasTexture(canvas);
+    tex.wrapS = THREE.RepeatWrapping;
+    tex.wrapT = THREE.RepeatWrapping;
+    tex.repeat.set(length * hatchDensity, thickness * hatchDensity);
+    
+    // Extreme sharp filter & high anisotropic filter configuration 
+    tex.anisotropy = 16;
+    tex.generateMipmaps = true;
+    tex.minFilter = THREE.LinearMipmapLinearFilter;
+    tex.magFilter = THREE.LinearFilter;
+    
+    tex.needsUpdate = true;
+    setTexture(tex);
+
+    return () => {
+      tex.dispose();
+    };
+  }, [length, thickness, computedBg, hatchLineColor, sectionHatchMode, hatchDensity, hatchThickness, hatchPatternMode]);
+
+  const borderPoints = useMemo(() => {
+    const halfL = length / 2;
+    const halfT = thickness / 2;
+    return [
+      [-halfL, -halfT, 0.002],
+      [halfL, -halfT, 0.002],
+      [halfL, halfT, 0.002],
+      [-halfL, halfT, 0.002],
+      [-halfL, -halfT, 0.002]
+    ] as [number, number, number][];
+  }, [length, thickness]);
+
+  return (
+    <group position={position} rotation={quaternion ? undefined : rotation} quaternion={quaternion}>
+      <mesh>
+        <planeGeometry args={[length, thickness]} />
+        {sectionHatchMode && texture ? (
+          <meshBasicMaterial key={texture.uuid} map={texture} side={THREE.DoubleSide} transparent={false} depthWrite={true} />
+        ) : (
+          <meshBasicMaterial key="solid" color={computedBg} side={THREE.DoubleSide} transparent={false} depthWrite={true} />
+        )}
+      </mesh>
+      {/* Thick Bold Border outline */}
+      <Line 
+        points={borderPoints}
+        color={outlineColor}
+        lineWidth={perimeterThickness}
+      />
+    </group>
+  );
+};
+
+const HatchCappingShapeMesh = ({
+  position,
+  rotation,
+  quaternion,
+  shape,
+  color,
+  outlineColor = '#000000',
+  sectionHatchMode = true,
+  perimeterThickness = 5.5,
+  hatchDensity = 4.0,
+  hatchThickness = 2.0,
+  hatchLineColor = '#000000',
+  hatchBgColorMode = 'white',
+  hatchBgColorCustom = '#ffffff',
+  hatchPatternMode = 'diagonal'
+}: {
+  position: [number, number, number];
+  rotation?: [number, number, number];
+  quaternion?: [number, number, number, number] | THREE.Quaternion;
+  shape: THREE.Shape;
+  color: string;
+  outlineColor?: string;
+  sectionHatchMode?: boolean;
+  perimeterThickness?: number;
+  hatchDensity?: number;
+  hatchThickness?: number;
+  hatchLineColor?: string;
+  hatchBgColorMode?: 'white' | 'entity' | 'gray' | 'custom';
+  hatchBgColorCustom?: string;
+  hatchPatternMode?: 'diagonal' | 'horizontal' | 'vertical' | 'cross';
+}) => {
+  const [texture, setTexture] = useState<THREE.CanvasTexture | null>(null);
+
+  const { width, height } = useMemo(() => {
+    const points = shape.getPoints();
+    if (points.length === 0) return { width: 5, height: 5 };
+    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+    points.forEach(p => {
+      if (p.x < minX) minX = p.x;
+      if (p.x > maxX) maxX = p.x;
+      if (p.y < minY) minY = p.y;
+      if (p.y > maxY) maxY = p.y;
+    });
+    return {
+      width: Math.max(maxX - minX, 0.1),
+      height: Math.max(maxY - minY, 0.1)
+    };
+  }, [shape]);
+
+  const computedBg = useMemo(() => {
+    switch (hatchBgColorMode) {
+      case 'entity':
+        return color || '#334155';
+      case 'gray':
+        return '#f1f5f9';
+      case 'custom':
+        return hatchBgColorCustom || '#ffffff';
+      case 'white':
+      default:
+        return '#ffffff';
+    }
+  }, [hatchBgColorMode, color, hatchBgColorCustom]);
+
+  useEffect(() => {
+    if (!sectionHatchMode) {
+      setTexture(null);
+      return;
+    }
+    const canvas = document.createElement('canvas');
+    canvas.width = 128;
+    canvas.height = 128;
+    const ctx = canvas.getContext('2d');
+    if (ctx) {
+      ctx.fillStyle = computedBg;
+      ctx.fillRect(0, 0, 128, 128);
+      
+      ctx.strokeStyle = hatchLineColor;
+      ctx.lineWidth = hatchThickness; 
+      ctx.beginPath();
+      const spacing = 16;
+      if (hatchPatternMode === 'diagonal') {
+        for (let i = -128; i < 256; i += spacing) {
+          ctx.moveTo(i, 0);
+          ctx.lineTo(i + 128, 128);
+        }
+      } else if (hatchPatternMode === 'horizontal') {
+        for (let y = 0; y < 128; y += spacing) {
+          ctx.moveTo(0, y);
+          ctx.lineTo(128, y);
+        }
+      } else if (hatchPatternMode === 'vertical') {
+        for (let x = 0; x < 128; x += spacing) {
+          ctx.moveTo(x, 0);
+          ctx.lineTo(x, 128);
+        }
+      } else if (hatchPatternMode === 'cross') {
+        for (let y = 0; y < 128; y += spacing) {
+          ctx.moveTo(0, y);
+          ctx.lineTo(128, y);
+        }
+        for (let x = 0; x < 128; x += spacing) {
+          ctx.moveTo(x, 0);
+          ctx.lineTo(x, 128);
+        }
+      }
+      ctx.stroke();
+    }
+
+    const tex = new THREE.CanvasTexture(canvas);
+    tex.wrapS = THREE.RepeatWrapping;
+    tex.wrapT = THREE.RepeatWrapping;
+    tex.repeat.set(width * hatchDensity, height * hatchDensity);
+    
+    // Extreme sharp filter & high anisotropic filter configuration 
+    tex.anisotropy = 16;
+    tex.generateMipmaps = true;
+    tex.minFilter = THREE.LinearMipmapLinearFilter;
+    tex.magFilter = THREE.LinearFilter;
+    
+    tex.needsUpdate = true;
+    setTexture(tex);
+
+    return () => {
+      tex.dispose();
+    };
+  }, [width, height, computedBg, hatchLineColor, sectionHatchMode, hatchDensity, hatchThickness, hatchPatternMode]);
+
+  const outerBorderPoints = useMemo(() => {
+    const pts = shape.getPoints();
+    if (pts.length === 0) return [];
+    const res = pts.map(p => [p.x, p.y, 0.002] as [number, number, number]);
+    res.push([pts[0].x, pts[0].y, 0.002]); // Close the boundary loop
+    return res;
+  }, [shape]);
+
+  const holesBorderPoints = useMemo(() => {
+    return (shape.holes || []).map(hole => {
+      const pts = hole.getPoints();
+      if (pts.length === 0) return [];
+      const res = pts.map(p => [p.x, p.y, 0.002] as [number, number, number]);
+      res.push([pts[0].x, pts[0].y, 0.002]); // Close the hole loop
+      return res;
+    });
+  }, [shape]);
+
+  return (
+    <group position={position} rotation={quaternion ? undefined : rotation} quaternion={quaternion}>
+      <mesh>
+        <shapeGeometry args={[shape]} />
+        {sectionHatchMode && texture ? (
+          <meshBasicMaterial key={texture.uuid} map={texture} side={THREE.DoubleSide} transparent={false} depthWrite={true} />
+        ) : (
+          <meshBasicMaterial key="solid" color={computedBg} side={THREE.DoubleSide} transparent={false} depthWrite={true} />
+        )}
+      </mesh>
+      {/* Thick Bold Outer Border */}
+      {outerBorderPoints.length > 0 && (
+        <Line 
+          points={outerBorderPoints}
+          color={outlineColor}
+          lineWidth={perimeterThickness}
+        />
+      )}
+      {/* Thick Bold Holes Borders */}
+      {holesBorderPoints.map((hp, i) => hp.length > 0 && (
+        <Line 
+          key={`hole-${i}`}
+          points={hp}
+          color={outlineColor}
+          lineWidth={perimeterThickness}
+        />
+      ))}
+    </group>
+  );
+};
+
 const Wall = ({ 
   points, 
   height, 
@@ -141,7 +584,17 @@ const Wall = ({
   slicingHeight = 0,
   slicingMode = 'HIDE_ABOVE',
   windowThickness = 0.5,
-  renderMode = 'solid'
+  renderMode = 'solid',
+  sectionHatchMode = true,
+  perimeterThickness = 5.5,
+  hatchDensity = 4.0,
+  hatchThickness = 2.0,
+  hatchLineColor = '#000000',
+  hatchBgColorMode = 'white',
+  hatchBgColorCustom = '#ffffff',
+  hatchPatternMode = 'diagonal',
+  parentPivot = [0, 0, 0],
+  parentRotation = [0, 0, 0]
 }: { 
   points: Point[], 
   height: number, 
@@ -156,7 +609,17 @@ const Wall = ({
   windowThickness?: number,
   globalOpacityMode?: 'WORK' | 'SOLID',
   globalWallOpacityVal?: number,
-  renderMode?: 'solid' | 'transparent'
+  renderMode?: 'solid' | 'transparent',
+  sectionHatchMode?: boolean,
+  perimeterThickness?: number,
+  hatchDensity?: number,
+  hatchThickness?: number,
+  hatchLineColor?: string,
+  hatchBgColorMode?: 'white' | 'entity' | 'gray' | 'custom',
+  hatchBgColorCustom?: string,
+  hatchPatternMode?: 'diagonal' | 'horizontal' | 'vertical' | 'cross',
+  parentPivot?: [number, number, number],
+  parentRotation?: [number, number, number]
 }) => {
   const segments = useMemo(() => {
     const result = [];
@@ -192,91 +655,152 @@ const Wall = ({
     ? 1.0 
     : (opacity < 1 ? opacity * globalWallOpacityVal : globalWallOpacityVal);
 
-  const h = height / 100;
-  const zBase = baseZ / 100;
-  
-  const isCappingEnabled = isSlicing && (renderMode !== 'transparent' || globalOpacityMode === 'SOLID');
-  
-  let showCapTop = false;
-  let showCapBottom = false;
-  let capYTop = 0;
-  let capYBottom = 0;
-
-  if (isCappingEnabled) {
-    if (slicingMode === 'HIDE_ABOVE') {
-      showCapBottom = slicingHeight > zBase && slicingHeight < zBase + h;
-      capYBottom = slicingHeight - 0.001;
-    } else if (slicingMode === 'HIDE_BELOW') {
-      showCapTop = slicingHeight > zBase && slicingHeight < zBase + h;
-      capYTop = slicingHeight + 0.001;
-    } else if (slicingMode === 'WINDOW') {
-      const wHalf = (windowThickness || 0.5) / 2;
-      const tY = slicingHeight + wHalf;
-      const bY = slicingHeight - wHalf;
-      
-      showCapTop = tY > zBase && tY < zBase + h;
-      capYTop = tY - 0.001;
-      
-      showCapBottom = bY > zBase && bY < zBase + h;
-      capYBottom = bY + 0.001;
-    }
-  }
+  const [px, py, pz] = parentPivot;
+  const [rx, ry, rz] = parentRotation;
 
   return (
     <group>
-      {segments.map((seg, i) => (
-         <group key={i}>
-          {/* Solid Clipped Part */}
-          <mesh position={seg.position} rotation={seg.rotation} castShadow receiveShadow>
-            <boxGeometry args={seg.args} />
-            <meshStandardMaterial 
-              color={color} 
-              transparent={renderMode === 'transparent' || finalOpacity < 1}
-              wireframe={renderMode === 'transparent'}
-              opacity={renderMode === 'transparent' ? 0.3 : finalOpacity}
-              metalness={0.155} 
-              roughness={0.4} 
-              envMapIntensity={1}
-              clippingPlanes={clippingPlanes}
-              clipShadows={true}
-              side={THREE.DoubleSide}
-            />
-          </mesh>
-          {/* Flat horizontal cap matching the cut exactly so there's no visual hollow space */}
-          {showCapBottom && (
-            <mesh 
-              position={[seg.centerX, capYBottom, -seg.centerY]} 
-              rotation={[-Math.PI / 2, 0, -seg.angle]}
-            >
-              <planeGeometry args={[seg.length, seg.thickness]} />
-              <meshBasicMaterial 
+      {segments.map((seg, i) => {
+        const isCappingEnabled = isSlicing && (renderMode !== 'transparent' || globalOpacityMode === 'SOLID');
+        let segShowCapBottom = false;
+        let segShowCapTop = false;
+
+        if (isCappingEnabled) {
+          const tPivot = new THREE.Matrix4().makeTranslation(px, py, pz);
+          const rParent = new THREE.Matrix4().makeRotationFromEuler(new THREE.Euler(rx, ry, rz, 'XYZ'));
+          const tPivotInv = new THREE.Matrix4().makeTranslation(-px, -py, -pz);
+          const parentLocalToWorld = new THREE.Matrix4().multiply(tPivot).multiply(rParent).multiply(tPivotInv);
+
+          const tSeg = new THREE.Matrix4().makeTranslation(seg.position[0], seg.position[1], seg.position[2]);
+          const rSeg = new THREE.Matrix4().makeRotationFromEuler(new THREE.Euler(seg.rotation[0], seg.rotation[1], seg.rotation[2], 'XYZ'));
+          const segLocalToParent = new THREE.Matrix4().multiply(tSeg).multiply(rSeg);
+
+          const localToWorld = new THREE.Matrix4().multiplyMatrices(parentLocalToWorld, segLocalToParent);
+
+          const halfL = seg.args[0] / 2;
+          const halfH = seg.args[1] / 2;
+          const halfT = seg.args[2] / 2;
+
+          const localCorners = [
+            new THREE.Vector3(-halfL, -halfH, -halfT),
+            new THREE.Vector3(halfL, -halfH, -halfT),
+            new THREE.Vector3(-halfL, halfH, -halfT),
+            new THREE.Vector3(halfL, halfH, -halfT),
+            new THREE.Vector3(-halfL, -halfH, halfT),
+            new THREE.Vector3(halfL, -halfH, halfT),
+            new THREE.Vector3(-halfL, halfH, halfT),
+            new THREE.Vector3(halfL, halfH, halfT)
+          ];
+
+          let minY = Infinity;
+          let maxY = -Infinity;
+          for (const corner of localCorners) {
+            const w = corner.clone().applyMatrix4(localToWorld);
+            if (w.y < minY) minY = w.y;
+            if (w.y > maxY) maxY = w.y;
+          }
+
+          if (slicingMode === 'HIDE_ABOVE') {
+            segShowCapBottom = slicingHeight > minY && slicingHeight < maxY;
+          } else if (slicingMode === 'HIDE_BELOW') {
+            segShowCapTop = slicingHeight > minY && slicingHeight < maxY;
+          } else if (slicingMode === 'WINDOW') {
+            const half = windowThickness / 2;
+            const tY = slicingHeight + half;
+            const bY = slicingHeight - half;
+            segShowCapTop = tY > minY && tY < maxY;
+            segShowCapBottom = bY > minY && bY < maxY;
+          }
+        }
+
+        return (
+          <group key={i}>
+            {/* Solid Clipped Part */}
+            <mesh position={seg.position} rotation={seg.rotation} castShadow receiveShadow>
+              <boxGeometry args={seg.args} />
+              <meshStandardMaterial 
                 color={color} 
-                side={THREE.DoubleSide} 
-                transparent={false}
+                transparent={renderMode === 'transparent' || finalOpacity < 1}
+                wireframe={renderMode === 'transparent'}
+                opacity={renderMode === 'transparent' ? 0.3 : finalOpacity}
+                metalness={0.155} 
+                roughness={0.4} 
+                envMapIntensity={1}
+                clippingPlanes={clippingPlanes}
+                clipShadows={true}
+                side={THREE.DoubleSide}
               />
             </mesh>
-          )}
-          {showCapTop && (
-            <mesh 
-              position={[seg.centerX, capYTop, -seg.centerY]} 
-              rotation={[-Math.PI / 2, 0, -seg.angle]}
-            >
-              <planeGeometry args={[seg.length, seg.thickness]} />
-              <meshBasicMaterial 
-                color={color} 
-                side={THREE.DoubleSide} 
-                transparent={false}
-              />
+            {/* Flat horizontal cap matching the cut exactly so there's no visual hollow space */}
+            {segShowCapBottom && (
+              <SmartCappingWrapper
+                parentPivot={parentPivot}
+                parentRotation={parentRotation}
+                localCenterX={seg.centerX}
+                localCenterZ={seg.centerY}
+                localAngle={-seg.angle}
+                slicingHeight={slicingHeight}
+                isCapTop={false}
+                slicingMode={slicingMode}
+                windowThickness={windowThickness}
+              >
+                <HatchCappingPlaneMesh
+                  position={[seg.centerX, 0, -seg.centerY]}
+                  rotation={[-Math.PI / 2, 0, -seg.angle]}
+                  length={seg.length}
+                  thickness={seg.thickness}
+                  color={color}
+                  outlineColor="#000000"
+                  sectionHatchMode={sectionHatchMode}
+                  perimeterThickness={perimeterThickness}
+                  hatchDensity={hatchDensity}
+                  hatchThickness={hatchThickness}
+                  hatchLineColor={hatchLineColor}
+                  hatchBgColorMode={hatchBgColorMode}
+                  hatchBgColorCustom={hatchBgColorCustom}
+                  hatchPatternMode={hatchPatternMode}
+                />
+              </SmartCappingWrapper>
+            )}
+            {segShowCapTop && (
+              <SmartCappingWrapper
+                parentPivot={parentPivot}
+                parentRotation={parentRotation}
+                localCenterX={seg.centerX}
+                localCenterZ={seg.centerY}
+                localAngle={-seg.angle}
+                slicingHeight={slicingHeight}
+                isCapTop={true}
+                slicingMode={slicingMode}
+                windowThickness={windowThickness}
+              >
+                <HatchCappingPlaneMesh
+                  position={[seg.centerX, 0, -seg.centerY]}
+                  rotation={[-Math.PI / 2, 0, -seg.angle]}
+                  length={seg.length}
+                  thickness={seg.thickness}
+                  color={color}
+                  outlineColor="#000000"
+                  sectionHatchMode={sectionHatchMode}
+                  perimeterThickness={perimeterThickness}
+                  hatchDensity={hatchDensity}
+                  hatchThickness={hatchThickness}
+                  hatchLineColor={hatchLineColor}
+                  hatchBgColorMode={hatchBgColorMode}
+                  hatchBgColorCustom={hatchBgColorCustom}
+                  hatchPatternMode={hatchPatternMode}
+                />
+              </SmartCappingWrapper>
+            )}
+            {/* Wireframe Reference - Unclipped */}
+            <mesh position={seg.position} rotation={seg.rotation}>
+              <boxGeometry args={seg.args} />
+              <meshBasicMaterial transparent opacity={0} depthWrite={false} color={color} />
+              <Edges color="#e2e8f0" threshold={5} transparent opacity={globalOpacityMode === 'SOLID' ? 0.9 : 0.4} />
             </mesh>
-          )}
-          {/* Wireframe Reference - Unclipped */}
-          <mesh position={seg.position} rotation={seg.rotation}>
-            <boxGeometry args={seg.args} />
-            <meshBasicMaterial transparent opacity={0} depthWrite={false} color={color} />
-            <Edges color="#e2e8f0" threshold={5} transparent opacity={globalOpacityMode === 'SOLID' ? 0.9 : 0.4} />
-          </mesh>
-        </group>
-      ))}
+          </group>
+        );
+      })}
     </group>
   );
 };
@@ -298,7 +822,17 @@ const Room = ({
   isSlicing = false,
   slicingHeight = 0,
   slicingMode = 'HIDE_ABOVE',
-  windowThickness = 0.5
+  windowThickness = 0.5,
+  sectionHatchMode = true,
+  perimeterThickness = 5.5,
+  hatchDensity = 4.0,
+  hatchThickness = 2.0,
+  hatchLineColor = '#000000',
+  hatchBgColorMode = 'white',
+  hatchBgColorCustom = '#ffffff',
+  hatchPatternMode = 'diagonal',
+  parentPivot = [0, 0, 0],
+  parentRotation = [0, 0, 0]
 }: { 
   points: Point[], 
   holes?: Point[][], 
@@ -316,7 +850,17 @@ const Room = ({
   isSlicing?: boolean,
   slicingHeight?: number,
   slicingMode?: 'HIDE_ABOVE' | 'HIDE_BELOW' | 'WINDOW',
-  windowThickness?: number
+  windowThickness?: number,
+  sectionHatchMode?: boolean,
+  perimeterThickness?: number,
+  hatchDensity?: number,
+  hatchThickness?: number,
+  hatchLineColor?: string,
+  hatchBgColorMode?: 'white' | 'entity' | 'gray' | 'custom',
+  hatchBgColorCustom?: string,
+  hatchPatternMode?: 'diagonal' | 'horizontal' | 'vertical' | 'cross',
+  parentPivot?: [number, number, number],
+  parentRotation?: [number, number, number]
 }) => {
   const h = height / 100; // Convert to meters
   const zBase = baseZ / 100;
@@ -344,6 +888,13 @@ const Room = ({
 
     return s;
   }, [points, holes]);
+
+  const centroid = useMemo(() => {
+    if (!points || points.length === 0) return { x: 0, y: 0 };
+    let sx = 0, sy = 0;
+    points.forEach(p => { sx += p.x; sy += p.y; });
+    return { x: sx / (points.length * 100), y: sy / (points.length * 100) };
+  }, [points]);
 
   if (!shape) return null;
 
@@ -373,113 +924,163 @@ const Room = ({
     finalFloorOpacity = opacity < 1 ? Math.min(opacity * baseOpacity, 0.4) : Math.min(baseOpacity, 0.4);
   }
 
-  const isCappingEnabled = isSlicing && (renderMode !== 'transparent' || globalOpacityMode === 'SOLID') && isWall;
+  const [px, py, pz] = parentPivot;
+  const [rx, ry, rz] = parentRotation;
+
+  const isCappingEnabled = isSlicing && (renderMode !== 'transparent' || globalOpacityMode === 'SOLID');
   
-  let showCapTop = false;
-  let showCapBottom = false;
-  let capYTop = 0;
-  let capYBottom = 0;
+  let roomShowCapBottom = false;
+  let roomShowCapTop = false;
 
   if (isCappingEnabled) {
+    const tPivot = new THREE.Matrix4().makeTranslation(px, py, pz);
+    const rParent = new THREE.Matrix4().makeRotationFromEuler(new THREE.Euler(rx, ry, rz, 'XYZ'));
+    const tPivotInv = new THREE.Matrix4().makeTranslation(-px, -py, -pz);
+    const parentLocalToWorld = new THREE.Matrix4().multiply(tPivot).multiply(rParent).multiply(tPivotInv);
+
+    const localCorners: THREE.Vector3[] = [];
+    for (const p of points) {
+      const lx = p.x / 100;
+      const lz = -p.y / 100;
+      localCorners.push(new THREE.Vector3(lx, zBase, lz));
+      localCorners.push(new THREE.Vector3(lx, zBase + h, lz));
+    }
+
+    let minY = Infinity;
+    let maxY = -Infinity;
+    for (const corner of localCorners) {
+      const w = corner.clone().applyMatrix4(parentLocalToWorld);
+      if (w.y < minY) minY = w.y;
+      if (w.y > maxY) maxY = w.y;
+    }
+
     if (slicingMode === 'HIDE_ABOVE') {
-      showCapBottom = slicingHeight > zBase && slicingHeight < zBase + h;
-      capYBottom = slicingHeight - 0.001;
+      roomShowCapBottom = slicingHeight > minY && slicingHeight < maxY;
     } else if (slicingMode === 'HIDE_BELOW') {
-      showCapTop = slicingHeight > zBase && slicingHeight < zBase + h;
-      capYTop = slicingHeight + 0.001;
+      roomShowCapTop = slicingHeight > minY && slicingHeight < maxY;
     } else if (slicingMode === 'WINDOW') {
-      const wHalf = (windowThickness || 0.5) / 2;
-      const tY = slicingHeight + wHalf;
-      const bY = slicingHeight - wHalf;
-      
-      showCapTop = tY > zBase && tY < zBase + h;
-      capYTop = tY - 0.001;
-      
-      showCapBottom = bY > zBase && bY < zBase + h;
-      capYBottom = bY + 0.001;
+      const half = windowThickness / 2;
+      const tY = slicingHeight + half;
+      const bY = slicingHeight - half;
+      roomShowCapTop = tY > minY && tY < maxY;
+      roomShowCapBottom = bY > minY && bY < maxY;
     }
   }
 
   return (
-    <group position={[0, zBase, 0]}>
-      {/* Solid Clipped part */}
-      <mesh rotation={[-Math.PI / 2, 0, 0]} castShadow receiveShadow>
-        <extrudeGeometry args={[shape, extrudeSettings]} />
-        <meshStandardMaterial 
-          color={color} 
-          transparent={renderMode === 'transparent' || finalOpacity < 1} 
-          wireframe={renderMode === 'transparent'}
-          opacity={renderMode === 'transparent' ? 0.3 : finalOpacity} 
-          metalness={isWall ? 0.25 : 0.15}
-          roughness={isWall ? 0.4 : 0.3}
-          envMapIntensity={1.2}
-          clippingPlanes={clippingPlanes}
-          clipShadows={true}
-          side={THREE.DoubleSide}
-        />
-      </mesh>
-
-      {/* Flat section cap matching the sliced segment perfectly */}
-      {showCapBottom && (
-        <mesh 
-          position={[0, capYBottom - zBase, 0]} 
-          rotation={[-Math.PI / 2, 0, 0]}
-        >
-          <shapeGeometry args={[shape]} />
-          <meshBasicMaterial 
-            color={color} 
-            side={THREE.DoubleSide}
-            transparent={false}
-          />
-        </mesh>
-      )}
-      {showCapTop && (
-        <mesh 
-          position={[0, capYTop - zBase, 0]} 
-          rotation={[-Math.PI / 2, 0, 0]}
-        >
-          <shapeGeometry args={[shape]} />
-          <meshBasicMaterial 
-            color={color} 
-            side={THREE.DoubleSide}
-            transparent={false}
-          />
-        </mesh>
-      )}
-
-      {/* Wireframe Reference - Unclipped */}
-      <mesh rotation={[-Math.PI / 2, 0, 0]}>
-        <extrudeGeometry args={[shape, extrudeSettings]} />
-        <meshBasicMaterial transparent opacity={0} depthWrite={false} />
-        <Edges color="#e2e8f0" threshold={5} transparent opacity={globalOpacityMode === 'SOLID' ? 0.9 : 0.4} />
-      </mesh>
-      
-      {/* Floor Highlight - Clipped */}
-      {!isWall && (
-        <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.001, 0]} receiveShadow>
-          <shapeGeometry args={[shape]} />
+    <group>
+      <group position={[0, zBase, 0]}>
+        {/* Solid Clipped part */}
+        <mesh rotation={[-Math.PI / 2, 0, 0]} castShadow receiveShadow>
+          <extrudeGeometry args={[shape, extrudeSettings]} />
           <meshStandardMaterial 
             color={color} 
-            transparent 
-            opacity={finalFloorOpacity} 
+            transparent={renderMode === 'transparent' || finalOpacity < 1} 
+            wireframe={renderMode === 'transparent'}
+            opacity={renderMode === 'transparent' ? 0.3 : finalOpacity} 
+            metalness={isWall ? 0.25 : 0.15}
+            roughness={isWall ? 0.4 : 0.3}
+            envMapIntensity={1.2}
             clippingPlanes={clippingPlanes}
+            clipShadows={true}
+            side={THREE.DoubleSide}
           />
         </mesh>
-      )}
 
-      {name && (
-        <Text
-          position={center as [number, number, number]}
-          fontSize={0.16}
-          color="white"
-          anchorX="center"
-          anchorY="middle"
-          outlineWidth={0.02}
-          outlineColor="#0f172a"
-          visible={clippingPlanes.length === 0 || clippingPlanes.every(p => p.distanceToPoint(new THREE.Vector3(...(center as [number, number, number]))) >= 0)}
+        {/* Wireframe Reference - Unclipped */}
+        <mesh rotation={[-Math.PI / 2, 0, 0]}>
+          <extrudeGeometry args={[shape, extrudeSettings]} />
+          <meshBasicMaterial transparent opacity={0} depthWrite={false} />
+          <Edges color="#e2e8f0" threshold={5} transparent opacity={globalOpacityMode === 'SOLID' ? 0.9 : 0.4} />
+        </mesh>
+        
+        {/* Floor Highlight - Clipped */}
+        {!isWall && (
+          <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.001, 0]} receiveShadow>
+            <shapeGeometry args={[shape]} />
+            <meshStandardMaterial 
+              color={color} 
+              transparent 
+              opacity={finalFloorOpacity} 
+              clippingPlanes={clippingPlanes}
+            />
+          </mesh>
+        )}
+
+        {name && (
+          <Text
+            position={center as [number, number, number]}
+            fontSize={0.16}
+            color="white"
+            anchorX="center"
+            anchorY="middle"
+            outlineWidth={0.02}
+            outlineColor="#0f172a"
+            visible={clippingPlanes.length === 0 || clippingPlanes.every(p => p.distanceToPoint(new THREE.Vector3(...(center as [number, number, number]))) >= 0)}
+          >
+            {name}
+          </Text>
+        )}
+      </group>
+
+      {/* Flat section cap matching the sliced segment perfectly */}
+      {roomShowCapBottom && (
+        <SmartCappingWrapper
+          parentPivot={parentPivot}
+          parentRotation={parentRotation}
+          localCenterX={0}
+          localCenterZ={0}
+          localAngle={0}
+          slicingHeight={slicingHeight}
+          isCapTop={false}
+          slicingMode={slicingMode}
+          windowThickness={windowThickness}
         >
-          {name}
-        </Text>
+          <HatchCappingShapeMesh
+            position={[0, 0, 0]}
+            rotation={[-Math.PI / 2, 0, 0]}
+            shape={shape}
+            color={color}
+            outlineColor="#000000"
+            sectionHatchMode={sectionHatchMode}
+            perimeterThickness={perimeterThickness}
+            hatchDensity={hatchDensity}
+            hatchThickness={hatchThickness}
+            hatchLineColor={hatchLineColor}
+            hatchBgColorMode={hatchBgColorMode}
+            hatchBgColorCustom={hatchBgColorCustom}
+            hatchPatternMode={hatchPatternMode}
+          />
+        </SmartCappingWrapper>
+      )}
+      {roomShowCapTop && (
+        <SmartCappingWrapper
+          parentPivot={parentPivot}
+          parentRotation={parentRotation}
+          localCenterX={0}
+          localCenterZ={0}
+          localAngle={0}
+          slicingHeight={slicingHeight}
+          isCapTop={true}
+          slicingMode={slicingMode}
+          windowThickness={windowThickness}
+        >
+          <HatchCappingShapeMesh
+            position={[0, 0, 0]}
+            rotation={[-Math.PI / 2, 0, 0]}
+            shape={shape}
+            color={color}
+            outlineColor="#000000"
+            sectionHatchMode={sectionHatchMode}
+            perimeterThickness={perimeterThickness}
+            hatchDensity={hatchDensity}
+            hatchThickness={hatchThickness}
+            hatchLineColor={hatchLineColor}
+            hatchBgColorMode={hatchBgColorMode}
+            hatchBgColorCustom={hatchBgColorCustom}
+            hatchPatternMode={hatchPatternMode}
+          />
+        </SmartCappingWrapper>
       )}
     </group>
   );
@@ -745,7 +1346,17 @@ const CSGMeshRender = ({
   slicingHeight = 0,
   slicingMode = 'HIDE_ABOVE',
   windowThickness = 0.5,
-  renderMode = 'solid'
+  renderMode = 'solid',
+  sectionHatchMode = true,
+  perimeterThickness = 5.5,
+  hatchDensity = 4.0,
+  hatchThickness = 2.0,
+  hatchLineColor = '#000000',
+  hatchBgColorMode = 'white',
+  hatchBgColorCustom = '#ffffff',
+  hatchPatternMode = 'diagonal',
+  parentPivot = [0, 0, 0],
+  parentRotation = [0, 0, 0]
 }: { 
   entity: any, 
   color: string, 
@@ -757,7 +1368,17 @@ const CSGMeshRender = ({
   slicingHeight?: number,
   slicingMode?: 'HIDE_ABOVE' | 'HIDE_BELOW' | 'WINDOW',
   windowThickness?: number,
-  renderMode?: 'solid' | 'transparent'
+  renderMode?: 'solid' | 'transparent',
+  sectionHatchMode?: boolean,
+  perimeterThickness?: number,
+  hatchDensity?: number,
+  hatchThickness?: number,
+  hatchLineColor?: string,
+  hatchBgColorMode?: 'white' | 'entity' | 'gray' | 'custom',
+  hatchBgColorCustom?: string,
+  hatchPatternMode?: 'diagonal' | 'horizontal' | 'vertical' | 'cross',
+  parentPivot?: [number, number, number],
+  parentRotation?: [number, number, number]
 }) => {
   const geom = useMemo(() => {
     const geo = new THREE.BufferGeometry();
@@ -781,7 +1402,6 @@ const CSGMeshRender = ({
     ? 1.0 
     : (opacity < 1 ? opacity * globalWallOpacityVal : globalWallOpacityVal);
 
-  // Compute capping if structure is recognized
   const points = entity.points || [];
   const height = entity.bimHeight || entity.height || 270;
   const width = entity.bimWidth || 15;
@@ -791,32 +1411,10 @@ const CSGMeshRender = ({
   const zBase = baseZ / 100;
 
   const isWall = entity.bimType === 'wall' || entity.bimAreaType === 'muro' || entity.bimType === 'element';
-  const isCappingEnabled = isSlicing && (renderMode !== 'transparent' || globalOpacityMode === 'SOLID') && isWall;
+  const isCappingEnabled = isSlicing && (renderMode !== 'transparent' || globalOpacityMode === 'SOLID');
 
-  let showCapTop = false;
-  let showCapBottom = false;
-  let capYTop = 0;
-  let capYBottom = 0;
-
-  if (isCappingEnabled) {
-    if (slicingMode === 'HIDE_ABOVE') {
-      showCapBottom = slicingHeight > zBase && slicingHeight < zBase + h;
-      capYBottom = slicingHeight - 0.001;
-    } else if (slicingMode === 'HIDE_BELOW') {
-      showCapTop = slicingHeight > zBase && slicingHeight < zBase + h;
-      capYTop = slicingHeight + 0.001;
-    } else if (slicingMode === 'WINDOW') {
-      const wHalf = (windowThickness || 0.5) / 2;
-      const tY = slicingHeight + wHalf;
-      const bY = slicingHeight - wHalf;
-      
-      showCapTop = tY > zBase && tY < zBase + h;
-      capYTop = tY - 0.001;
-      
-      showCapBottom = bY > zBase && bY < zBase + h;
-      capYBottom = bY + 0.001;
-    }
-  }
+  const [px, py, pz] = parentPivot;
+  const [rx, ry, rz] = parentRotation;
 
   // Segment generation for Wall capping
   const segments = useMemo(() => {
@@ -869,6 +1467,51 @@ const CSGMeshRender = ({
     return s;
   }, [points, entity.holes, isWall, segments]);
 
+  const centroid = useMemo(() => {
+    if (!points || points.length === 0) return { x: 0, y: 0 };
+    let sx = 0, sy = 0;
+    points.forEach(p => { sx += p.x; sy += p.y; });
+    return { x: sx / (points.length * 100), y: sy / (points.length * 100) };
+  }, [points]);
+
+  let roomShowCapBottom = false;
+  let roomShowCapTop = false;
+
+  if (isCappingEnabled && roomShape) {
+    const tPivot = new THREE.Matrix4().makeTranslation(px, py, pz);
+    const rParent = new THREE.Matrix4().makeRotationFromEuler(new THREE.Euler(rx, ry, rz, 'XYZ'));
+    const tPivotInv = new THREE.Matrix4().makeTranslation(-px, -py, -pz);
+    const parentLocalToWorld = new THREE.Matrix4().multiply(tPivot).multiply(rParent).multiply(tPivotInv);
+
+    const localCorners: THREE.Vector3[] = [];
+    for (const p of points) {
+      const lx = p.x / 100;
+      const lz = -p.y / 100;
+      localCorners.push(new THREE.Vector3(lx, zBase, lz));
+      localCorners.push(new THREE.Vector3(lx, zBase + h, lz));
+    }
+
+    let minY = Infinity;
+    let maxY = -Infinity;
+    for (const corner of localCorners) {
+      const w = corner.clone().applyMatrix4(parentLocalToWorld);
+      if (w.y < minY) minY = w.y;
+      if (w.y > maxY) maxY = w.y;
+    }
+
+    if (slicingMode === 'HIDE_ABOVE') {
+      roomShowCapBottom = slicingHeight > minY && slicingHeight < maxY;
+    } else if (slicingMode === 'HIDE_BELOW') {
+      roomShowCapTop = slicingHeight > minY && slicingHeight < maxY;
+    } else if (slicingMode === 'WINDOW') {
+      const half = windowThickness / 2;
+      const tY = slicingHeight + half;
+      const bY = slicingHeight - half;
+      roomShowCapTop = tY > minY && tY < maxY;
+      roomShowCapBottom = bY > minY && bY < maxY;
+    }
+  }
+
   return (
     <group>
       <mesh geometry={geom} castShadow receiveShadow>
@@ -885,48 +1528,183 @@ const CSGMeshRender = ({
         />
       </mesh>
       {/* Capping Plates for CSG wall segments */}
-      {segments.map((seg, i) => (
-        <group key={`cap-${i}`}>
-          {showCapBottom && (
-            <mesh 
-              position={[seg.centerX, capYBottom, -seg.centerY]} 
-              rotation={[-Math.PI / 2, 0, -seg.angle]}
-            >
-              <planeGeometry args={[seg.length, seg.thickness]} />
-              <meshBasicMaterial color={color} side={THREE.DoubleSide} transparent={false} />
-            </mesh>
-          )}
-          {showCapTop && (
-            <mesh 
-              position={[seg.centerX, capYTop, -seg.centerY]} 
-              rotation={[-Math.PI / 2, 0, -seg.angle]}
-            >
-              <planeGeometry args={[seg.length, seg.thickness]} />
-              <meshBasicMaterial color={color} side={THREE.DoubleSide} transparent={false} />
-            </mesh>
-          )}
-        </group>
-      ))}
+      {segments.map((seg, i) => {
+        let segShowCapBottom = false;
+        let segShowCapTop = false;
+
+        if (isCappingEnabled) {
+          const tPivot = new THREE.Matrix4().makeTranslation(px, py, pz);
+          const rParent = new THREE.Matrix4().makeRotationFromEuler(new THREE.Euler(rx, ry, rz, 'XYZ'));
+          const tPivotInv = new THREE.Matrix4().makeTranslation(-px, -py, -pz);
+          const parentLocalToWorld = new THREE.Matrix4().multiply(tPivot).multiply(rParent).multiply(tPivotInv);
+
+          const tSeg = new THREE.Matrix4().makeTranslation(seg.centerX, zBase + h / 2, -seg.centerY);
+          const rSeg = new THREE.Matrix4().makeRotationFromEuler(new THREE.Euler(0, -seg.angle, 0, 'XYZ'));
+          const segLocalToParent = new THREE.Matrix4().multiply(tSeg).multiply(rSeg);
+
+          const localToWorld = new THREE.Matrix4().multiplyMatrices(parentLocalToWorld, segLocalToParent);
+
+          const halfL = seg.length / 2;
+          const halfH = h / 2;
+          const halfT = seg.thickness / 2;
+
+          const localCorners = [
+            new THREE.Vector3(-halfL, -halfH, -halfT),
+            new THREE.Vector3(halfL, -halfH, -halfT),
+            new THREE.Vector3(-halfL, halfH, -halfT),
+            new THREE.Vector3(halfL, halfH, -halfT),
+            new THREE.Vector3(-halfL, -halfH, halfT),
+            new THREE.Vector3(halfL, -halfH, halfT),
+            new THREE.Vector3(-halfL, halfH, halfT),
+            new THREE.Vector3(halfL, halfH, halfT)
+          ];
+
+          let minY = Infinity;
+          let maxY = -Infinity;
+          for (const corner of localCorners) {
+            const w = corner.clone().applyMatrix4(localToWorld);
+            if (w.y < minY) minY = w.y;
+            if (w.y > maxY) maxY = w.y;
+          }
+
+          if (slicingMode === 'HIDE_ABOVE') {
+            segShowCapBottom = slicingHeight > minY && slicingHeight < maxY;
+          } else if (slicingMode === 'HIDE_BELOW') {
+            segShowCapTop = slicingHeight > minY && slicingHeight < maxY;
+          } else if (slicingMode === 'WINDOW') {
+            const half = windowThickness / 2;
+            const tY = slicingHeight + half;
+            const bY = slicingHeight - half;
+            segShowCapTop = tY > minY && tY < maxY;
+            segShowCapBottom = bY > minY && bY < maxY;
+          }
+        }
+
+        return (
+          <group key={`cap-${i}`}>
+            {segShowCapBottom && (
+              <SmartCappingWrapper
+                parentPivot={parentPivot}
+                parentRotation={parentRotation}
+                localCenterX={seg.centerX}
+                localCenterZ={seg.centerY}
+                localAngle={-seg.angle}
+                slicingHeight={slicingHeight}
+                isCapTop={false}
+                slicingMode={slicingMode}
+                windowThickness={windowThickness}
+              >
+                <HatchCappingPlaneMesh
+                  position={[seg.centerX, 0, -seg.centerY]}
+                  rotation={[-Math.PI / 2, 0, -seg.angle]}
+                  length={seg.length}
+                  thickness={seg.thickness}
+                  color={color}
+                  outlineColor="#000000"
+                  sectionHatchMode={sectionHatchMode}
+                  perimeterThickness={perimeterThickness}
+                  hatchDensity={hatchDensity}
+                  hatchThickness={hatchThickness}
+                  hatchLineColor={hatchLineColor}
+                  hatchBgColorMode={hatchBgColorMode}
+                  hatchBgColorCustom={hatchBgColorCustom}
+                  hatchPatternMode={hatchPatternMode}
+                />
+              </SmartCappingWrapper>
+            )}
+            {segShowCapTop && (
+              <SmartCappingWrapper
+                parentPivot={parentPivot}
+                parentRotation={parentRotation}
+                localCenterX={seg.centerX}
+                localCenterZ={seg.centerY}
+                localAngle={-seg.angle}
+                slicingHeight={slicingHeight}
+                isCapTop={true}
+                slicingMode={slicingMode}
+                windowThickness={windowThickness}
+              >
+                <HatchCappingPlaneMesh
+                  position={[seg.centerX, 0, -seg.centerY]}
+                  rotation={[-Math.PI / 2, 0, -seg.angle]}
+                  length={seg.length}
+                  thickness={seg.thickness}
+                  color={color}
+                  outlineColor="#000000"
+                  sectionHatchMode={sectionHatchMode}
+                  perimeterThickness={perimeterThickness}
+                  hatchDensity={hatchDensity}
+                  hatchThickness={hatchThickness}
+                  hatchLineColor={hatchLineColor}
+                  hatchBgColorMode={hatchBgColorMode}
+                  hatchBgColorCustom={hatchBgColorCustom}
+                  hatchPatternMode={hatchPatternMode}
+                />
+              </SmartCappingWrapper>
+            )}
+          </group>
+        );
+      })}
       {/* Capping Plate for Room/Area CSG */}
       {roomShape && (
         <group>
-          {showCapBottom && (
-            <mesh 
-              position={[0, capYBottom, 0]} 
-              rotation={[-Math.PI / 2, 0, 0]}
+          {roomShowCapBottom && (
+            <SmartCappingWrapper
+              parentPivot={parentPivot}
+              parentRotation={parentRotation}
+              localCenterX={0}
+              localCenterZ={0}
+              localAngle={0}
+              slicingHeight={slicingHeight}
+              isCapTop={false}
+              slicingMode={slicingMode}
+              windowThickness={windowThickness}
             >
-              <shapeGeometry args={[roomShape]} />
-              <meshBasicMaterial color={color} side={THREE.DoubleSide} transparent={false} />
-            </mesh>
+              <HatchCappingShapeMesh
+                position={[0, 0, 0]}
+                rotation={[-Math.PI / 2, 0, 0]}
+                shape={roomShape}
+                color={color}
+                outlineColor="#000000"
+                sectionHatchMode={sectionHatchMode}
+                perimeterThickness={perimeterThickness}
+                hatchDensity={hatchDensity}
+                hatchThickness={hatchThickness}
+                hatchLineColor={hatchLineColor}
+                hatchBgColorMode={hatchBgColorMode}
+                hatchBgColorCustom={hatchBgColorCustom}
+                hatchPatternMode={hatchPatternMode}
+              />
+            </SmartCappingWrapper>
           )}
-          {showCapTop && (
-            <mesh 
-              position={[0, capYTop, 0]} 
-              rotation={[-Math.PI / 2, 0, 0]}
+          {roomShowCapTop && (
+            <SmartCappingWrapper
+              parentPivot={parentPivot}
+              parentRotation={parentRotation}
+              localCenterX={0}
+              localCenterZ={0}
+              localAngle={0}
+              slicingHeight={slicingHeight}
+              isCapTop={true}
+              slicingMode={slicingMode}
+              windowThickness={windowThickness}
             >
-              <shapeGeometry args={[roomShape]} />
-              <meshBasicMaterial color={color} side={THREE.DoubleSide} transparent={false} />
-            </mesh>
+              <HatchCappingShapeMesh
+                position={[0, 0, 0]}
+                rotation={[-Math.PI / 2, 0, 0]}
+                shape={roomShape}
+                color={color}
+                outlineColor="#000000"
+                sectionHatchMode={sectionHatchMode}
+                perimeterThickness={perimeterThickness}
+                hatchDensity={hatchDensity}
+                hatchThickness={hatchThickness}
+                hatchLineColor={hatchLineColor}
+                hatchBgColorMode={hatchBgColorMode}
+                hatchBgColorCustom={hatchBgColorCustom}
+                hatchPatternMode={hatchPatternMode}
+              />
+            </SmartCappingWrapper>
           )}
         </group>
       )}
@@ -1282,21 +2060,127 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
   const [isWindowEditOpen, setIsWindowEditOpen] = useState(false);
   const [editingEntityId, setEditingEntityId] = useState<string | null>(null);
   const [isSectionMode, setIsSectionMode] = useState(false);
+  const [showSectionConfig, setShowSectionConfig] = useState(false);
   const [isRealistic, setIsRealistic] = useState(false);
   const [globalOpacityMode, setGlobalOpacityMode] = useState<'WORK' | 'SOLID'>('WORK');
-
-  // Force solid rendering if section mode is active
-  useEffect(() => {
-    if (isSectionMode) {
-      setGlobalOpacityMode('SOLID');
-    } else {
-      setGlobalOpacityMode('WORK');
-    }
-  }, [isSectionMode]);
   const [globalRoomOpacityVal, setGlobalRoomOpacityVal] = useState<number>(0.25);
   const [globalWallOpacityVal, setGlobalWallOpacityVal] = useState<number>(0.50);
   const [transparentEntities, setTransparentEntities] = useState<Set<string>>(new Set());
   const [stepCm, setStepCm] = useState(10);
+
+  // Technical section style settings (command of the section and saving in localStorage)
+  const [sectionHatchMode, setSectionHatchMode] = useState<boolean>(() => {
+    try {
+      const saved = localStorage.getItem('gecola_bim_section_hatch');
+      return saved !== null ? saved === 'true' : true;
+    } catch { return true; }
+  });
+  const [perimeterThickness, setPerimeterThickness] = useState<number>(() => {
+    try {
+      const saved = localStorage.getItem('gecola_bim_perimeter_thickness');
+      return saved !== null ? parseFloat(saved) : 5.5;
+    } catch { return 5.5; }
+  });
+  const [hatchDensity, setHatchDensity] = useState<number>(() => {
+    try {
+      const saved = localStorage.getItem('gecola_bim_hatch_density');
+      return saved !== null ? parseFloat(saved) : 4.0;
+    } catch { return 4.0; }
+  });
+  const [hatchThickness, setHatchThickness] = useState<number>(() => {
+    try {
+      const saved = localStorage.getItem('gecola_bim_hatch_thickness');
+      return saved !== null ? parseFloat(saved) : 2.0;
+    } catch { return 2.0; }
+  });
+  const [hatchLineColor, setHatchLineColor] = useState<string>(() => {
+    try {
+      const saved = localStorage.getItem('gecola_bim_hatch_line_color');
+      return saved !== null ? saved : '#000000';
+    } catch { return '#000000'; }
+  });
+  const [hatchBgColorMode, setHatchBgColorMode] = useState<'white' | 'entity' | 'gray' | 'custom'>(() => {
+    try {
+      const saved = localStorage.getItem('gecola_bim_hatch_bg_color_mode');
+      return (saved !== null && ['white', 'entity', 'gray', 'custom'].includes(saved)) ? saved as any : 'white';
+    } catch { return 'white'; }
+  });
+  const [hatchBgColorCustom, setHatchBgColorCustom] = useState<string>(() => {
+    try {
+      const saved = localStorage.getItem('gecola_bim_hatch_bg_color_custom');
+      return saved !== null ? saved : '#ffffff';
+    } catch { return '#ffffff'; }
+  });
+  const [hatchPatternMode, setHatchPatternMode] = useState<'diagonal' | 'horizontal' | 'vertical' | 'cross'>(() => {
+    try {
+      const saved = localStorage.getItem('gecola_bim_hatch_pattern_mode');
+      return (saved !== null && ['diagonal', 'horizontal', 'vertical', 'cross'].includes(saved)) ? saved as any : 'diagonal';
+    } catch { return 'diagonal'; }
+  });
+
+  // Effects to save the values in localStorage when changed
+  useEffect(() => {
+    try {
+      localStorage.setItem('gecola_bim_hatch_pattern_mode', hatchPatternMode);
+    } catch (e) {
+      console.warn('LocalStorage save failed', e);
+    }
+  }, [hatchPatternMode]);
+  useEffect(() => {
+    try {
+      localStorage.setItem('gecola_bim_section_hatch', sectionHatchMode.toString());
+    } catch (e) {
+      console.warn('LocalStorage save failed', e);
+    }
+  }, [sectionHatchMode]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('gecola_bim_perimeter_thickness', perimeterThickness.toString());
+    } catch (e) {
+      console.warn('LocalStorage save failed', e);
+    }
+  }, [perimeterThickness]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('gecola_bim_hatch_density', hatchDensity.toString());
+    } catch (e) {
+      console.warn('LocalStorage save failed', e);
+    }
+  }, [hatchDensity]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('gecola_bim_hatch_thickness', hatchThickness.toString());
+    } catch (e) {
+      console.warn('LocalStorage save failed', e);
+    }
+  }, [hatchThickness]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('gecola_bim_hatch_line_color', hatchLineColor);
+    } catch (e) {
+      console.warn('LocalStorage save failed', e);
+    }
+  }, [hatchLineColor]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('gecola_bim_hatch_bg_color_mode', hatchBgColorMode);
+    } catch (e) {
+      console.warn('LocalStorage save failed', e);
+    }
+  }, [hatchBgColorMode]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('gecola_bim_hatch_bg_color_custom', hatchBgColorCustom);
+    } catch (e) {
+      console.warn('LocalStorage save failed', e);
+    }
+  }, [hatchBgColorCustom]);
 
   // Positioning & dragging states for Properties Panel
   const [panelPos, setPanelPos] = useState({ x: 0, y: 0 });
@@ -2001,6 +2885,20 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
     return () => clearInterval(interval);
   }, [isAutoSlicing, slicingDirection]);
 
+  // Combined effect to trigger solid view, activate slicing, and auto-set a beautiful floor cut slice when isSectionMode is enabled
+  useEffect(() => {
+    if (isSectionMode) {
+      setGlobalOpacityMode('SOLID');
+      setIsSlicing(true);
+      // Automatically slice at a nice 1.35m height so that floor-plan layout is visible and hatched
+      if (slicingHeight > maxModelHeight) {
+        setSlicingHeight(1.35);
+      }
+    } else {
+      setGlobalOpacityMode('WORK');
+    }
+  }, [isSectionMode, maxModelHeight]);
+
   const bimEntities = useMemo(() => {
     return entities.filter(e => e.isBIM && (e as any).isVisible !== false);
   }, [entities]);
@@ -2116,12 +3014,31 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
           <div className="w-px h-6 bg-slate-200/50 mx-1" />
 
           <button 
-            onClick={() => setIsSlicing(!isSlicing)}
+            onClick={() => {
+              const nextVal = !isSlicing;
+              setIsSlicing(nextVal);
+              if (nextVal) {
+                setShowSectionConfig(true);
+              } else {
+                setShowSectionConfig(false);
+              }
+            }}
             className={`p-2.5 rounded-lg transition-all ${isSlicing ? 'bg-indigo-500 text-white shadow-lg shadow-indigo-200' : 'hover:bg-white text-slate-400'}`}
             title="Slicing Engine (Section Mobile)"
           >
             <Scissors size={20} />
           </button>
+
+          {isSlicing && (
+            <button 
+              onClick={() => setShowSectionConfig(!showSectionConfig)}
+              className={`p-2.5 rounded-lg transition-all flex items-center gap-1.5 ${showSectionConfig ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-200' : 'hover:bg-white text-slate-400'}`}
+              title="Configura Stile Sezione / Tratteggio (Hatch)"
+            >
+              <Sliders size={18} />
+              <span className="text-[9px] font-black uppercase tracking-wider hidden md:inline">Stile Sezione</span>
+            </button>
+          )}
           
           {isSlicing && (
             <>
@@ -2628,6 +3545,377 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
           </div>
         </div>
       </div>
+
+      {/* Floating Section Style Configuration Panel - CAD Hatch & Outline parameters */}
+      {showSectionConfig && (
+        <div 
+          className="absolute top-24 left-8 z-[60] w-80 bg-white/95 backdrop-blur-2xl rounded-[2.5rem] shadow-[0_20px_60px_-15px_rgba(0,0,0,0.15)] border border-slate-150 transition-all duration-300 pointer-events-auto flex flex-col p-6 animate-in fade-in slide-in-from-left-8 duration-300"
+        >
+          {/* Header */}
+          <div className="flex items-center justify-between mb-4 pb-3 border-b border-slate-100 select-none">
+            <div className="flex items-center gap-3">
+              <div className="p-3 bg-indigo-600 rounded-2xl text-white shadow-lg shadow-indigo-100">
+                <Sliders size={20} />
+              </div>
+              <div>
+                <h3 className="font-black text-slate-800 text-base tracking-tight leading-tight">Configura Sezione</h3>
+                <span className="text-[9px] font-bold text-slate-400 uppercase tracking-widest block">Rendering & Hatch</span>
+              </div>
+            </div>
+            <button onClick={() => setShowSectionConfig(false)} className="text-slate-350 hover:text-slate-600 transition-colors cursor-pointer">
+              <X size={20} />
+            </button>
+          </div>
+
+          {/* Body */}
+          <div className="space-y-4 font-sans">
+            {/* Toggle Hatch / Solid */}
+            <div>
+              <label className="block text-[9px] text-slate-400 font-black uppercase tracking-widest mb-1.5 font-mono italic">
+                Tipo Riempimento Sezione
+              </label>
+              <div className="grid grid-cols-2 gap-1.5 p-1 bg-slate-50 rounded-xl border border-slate-100">
+                <button
+                  type="button"
+                  onClick={() => setSectionHatchMode(true)}
+                  className={`py-1.5 px-3 rounded-lg text-[10px] font-black uppercase tracking-wider transition-all cursor-pointer ${
+                    sectionHatchMode 
+                      ? 'bg-indigo-600 text-white shadow-sm' 
+                      : 'text-slate-600 hover:text-slate-850'
+                  }`}
+                >
+                  Retino (Hatch)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setSectionHatchMode(false)}
+                  className={`py-1.5 px-3 rounded-lg text-[10px] font-black uppercase tracking-wider transition-all cursor-pointer ${
+                    !sectionHatchMode 
+                      ? 'bg-indigo-600 text-white shadow-sm' 
+                      : 'text-slate-600 hover:text-slate-850'
+                  }`}
+                >
+                  Solido Full
+                </button>
+              </div>
+            </div>
+
+            {/* Pattern Mode Select */}
+            {sectionHatchMode && (
+              <div>
+                <label className="block text-[9px] text-slate-400 font-black uppercase tracking-widest mb-1.5 font-mono italic">
+                  Motivo Linee Taglio (Pattern)
+                </label>
+                <div className="grid grid-cols-4 gap-1 p-0.5 bg-slate-50 rounded-xl border border-slate-100">
+                  <button
+                    type="button"
+                    onClick={() => setHatchPatternMode('diagonal')}
+                    className={`py-1 text-[9px] font-black rounded cursor-pointer transition-all ${
+                      hatchPatternMode === 'diagonal' ? 'bg-indigo-600 text-white shadow-xs' : 'text-slate-600 hover:bg-slate-100'
+                    }`}
+                  >
+                    Diag
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setHatchPatternMode('horizontal')}
+                    className={`py-1 text-[9px] font-black rounded cursor-pointer transition-all ${
+                      hatchPatternMode === 'horizontal' ? 'bg-indigo-600 text-white shadow-xs' : 'text-slate-600 hover:bg-slate-100'
+                    }`}
+                  >
+                    Oriz
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setHatchPatternMode('vertical')}
+                    className={`py-1 text-[9px] font-black rounded cursor-pointer transition-all ${
+                      hatchPatternMode === 'vertical' ? 'bg-indigo-600 text-white shadow-xs' : 'text-slate-600 hover:bg-slate-100'
+                    }`}
+                  >
+                    Vert
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setHatchPatternMode('cross')}
+                    className={`py-1 text-[9px] font-black rounded cursor-pointer transition-all ${
+                      hatchPatternMode === 'cross' ? 'bg-indigo-600 text-white shadow-xs' : 'text-slate-600 hover:bg-slate-100'
+                    }`}
+                  >
+                    Croce
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* Sliders */}
+            <div className="space-y-3 pt-2">
+              {/* Perimeter Thickness Input */}
+              <div>
+                <div className="flex justify-between items-center mb-1">
+                  <label className="text-[9px] text-slate-500 font-black uppercase tracking-widest font-mono">
+                    Perimetro / Contorno
+                  </label>
+                  <span className="text-[10px] font-black text-indigo-600 bg-indigo-50 px-1.5 py-0.5 rounded font-mono">{perimeterThickness.toFixed(1)}px</span>
+                </div>
+                <input
+                  type="range"
+                  min="1.5"
+                  max="12.0"
+                  step="0.5"
+                  value={perimeterThickness}
+                  onChange={(e) => setPerimeterThickness(parseFloat(e.target.value))}
+                  className="w-full h-1.5 bg-slate-100 rounded-lg appearance-none cursor-pointer accent-indigo-600"
+                />
+              </div>
+
+              {sectionHatchMode && (
+                <>
+                  {/* Hatch Line Thickness */}
+                  <div>
+                    <div className="flex justify-between items-center mb-1">
+                      <label className="text-[9px] text-slate-500 font-black uppercase tracking-widest font-mono">
+                        Spessore Linee Retino
+                      </label>
+                      <span className="text-[10px] font-black text-indigo-600 bg-indigo-50 px-1.5 py-0.5 rounded font-mono">{hatchThickness.toFixed(1)}px</span>
+                    </div>
+                    <input
+                      type="range"
+                      min="0.5"
+                      max="4.5"
+                      step="0.1"
+                      value={hatchThickness}
+                      onChange={(e) => setHatchThickness(parseFloat(e.target.value))}
+                      className="w-full h-1.5 bg-slate-100 rounded-lg appearance-none cursor-pointer accent-indigo-600"
+                    />
+                  </div>
+
+                  {/* Hatch Density */}
+                  <div>
+                    <div className="flex justify-between items-center mb-1">
+                      <label className="text-[9px] text-slate-500 font-black uppercase tracking-widest font-mono">
+                        Densità / Spaziatura
+                      </label>
+                      <span className="text-[10px] font-black text-indigo-600 bg-indigo-50 px-1.5 py-0.5 rounded font-mono">{hatchDensity.toFixed(1)}/m</span>
+                    </div>
+                    <input
+                      type="range"
+                      min="1.0"
+                      max="10.0"
+                      step="0.5"
+                      value={hatchDensity}
+                      onChange={(e) => setHatchDensity(parseFloat(e.target.value))}
+                      className="w-full h-1.5 bg-slate-100 rounded-lg appearance-none cursor-pointer accent-indigo-600"
+                    />
+                  </div>
+                </>
+              )}
+            </div>
+
+            {/* Architectural presets */}
+            <div className="pt-3 border-t border-slate-100">
+              <span className="block text-[8px] text-slate-400 font-black uppercase tracking-widest mb-2 font-mono">
+                Preset Comandi Sezione
+              </span>
+              <div className="grid grid-cols-2 gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setPerimeterThickness(5.5);
+                    setHatchThickness(2.0);
+                    setHatchDensity(4.0);
+                    setSectionHatchMode(true);
+                    setHatchLineColor('#000000');
+                    setHatchBgColorMode('white');
+                    setHatchPatternMode('diagonal');
+                  }}
+                  className="p-1 px-1.5 text-left bg-slate-50 hover:bg-indigo-50 hover:text-indigo-600 rounded-lg text-[9px] font-bold text-slate-600 transition-colors border border-slate-100 cursor-pointer"
+                >
+                  📐 Normativa ISO
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setPerimeterThickness(9.5);
+                    setHatchThickness(1.5);
+                    setHatchDensity(5.0);
+                    setSectionHatchMode(true);
+                    setHatchLineColor('#1e293b');
+                    setHatchBgColorMode('gray');
+                    setHatchPatternMode('cross');
+                  }}
+                  className="p-1 px-1.5 text-left bg-slate-50 hover:bg-indigo-50 hover:text-indigo-600 rounded-lg text-[9px] font-bold text-slate-600 transition-colors border border-slate-100 cursor-pointer"
+                >
+                  🖋️ Contor. Forte
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setPerimeterThickness(4.0);
+                    setHatchThickness(1.0);
+                    setHatchDensity(8.0);
+                    setSectionHatchMode(true);
+                    setHatchLineColor('#4f46e5');
+                    setHatchBgColorMode('white');
+                    setHatchPatternMode('vertical');
+                  }}
+                  className="p-1 px-1.5 text-left bg-slate-50 hover:bg-indigo-50 hover:text-indigo-600 rounded-lg text-[9px] font-bold text-slate-600 transition-colors border border-slate-100 cursor-pointer"
+                >
+                  🏁 Retino Denso
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setPerimeterThickness(2.5);
+                    setHatchThickness(2.5);
+                    setHatchDensity(2.0);
+                    setSectionHatchMode(true);
+                    setHatchLineColor('#ef4444');
+                    setHatchBgColorMode('custom');
+                    setHatchBgColorCustom('#fee2e2');
+                    setHatchPatternMode('horizontal');
+                  }}
+                  className="p-1 px-1.5 text-left bg-slate-50 hover:bg-indigo-50 hover:text-indigo-600 rounded-lg text-[9px] font-bold text-slate-600 transition-colors border border-slate-100 cursor-pointer"
+                >
+                  🪵 Retino Largo
+                </button>
+              </div>
+            </div>
+
+            {/* Controllo Colori Retino */}
+            <div className="pt-3 border-t border-slate-100 space-y-3">
+              <span className="block text-[8px] text-slate-400 font-black uppercase tracking-widest font-mono">
+                Colori Retto & Sfondo (Hatch & Background)
+              </span>
+
+              {/* Spessore/Colore delle Linee */}
+              <div>
+                <div className="flex justify-between items-center mb-1">
+                  <label className="text-[9px] text-slate-550 font-bold uppercase tracking-wider font-mono">
+                    Colore Linee Retino
+                  </label>
+                  <div className="flex items-center gap-1.5">
+                    <input
+                      type="color"
+                      value={hatchLineColor}
+                      onChange={(e) => setHatchLineColor(e.target.value)}
+                      className="w-5 h-5 rounded cursor-pointer border border-slate-200 p-0"
+                    />
+                    <span className="text-[9px] font-mono font-bold text-slate-500 uppercase">{hatchLineColor}</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Modalità dello sfondo del retino */}
+              <div>
+                <label className="block text-[9px] text-slate-550 font-bold uppercase tracking-wider font-mono mb-1">
+                  Sfondo del Retino (Background)
+                </label>
+                <div className="grid grid-cols-4 gap-1 p-0.5 bg-slate-50 rounded-lg border border-slate-105">
+                  <button
+                    type="button"
+                    onClick={() => setHatchBgColorMode('white')}
+                    className={`py-1 text-[9px] font-bold rounded cursor-pointer transition-all ${
+                      hatchBgColorMode === 'white' ? 'bg-indigo-600 text-white shadow-xs' : 'text-slate-600 hover:bg-slate-100'
+                    }`}
+                    title="Riempimento Sfondo Bianco"
+                  >
+                    Bianco
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setHatchBgColorMode('entity')}
+                    className={`py-1 text-[9px] font-bold rounded cursor-pointer transition-all ${
+                      hatchBgColorMode === 'entity' ? 'bg-indigo-600 text-white shadow-xs' : 'text-slate-600 hover:bg-slate-100'
+                    }`}
+                    title="Sfondo con lo stesso colore dell'oggetto"
+                  >
+                    Oggetto
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setHatchBgColorMode('gray')}
+                    className={`py-1 text-[9px] font-bold rounded cursor-pointer transition-all ${
+                      hatchBgColorMode === 'gray' ? 'bg-indigo-600 text-white shadow-xs' : 'text-slate-600 hover:bg-slate-100'
+                    }`}
+                    title="Riempimento Sfondo Grigio Chiaro"
+                  >
+                    Grigio
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setHatchBgColorMode('custom')}
+                    className={`py-1 text-[9px] font-bold rounded cursor-pointer transition-all ${
+                      hatchBgColorMode === 'custom' ? 'bg-indigo-600 text-white shadow-xs' : 'text-slate-600 hover:bg-slate-100'
+                    }`}
+                    title="Usa un colore personalizzato"
+                  >
+                    Pers.
+                  </button>
+                </div>
+              </div>
+
+              {/* Color picker for custom background */}
+              {hatchBgColorMode === 'custom' && (
+                <div className="flex justify-between items-center bg-indigo-50/50 p-2 rounded-xl border border-indigo-100/60 animate-in fade-in duration-200">
+                  <label className="text-[9px] text-slate-550 font-bold uppercase tracking-wider font-mono">
+                    Colore Personalizzato Sfondo
+                  </label>
+                  <div className="flex items-center gap-1.5">
+                    <input
+                      type="color"
+                      value={hatchBgColorCustom}
+                      onChange={(e) => setHatchBgColorCustom(e.target.value)}
+                      className="w-5 h-5 rounded cursor-pointer border border-slate-200 p-0"
+                    />
+                    <span className="text-[9px] font-mono font-bold text-slate-500 uppercase">{hatchBgColorCustom}</span>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Storage controls */}
+            <div className="pt-3 border-t border-slate-100 flex items-center justify-between gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  try {
+                    localStorage.setItem('gecola_bim_section_hatch', sectionHatchMode.toString());
+                    localStorage.setItem('gecola_bim_perimeter_thickness', perimeterThickness.toString());
+                    localStorage.setItem('gecola_bim_hatch_density', hatchDensity.toString());
+                    localStorage.setItem('gecola_bim_hatch_thickness', hatchThickness.toString());
+                    localStorage.setItem('gecola_bim_hatch_line_color', hatchLineColor);
+                    localStorage.setItem('gecola_bim_hatch_bg_color_mode', hatchBgColorMode);
+                    localStorage.setItem('gecola_bim_hatch_bg_color_custom', hatchBgColorCustom);
+                    localStorage.setItem('gecola_bim_hatch_pattern_mode', hatchPatternMode);
+                  } catch (e) {
+                    console.error(e);
+                  }
+                }}
+                className="flex-1 py-1.5 rounded-xl text-center bg-emerald-50 hover:bg-emerald-100 text-emerald-700 text-[10px] font-extrabold uppercase tracking-widest transition-colors cursor-pointer border border-emerald-100"
+                title="Memorizza questa configurazione di tratteggio come preferito predefinito nel browser"
+              >
+                Salva Default
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setSectionHatchMode(true);
+                  setPerimeterThickness(5.5);
+                  setHatchDensity(4.0);
+                  setHatchThickness(2.0);
+                  setHatchLineColor('#000000');
+                  setHatchBgColorMode('white');
+                  setHatchBgColorCustom('#ffffff');
+                  setHatchPatternMode('diagonal');
+                }}
+                className="py-1.5 px-3 rounded-xl text-center bg-slate-100 hover:bg-slate-200 text-slate-600 text-[10px] font-extrabold uppercase tracking-widest transition-colors cursor-pointer"
+              >
+                Ripristina
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Side Properties Inspector (Dalux Inspired) - Dragging and Scrollable */}
       <div 
@@ -3620,6 +4908,16 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
                               slicingMode={slicingMode}
                               windowThickness={windowThickness}
                               renderMode={e.bimRenderMode || 'solid'}
+                              sectionHatchMode={sectionHatchMode}
+                              perimeterThickness={perimeterThickness}
+                              hatchDensity={hatchDensity}
+                              hatchThickness={hatchThickness}
+                              hatchLineColor={hatchLineColor}
+                              hatchBgColorMode={hatchBgColorMode}
+                              hatchBgColorCustom={hatchBgColorCustom}
+                              hatchPatternMode={hatchPatternMode}
+                              parentPivot={[px, py, pz]}
+                              parentRotation={[rx, ry, rz]}
                             />
                           );
                         } else if (isMuro) {
@@ -3641,6 +4939,16 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
                               slicingHeight={slicingHeight}
                               slicingMode={slicingMode}
                               windowThickness={windowThickness}
+                              sectionHatchMode={sectionHatchMode}
+                              perimeterThickness={perimeterThickness}
+                              hatchDensity={hatchDensity}
+                              hatchThickness={hatchThickness}
+                              hatchLineColor={hatchLineColor}
+                              hatchBgColorMode={hatchBgColorMode}
+                              hatchBgColorCustom={hatchBgColorCustom}
+                              hatchPatternMode={hatchPatternMode}
+                              parentPivot={[px, py, pz]}
+                              parentRotation={[rx, ry, rz]}
                             />
                           ) : (
                             <Wall 
@@ -3658,6 +4966,16 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
                               slicingMode={slicingMode}
                               windowThickness={windowThickness}
                               renderMode={e.bimRenderMode}
+                              sectionHatchMode={sectionHatchMode}
+                              perimeterThickness={perimeterThickness}
+                              hatchDensity={hatchDensity}
+                              hatchThickness={hatchThickness}
+                              hatchLineColor={hatchLineColor}
+                              hatchBgColorMode={hatchBgColorMode}
+                              hatchBgColorCustom={hatchBgColorCustom}
+                              hatchPatternMode={hatchPatternMode}
+                              parentPivot={[px, py, pz]}
+                              parentRotation={[rx, ry, rz]}
                             />
                           );
                         } else if (entity.bimType === 'room' || entity.bimType === 'element') {
@@ -3679,6 +4997,16 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
                               slicingHeight={slicingHeight}
                               slicingMode={slicingMode}
                               windowThickness={windowThickness}
+                              sectionHatchMode={sectionHatchMode}
+                              perimeterThickness={perimeterThickness}
+                              hatchDensity={hatchDensity}
+                              hatchThickness={hatchThickness}
+                              hatchLineColor={hatchLineColor}
+                              hatchBgColorMode={hatchBgColorMode}
+                              hatchBgColorCustom={hatchBgColorCustom}
+                              hatchPatternMode={hatchPatternMode}
+                              parentPivot={[px, py, pz]}
+                              parentRotation={[rx, ry, rz]}
                             />
                           );
                         } else if (entity.bimType === 'door' || entity.bimType === 'window') {

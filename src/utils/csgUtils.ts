@@ -208,7 +208,7 @@ export const performCSG = (entityA: Entity, entityB: Entity, operation: 'union' 
     bimType: bimType,
     bimVolume: volume,
     bimArea: area,
-    points: entityA.points || (entityA as any).bimPoints,
+    points: (entityA as any).points || (entityA as any).bimPoints,
     holes: (entityA as any).holes,
     bimWidth: (entityA as any).bimWidth || (entityA as any).width,
     bimHeight: (entityA as any).bimHeight || (entityA as any).height,
