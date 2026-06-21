@@ -424,7 +424,7 @@ export const CanvasPDFPreview: React.FC<CanvasPDFPreviewProps> = ({ entities, ta
     ctx.fillText("PROGETTO:", cartX + 2.5, cartY + 3);
     
     ctx.font = 'bold 2.8px sans-serif';
-    let projText = tavola.datiCartiglio?.progetto || "GECOLA CAD";
+    let projText = tavola.datiCartiglio?.progetto || "GECOLA BIM";
     if (projText.length > 35) projText = projText.substring(0, 35) + "...";
     ctx.fillText(projText, cartX + 2.5, cartY + 7);
 

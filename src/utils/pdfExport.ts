@@ -410,7 +410,7 @@ export const exportNativePDF = (
       
       pdf.setFontSize(8 * CALIBRATION_FACTOR);
       const MAX_PROGETTO_LEN = 35;
-      let pString = tavola.datiCartiglio?.progetto || "GECOLA CAD";
+      let pString = tavola.datiCartiglio?.progetto || "GECOLA BIM";
       if(pString.length > MAX_PROGETTO_LEN) pString = pString.substring(0, MAX_PROGETTO_LEN) + "...";
       pdf.text(pString, cartX + 2.5 * CALIBRATION_FACTOR, cartY + 10 * CALIBRATION_FACTOR);
       

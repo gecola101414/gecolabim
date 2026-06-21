@@ -6470,7 +6470,7 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
           ctx.fillText(`PROGETTO:`, cartX + 2 * textScale, cartY + 2 * textScale);
           ctx.font = `bold ${Math.max(6, 6 * textScale)}px sans-serif`;
           const MAX_PROGETTO_LEN = 35;
-          let pString = tav.datiCartiglio?.progetto || "GECOLA CAD";
+          let pString = tav.datiCartiglio?.progetto || "GECOLA BIM";
           if(pString.length > MAX_PROGETTO_LEN) pString = pString.substring(0, MAX_PROGETTO_LEN) + "...";
           ctx.fillText(pString, cartX + 2 * textScale, cartY + 6.5 * textScale);
           
@@ -8795,7 +8795,7 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
                     : (selectedEntityIds.length > 0 ? selectedEntityIds : []);
                 
                 if (sourceIds.length > 0) {
-                    initiateCloneAndDrag(sourceIds, copyBasePoint);
+                    initiateCloneAndDrag(sourceIds, copyBasePoint, snapPoint);
                 } else {
                     setCopyPhase('idle');
                     setStatusMessage(null);
@@ -11253,7 +11253,7 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
         deltaY += bestAdj.y;
 
         const effectiveOrthoMode = orthoMode || isShiftPressedRef.current;
-        const isOrthoForMoveCopy = (activeTool === 'Copy') || ((activeTool === 'Move') && effectiveOrthoMode);
+        const isOrthoForMoveCopy = (activeTool === 'Copy' || activeTool === 'Move') && effectiveOrthoMode;
         
         if (isOrthoForMoveCopy) {
           if (Math.abs(deltaX) > Math.abs(deltaY)) {
@@ -11626,7 +11626,7 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
     return () => cancelAnimationFrame(animationFrame);
   }, [flashIds]);
 
-  const initiateCloneAndDrag = (sourceIdsToClone: string[], startPoint?: Point) => {
+  const initiateCloneAndDrag = (sourceIdsToClone: string[], startPoint?: Point, destinationHoverPoint?: Point) => {
       const originalEntitiesToClone = entities.filter(ent => sourceIdsToClone.includes(ent.id));
       const idMap: { [oldId: string]: string } = {};
       let oldGroupId: string | undefined = undefined;
@@ -11635,10 +11635,62 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
           if (ent.groupId) oldGroupId = ent.groupId;
       });
       const newGroupId = oldGroupId ? 'g_cloned_' + Date.now().toString() + '_' + Math.random().toString(36).substr(2, 5) : undefined;
+      
+      const deltaX = (destinationHoverPoint && startPoint) ? (destinationHoverPoint.x - startPoint.x) : 0;
+      const deltaY = (destinationHoverPoint && startPoint) ? (destinationHoverPoint.y - startPoint.y) : 0;
+
       const clones: Entity[] = originalEntitiesToClone.map(ent => {
           const cloned = JSON.parse(JSON.stringify(ent)) as Entity;
           cloned.id = idMap[ent.id];
           if (ent.groupId && newGroupId) cloned.groupId = newGroupId;
+          
+          if (Math.abs(deltaX) > 1e-6 || Math.abs(deltaY) > 1e-6) {
+              if (cloned.type === 'line') {
+                  cloned.start.x += deltaX;
+                  cloned.start.y += deltaY;
+                  cloned.end.x += deltaX;
+                  cloned.end.y += deltaY;
+                  if (cloned.isFreehand && (cloned as any).inkPoints) {
+                      (cloned as any).inkPoints = (cloned as any).inkPoints.map((p: any) => ({ ...p, x: p.x + deltaX, y: p.y + deltaY }));
+                  }
+              } else if (cloned.type === 'circle') {
+                  cloned.center.x += deltaX;
+                  cloned.center.y += deltaY;
+              } else if (cloned.type === 'rectangle') {
+                  cloned.p1.x += deltaX;
+                  cloned.p1.y += deltaY;
+                  cloned.p2.x += deltaX;
+                  cloned.p2.y += deltaY;
+              } else if (cloned.type === 'hatch') {
+                  const h = cloned as any;
+                  if (h.points) {
+                      h.points = h.points.map((p: Point) => ({ x: p.x + deltaX, y: p.y + deltaY }));
+                  }
+              } else if (cloned.type === 'point' || cloned.type === 'text' || cloned.type === 'image') {
+                  cloned.point.x += deltaX;
+                  cloned.point.y += deltaY;
+              } else if (cloned.type === 'arc') {
+                  cloned.center.x += deltaX;
+                  cloned.center.y += deltaY;
+              } else if (cloned.type === 'dimension') {
+                  cloned.start.x += deltaX;
+                  cloned.start.y += deltaY;
+                  cloned.end.x += deltaX;
+                  cloned.end.y += deltaY;
+              }
+
+              // Generic check for points, bimPoints and holes
+              if ((cloned as any).bimPoints) {
+                  (cloned as any).bimPoints = (cloned as any).bimPoints.map((p: Point) => ({ x: p.x + deltaX, y: p.y + deltaY }));
+              }
+              if ((cloned as any).points && cloned.type !== 'hatch') {
+                  (cloned as any).points = (cloned as any).points.map((p: Point) => ({ x: p.x + deltaX, y: p.y + deltaY }));
+              }
+              if ((cloned as any).holes) {
+                  (cloned as any).holes = (cloned as any).holes.map((hole: Point[]) => hole.map((p: Point) => ({ x: p.x + deltaX, y: p.y + deltaY })));
+              }
+          }
+          
           return cloned;
       });
 
@@ -11655,7 +11707,7 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
       setDragEntityId(clonedIdsList[0]);
       dragEntityIdRef.current = clonedIdsList[0];
       setSelectionWindow(null);
-      const pt = startPoint || lastMouseRef.current;
+      const pt = destinationHoverPoint || startPoint || lastMouseRef.current;
       lastMouseRef.current = pt;
       previousMouseRef.current = pt;
       setActiveMoveSnapPoint(null);
@@ -11798,11 +11850,10 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
         dragTavolaIdRef.current = null;
       }
       if (dragEntityId && (activeTool === 'Move' || activeTool === 'Copy')) {
-        if (activeTool === 'Copy' && isStickyCopyRef.current) {
-          if (!dragHasMovedRef.current) {
-            isStickyCopyRef.current = false;
-            return;
-          }
+        if (activeTool === 'Copy') {
+          // In Copy mode, dropping and cloning are handled entirely by clicking (mousedown).
+          // We must never clear or stop dragging on mouseup (no action on mouseup for Copy tool).
+          return;
         }
         setDragEntityId(null);
         setActiveMoveSnapPoint(null);
