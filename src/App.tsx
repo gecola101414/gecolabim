@@ -2408,6 +2408,7 @@ const MASONRY_TYPES = [
             referenceLine={referenceLine}
             defaultTextStyle={defaultTextStyle}
             onCommitHistory={commitToHistory}
+            showFloatingManual={showFloatingManual}
             onSelect={(id, entity, clickPoint) => {
               setSelectedId(id);
               if (id) {
@@ -2415,11 +2416,54 @@ const MASONRY_TYPES = [
                 if (ent && ent.type === 'line') {
                     const lineEnt = ent as LineEntity;
                     
-                    // Find opposite (parallel) line
-                    let minDistance = Infinity;
-                    let minDistanceGeneral = Infinity;
-                    let oppositeLineStrict: LineEntity | null = null;
-                    let oppositeLineGeneral: LineEntity | null = null;
+                    // Build adjacency graph for lines to determine if they are "linked" (e.g. part of same shape)
+                    const pointsEqual = (p1: Point, p2: Point) => Math.hypot(p1.x - p2.x, p1.y - p2.y) < 0.1;
+                    const adjacency = new Map<string, string[]>();
+                    const lineEntities = entities.filter(e => e.type === 'line') as LineEntity[];
+                    for (let i = 0; i < lineEntities.length; i++) {
+                        for (let j = i + 1; j < lineEntities.length; j++) {
+                            const l1 = lineEntities[i];
+                            const l2 = lineEntities[j];
+                            if (pointsEqual(l1.start, l2.start) || pointsEqual(l1.start, l2.end) || 
+                                pointsEqual(l1.end, l2.start) || pointsEqual(l1.end, l2.end)) {
+                                if (!adjacency.has(l1.id)) adjacency.set(l1.id, []);
+                                if (!adjacency.has(l2.id)) adjacency.set(l2.id, []);
+                                adjacency.get(l1.id)!.push(l2.id);
+                                adjacency.get(l2.id)!.push(l1.id);
+                            }
+                        }
+                    }
+
+                    const areLinked = (id1: string, id2: string) => {
+                        const visited = new Set<string>();
+                        const queue = [id1];
+                        visited.add(id1);
+                        let head = 0;
+                        while (head < queue.length) {
+                            const curr = queue[head++];
+                            if (curr === id2) return true;
+                            const neighbors = adjacency.get(curr) || [];
+                            for (const n of neighbors) {
+                                if (!visited.has(n)) {
+                                    visited.add(n);
+                                    queue.push(n);
+                                }
+                            }
+                        }
+                        return false;
+                    };
+
+                    let bestLinkedFacingDist = Infinity;
+                    let bestLinkedFacing: LineEntity | null = null;
+
+                    let bestUnlinkedFacingDist = Infinity;
+                    let bestUnlinkedFacing: LineEntity | null = null;
+                    
+                    let bestLinkedGeneralDist = Infinity;
+                    let bestLinkedGeneral: LineEntity | null = null;
+
+                    let bestUnlinkedGeneralDist = Infinity;
+                    let bestUnlinkedGeneral: LineEntity | null = null;
                     
                     entities.forEach(other => {
                         if (other.type === 'line' && other.id !== lineEnt.id) {
@@ -2453,15 +2497,24 @@ const MASONRY_TYPES = [
                                             : (projY - other.start.y) / (other.end.y - other.start.y);
                                             
                                         const isStrictlyFacing = t >= -0.05 && t <= 1.05;
+                                        const isLinkedLine = areLinked(lineEnt.id, other.id);
 
-                                        if (isStrictlyFacing && dist < minDistance) {
-                                            minDistance = dist;
-                                            oppositeLineStrict = other as LineEntity;
+                                        if (isStrictlyFacing) {
+                                            if (isLinkedLine && dist < bestLinkedFacingDist) {
+                                                bestLinkedFacingDist = dist;
+                                                bestLinkedFacing = other as LineEntity;
+                                            } else if (!isLinkedLine && dist < bestUnlinkedFacingDist) {
+                                                bestUnlinkedFacingDist = dist;
+                                                bestUnlinkedFacing = other as LineEntity;
+                                            }
                                         }
                                         
-                                        if (dist < minDistanceGeneral) {
-                                            minDistanceGeneral = dist;
-                                            oppositeLineGeneral = other as LineEntity;
+                                        if (isLinkedLine && dist < bestLinkedGeneralDist) {
+                                            bestLinkedGeneralDist = dist;
+                                            bestLinkedGeneral = other as LineEntity;
+                                        } else if (!isLinkedLine && dist < bestUnlinkedGeneralDist) {
+                                            bestUnlinkedGeneralDist = dist;
+                                            bestUnlinkedGeneral = other as LineEntity;
                                         }
                                     }
                                 }
@@ -2469,7 +2522,7 @@ const MASONRY_TYPES = [
                         }
                     });
                     
-                    const finalOppositeLine = oppositeLineStrict || oppositeLineGeneral;
+                    const finalOppositeLine = bestLinkedFacing || bestUnlinkedFacing || bestLinkedGeneral || bestUnlinkedGeneral;
                     
                     setSelectedLine(lineEnt);
                     setSelectedLineClickPoint(clickPoint || null);
@@ -5841,6 +5894,8 @@ const MASONRY_TYPES = [
               top: Math.max(80, quickActions.pos.y - 80),
               transform: 'translateX(-50%)' 
             }}
+            onPointerDown={(e) => e.stopPropagation()}
+            onMouseDown={(e) => e.stopPropagation()}
           >
             <button 
               onClick={() => {
@@ -5904,8 +5959,8 @@ const MASONRY_TYPES = [
             <div className="w-[1px] h-6 bg-neutral-200 dark:bg-neutral-700 mx-0.5" />
             <button 
               onClick={() => {
-                const trimmed = trimEntities(entities, quickActions.ids);
-                updateEntitiesWithHistory(trimmed);
+                const trimmed = trimEntities(entities as any, quickActions.ids);
+                updateEntitiesWithHistory(trimmed as any);
                 setShortcutToast("Taglio bordi (AI) applicato!");
                 setTimeout(() => setShortcutToast(null), 2000);
               }}
