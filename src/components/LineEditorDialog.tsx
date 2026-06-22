@@ -15,10 +15,15 @@ export const LineEditorDialog = ({
     onPreview: (updatedLine: LineEntity) => void
 }) => {
     const [distance, setDistance] = useState(0);
+    const [segmentLength, setSegmentLength] = useState(0);
     const inputRef = useRef<HTMLInputElement>(null);
+    const lengthInputRef = useRef<HTMLInputElement>(null);
 
-    // Calculate initial distance
+    // Calculate initial distance and length
     useEffect(() => {
+        const initialLen = Math.hypot(line.end.x - line.start.x, line.end.y - line.start.y);
+        setSegmentLength(Math.round(initialLen * 100) / 100);
+
         if (!referenceLine) return;
         
         const midX = (line.start.x + line.end.x) / 2;
@@ -43,85 +48,104 @@ export const LineEditorDialog = ({
         return () => clearTimeout(timer);
     }, []);
 
+    const updateLine = (newDist: number | null, newLen: number | null, isPreview: boolean) => {
+        let updatedLine = { ...line };
+
+        // Handle distance update
+        if (newDist !== null && referenceLine) {
+            const currentMidX = (line.start.x + line.end.x) / 2;
+            const currentMidY = (line.start.y + line.end.y) / 2;
+            const A = referenceLine.start.y - referenceLine.end.y;
+            const B = referenceLine.end.x - referenceLine.start.x;
+            const C = referenceLine.start.x * referenceLine.end.y - referenceLine.end.x * referenceLine.start.y;
+            const currentDist = (A * currentMidX + B * currentMidY + C) / Math.hypot(A, B);
+            
+            const sign = currentDist >= 0 ? 1 : -1;
+            const moveDist = sign * (newDist - Math.abs(currentDist));
+            
+            const len = Math.hypot(A, B);
+            const normal = { x: A / len, y: B / len };
+            
+            updatedLine = {
+                ...updatedLine,
+                start: { x: updatedLine.start.x + normal.x * moveDist, y: updatedLine.start.y + normal.y * moveDist },
+                end: { x: updatedLine.end.x + normal.x * moveDist, y: updatedLine.end.y + normal.y * moveDist }
+            };
+        }
+
+        // Handle length update: Rescale from start
+        if (newLen !== null) {
+            const startX = updatedLine.start.x;
+            const startY = updatedLine.start.y;
+            
+            const currentLen = Math.hypot(updatedLine.end.x - updatedLine.start.x, updatedLine.end.y - updatedLine.start.y);
+            const ratio = currentLen === 0 ? 1 : newLen / currentLen;
+            
+            updatedLine = {
+                ...updatedLine,
+                end: { 
+                    x: startX + (updatedLine.end.x - startX) * ratio, 
+                    y: startY + (updatedLine.end.y - startY) * ratio 
+                }
+            };
+        }
+        
+        // Also move inkPoints if they exist
+        if ((updatedLine as any).inkPoints) {
+             const oldCenter = {
+                 x: (line.start.x + line.end.x) / 2,
+                 y: (line.start.y + line.end.y) / 2
+             };
+             const newCenter = {
+                 x: (updatedLine.start.x + updatedLine.end.x) / 2,
+                 y: (updatedLine.start.y + updatedLine.end.y) / 2
+             };
+             const dx = newCenter.x - oldCenter.x;
+             const dy = newCenter.y - oldCenter.y;
+             
+             // This is simplistic for length scaling, just moves inkPoints
+             (updatedLine as any).inkPoints = (updatedLine as any).inkPoints.map((pt: any) => ({
+                 ...pt,
+                 x: pt.x + dx,
+                 y: pt.y + dy
+             }));
+        }
+        
+        if (isPreview) {
+            onPreview(updatedLine);
+        } else {
+            onUpdate(updatedLine);
+        }
+    };
+
     const handleDistanceChange = (val: string) => {
         const rawString = val.replace(',', '.');
         const parsed = parseFloat(rawString);
         if (isNaN(parsed)) return;
-
         setDistance(parsed);
-        
-        if (!referenceLine) return;
+        updateLine(parsed, null, true);
+    };
 
-        const currentMidX = (line.start.x + line.end.x) / 2;
-        const currentMidY = (line.start.y + line.end.y) / 2;
-        const A = referenceLine.start.y - referenceLine.end.y;
-        const B = referenceLine.end.x - referenceLine.start.x;
-        const C = referenceLine.start.x * referenceLine.end.y - referenceLine.end.x * referenceLine.start.y;
-        const currentDist = (A * currentMidX + B * currentMidY + C) / Math.hypot(A, B);
-        
-        const sign = currentDist >= 0 ? 1 : -1;
-        const moveDist = sign * (parsed - Math.abs(currentDist));
-        
-        const len = Math.hypot(A, B);
-        const normal = { x: A / len, y: B / len };
-        
-        const updatedLine = {
-            ...line,
-            start: { x: line.start.x + normal.x * moveDist, y: line.start.y + normal.y * moveDist },
-            end: { x: line.end.x + normal.x * moveDist, y: line.end.y + normal.y * moveDist }
-        };
-        
-        // Also move inkPoints if they exist (for freehand lines)
-        if ((updatedLine as any).inkPoints) {
-             (updatedLine as any).inkPoints = (updatedLine as any).inkPoints.map((pt: any) => ({
-                 ...pt,
-                 x: pt.x + normal.x * moveDist,
-                 y: pt.y + normal.y * moveDist
-             }));
-        }
-
-        onPreview(updatedLine);
+    const handleLengthChange = (val: string) => {
+        const rawString = val.replace(',', '.');
+        const parsed = parseFloat(rawString);
+        if (isNaN(parsed)) return;
+        setSegmentLength(parsed);
+        updateLine(null, parsed, true);
     };
 
     const handleUpdate = () => {
-        if (!referenceLine) {
-            onClose();
-            return;
-        }
+        const rawDist = inputRef.current ? inputRef.current.value.replace(',', '.') : distance.toString();
+        const parsedDist = parseFloat(rawDist);
+        const finalDistance = isNaN(parsedDist) ? distance : parsedDist;
 
-        const currentMidX = (line.start.x + line.end.x) / 2;
-        const currentMidY = (line.start.y + line.end.y) / 2;
-        const A = referenceLine.start.y - referenceLine.end.y;
-        const B = referenceLine.end.x - referenceLine.start.x;
-        const C = referenceLine.start.x * referenceLine.end.y - referenceLine.end.x * referenceLine.start.y;
-        const currentDist = (A * currentMidX + B * currentMidY + C) / Math.hypot(A, B);
+        const rawLen = lengthInputRef.current ? lengthInputRef.current.value.replace(',', '.') : segmentLength.toString();
+        const parsedLen = parseFloat(rawLen);
+        const finalLength = isNaN(parsedLen) ? segmentLength : parsedLen;
         
-        const rawVal = inputRef.current ? inputRef.current.value.replace(',', '.') : distance.toString();
-        const parsed = parseFloat(rawVal);
-        const finalDistance = isNaN(parsed) ? distance : parsed;
-        
-        const sign = currentDist >= 0 ? 1 : -1;
-        const moveDist = sign * (finalDistance - Math.abs(currentDist));
-        
-        const len = Math.hypot(A, B);
-        const normal = { x: A / len, y: B / len };
-        
-        const updatedLine = {
-            ...line,
-            start: { x: line.start.x + normal.x * moveDist, y: line.start.y + normal.y * moveDist },
-            end: { x: line.end.x + normal.x * moveDist, y: line.end.y + normal.y * moveDist }
-        };
-        
-        if ((updatedLine as any).inkPoints) {
-             (updatedLine as any).inkPoints = (updatedLine as any).inkPoints.map((pt: any) => ({
-                 ...pt,
-                 x: pt.x + normal.x * moveDist,
-                 y: pt.y + normal.y * moveDist
-             }));
-        }
-        
-        onUpdate(updatedLine);
+        updateLine(finalDistance, finalLength, false);
     };
+
 
     return (
         <div className="fixed top-24 right-4 z-[9000] pointer-events-auto">
@@ -148,9 +172,25 @@ export const LineEditorDialog = ({
                     <input 
                         ref={inputRef}
                         type="text" 
-                        defaultValue={distance}
+                        value={distance}
                         onChange={(e) => handleDistanceChange(e.target.value)}
                         autoFocus
+                        onKeyDown={(e) => {
+                            if (e.key === 'Enter') {
+                                handleUpdate();
+                            } else if (e.key === 'Escape') {
+                                onClose();
+                            }
+                        }}
+                        className="border border-neutral-300 dark:border-neutral-600 p-2.5 rounded-lg w-full bg-white dark:bg-neutral-700 font-mono text-sm focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 outline-none"
+                    />
+                    
+                    <label className="text-xs font-medium text-neutral-600 dark:text-neutral-400">Lunghezza Segmento (mm)</label>
+                    <input 
+                        ref={lengthInputRef}
+                        type="text" 
+                        value={segmentLength}
+                        onChange={(e) => handleLengthChange(e.target.value)}
                         onKeyDown={(e) => {
                             if (e.key === 'Enter') {
                                 handleUpdate();

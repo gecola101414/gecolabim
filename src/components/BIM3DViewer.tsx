@@ -3127,6 +3127,7 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
           <span className="text-[10.5px] font-black uppercase tracking-wider">Albero BIM</span>
         </button>
 
+
         <div className="w-px h-8 bg-slate-200 mx-1" />
         
         <div className="flex items-center px-5 gap-3 h-10 bg-slate-50/50 rounded-xl border border-slate-100">
@@ -3321,6 +3322,16 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
                 <h3 className="font-black text-slate-800 text-lg tracking-tight leading-tight">Albero BIM</h3>
                 <span className="text-[9px] font-bold text-indigo-500 uppercase tracking-wider block font-mono">Struttura & Filtri</span>
               </div>
+              <button
+                onClick={() => {
+                  const areAllVisible = entities.filter(e => e.isBIM).every(e => (e as any).isVisible !== false);
+                  setEntities(prev => prev.map(e => e.isBIM ? { ...e, isVisible: !areAllVisible } as any : e));
+                }}
+                className="p-1.5 rounded-lg bg-slate-100 text-slate-500 hover:bg-indigo-50 hover:text-indigo-600 transition-all ml-2"
+                title="Attiva/Disattiva tutti gli elementi"
+              >
+                {entities.filter(e => e.isBIM).every(e => (e as any).isVisible !== false) ? <Lightbulb size={16} /> : <LightbulbOff size={16} />}
+              </button>
             </div>
             <button 
               onClick={() => setIsBimTreeOpen(false)} 

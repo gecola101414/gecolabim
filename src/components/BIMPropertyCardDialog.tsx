@@ -1,6 +1,7 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import { X, Sliders, Building, Calendar, DollarSign, Activity, FileText, Sparkles, Layers, Info, Hash, Clock, ShieldCheck, Thermometer, VolumeX, Flame, ClipboardCheck, ExternalLink } from 'lucide-react';
-import { CADEntity, Point } from '../types';
+import { CADEntity, Point, BIMObject } from '../types';
+import { mapLegacyDataToBIMObject } from '../utils/ifcMapper';
 
 interface BIMPropertyCardDialogProps {
   entity: CADEntity;
@@ -54,8 +55,17 @@ export const BIMPropertyCardDialog: React.FC<BIMPropertyCardDialogProps> = ({
   onClose,
   onUpdateField
 }) => {
-  console.log('Rendering entity:', entity);
   const [activeTab, setActiveTab] = useState<'geom' | 'iden' | 'comp' | 'prest'>('geom');
+
+  // Map to new BIM structure
+  const bimObject = useMemo(() => mapLegacyDataToBIMObject(entity) || {
+    guid: entity.id,
+    ifc_class: 'IfcBuildingElementProxy',
+    identity: { name: (entity as any).bimName || 'Elemento', description: '' },
+    geometry_parameters: {},
+    properties: { dimensions: {}, analytical: {}, cost_5d: {}, facility_7d: {} },
+    relations: []
+  } as BIMObject, [entity]);
 
   // Derive stable metadata from ID
   const getStableHash = (id: string) => {
@@ -66,7 +76,7 @@ export const BIMPropertyCardDialog: React.FC<BIMPropertyCardDialogProps> = ({
     return Math.abs(hash);
   };
 
-  const hash = getStableHash(entity.id);
+  const hash = getStableHash(bimObject.guid);
 
   // Stable creation timestamp
   const creationDate = React.useMemo(() => {
@@ -502,16 +512,28 @@ export const BIMPropertyCardDialog: React.FC<BIMPropertyCardDialogProps> = ({
 
               {/* WALL EXTRA THICKNESS CARD */}
               {(entity.bimType as string === 'wall' || entity.bimType as string === 'muro' || entity.type === 'line') && (
-                <div className="bg-cyan-500/5 border border-cyan-500/10 p-4 rounded-2xl flex justify-between items-center text-xs">
-                  <div>
-                    <span className="block font-black text-cyan-300">PARAMETRI DIVISIONALE SPAZZIO</span>
-                    <span className="text-[11px] text-slate-400 mt-0.5">Spessore stratigrafia calcolato in pianta</span>
+                <>
+                  <div className="bg-cyan-500/5 border border-cyan-500/10 p-4 rounded-2xl flex justify-between items-center text-xs">
+                    <div>
+                      <span className="block font-black text-cyan-300">PARAMETRI DIVISIONALE SPAZZIO</span>
+                      <span className="text-[11px] text-slate-400 mt-0.5">Spessore stratigrafia calcolato in pianta</span>
+                    </div>
+                    <div className="bg-slate-900 border border-cyan-400/20 px-3 py-1.5 rounded-xl font-mono text-right">
+                      <span className="block text-[8px] text-slate-500">SPESSORE MURO</span>
+                      <span className="text-[13px] text-cyan-400 font-bold">{geomMetrics.spessoreCm} cm</span>
+                    </div>
                   </div>
-                  <div className="bg-slate-900 border border-cyan-400/20 px-3 py-1.5 rounded-xl font-mono text-right">
-                    <span className="block text-[8px] text-slate-500">SPESSORE MURO</span>
-                    <span className="text-[13px] text-cyan-400 font-bold">{geomMetrics.spessoreCm} cm</span>
+
+                  <div className="bg-cyan-500/5 border border-cyan-500/10 p-4 rounded-2xl flex flex-col gap-1 text-xs mt-4">
+                    <span className="text-[8px] font-black tracking-wider text-slate-400 uppercase">LUNGHEZZA SEGMENTO</span>
+                    <input
+                      type="number"
+                      value={(entity as any).bimLength || (geomMetrics.perimetroM * 100).toFixed(0)}
+                      onChange={(e) => onUpdateField && onUpdateField(entity.id, "bimLength", parseFloat(e.target.value))}
+                      className="bg-slate-900 border border-cyan-400/20 px-3 py-1.5 rounded-xl font-mono text-cyan-400 font-bold w-full"
+                    />
                   </div>
-                </div>
+                </>
               )}
 
               {/* INDUSTRIAL GRAPHIC QUANTITIES */}

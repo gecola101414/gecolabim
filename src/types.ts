@@ -7,6 +7,23 @@ export interface InkPoint {
   alpha: number;
 }
 
+export interface BIMObject {
+  guid: string;
+  ifc_class: string;
+  identity: {
+    name: string;
+    description: string;
+  };
+  geometry_parameters: Record<string, any>;
+  properties: {
+    dimensions: Record<string, any>;
+    analytical: Record<string, any>;
+    cost_5d: Record<string, any>;
+    facility_7d: Record<string, any>;
+  };
+  relations: string[];
+}
+
 export type EntityType = 'line' | 'circle' | 'rectangle' | 'dimension' | 'arc' | 'point' | 'text' | 'hatch' | 'image' | 'bim-csg';
 
 export interface CADEntity {
@@ -30,25 +47,45 @@ export interface CADEntity {
     clickPt2: { x: number; y: number };
     config: { type: 'curvo' | 'rettilineo' | 'taglia'; value: number };
   };
+  // BIM-specific
+  bimData?: BIMObject;
   isBIM?: boolean;
-  bimType?: 'room' | 'door' | 'window' | 'wall' | 'electrical_symbol' | 'hydraulic_symbol' | 'functional_area' | 'bim_element' | 'element';
-  bimAreaType?: string; // Flexible for any family name
-  bimFamily?: string;   // The name of the family (e.g., 'Fondazioni')
-  bimSubFamily?: string;
-  isFrozen?: boolean;   // BIM-specific frozen state
   isVisible?: boolean;  // BIM-specific visibility state
+  isFrozen?: boolean;   // BIM-specific frozen state
+
+  /** @deprecated Use bimData instead */
+  bimType?: 'room' | 'door' | 'window' | 'wall' | 'electrical_symbol' | 'hydraulic_symbol' | 'functional_area' | 'bim_element' | 'element';
+  /** @deprecated Use bimData instead */
+  bimAreaType?: string;
+  /** @deprecated Use bimData instead */
+  bimFamily?: string;
+  /** @deprecated Use bimData instead */
+  bimSubFamily?: string;
+  /** @deprecated Use bimData instead */
   bimName?: string;
-  bimHeight?: number; // e.g. 2.70
-  bimWidth?: number;  // e.g. 80, 90, 120
-  bimWindowHeight?: number; // e.g. 140
-  bimPoints?: Point[]; // Polygon corners For rooms/areas
-  bimOffset?: number; // Offset for positioning
-  backgroundColor?: string; // Fill color for functional areas
+  /** @deprecated Use bimData instead */
+  bimHeight?: number;
+  /** @deprecated Use bimData instead */
+  bimWidth?: number;
+  /** @deprecated Use bimData instead */
+  bimWindowHeight?: number;
+  /** @deprecated Use bimData instead */
+  bimPoints?: Point[];
+  /** @deprecated Use bimData instead */
+  bimOffset?: number;
+  /** @deprecated Use bimData instead */
+  backgroundColor?: string;
+  /** @deprecated Use bimData instead */
   bimHatchPattern?: 'SOLID' | 'ANSI31' | 'CROSS' | 'NONE'; 
+  /** @deprecated Use bimData instead */
   bimRenderMode?: 'solid' | 'transparent';
+  /** @deprecated Use bimData instead */
   bimDescription?: string;
+  /** @deprecated Use bimData instead */
   bimMarmo?: string;
+  /** @deprecated Use bimData instead */
   bimTrasmittanza?: number;
+  /** @deprecated Use bimData instead */
   hideIn2D?: boolean;
 }
 

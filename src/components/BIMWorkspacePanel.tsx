@@ -1,5 +1,6 @@
 import React, { useState } from "react";
 import { Entity, Point } from "../types";
+import { computeMetrics } from "../utils/bimMetrics";
 import { 
   Building, 
   Trash2, 
@@ -61,6 +62,7 @@ import { TEMPLATES } from "../data/templates";
 import { TemplatePreview } from "./TemplatePreview";
 import { getBIMSymbolEntities } from "./CADCanvas";
 import { BIMPropertyCardDialog } from "./BIMPropertyCardDialog";
+import { BIMFamilyPropertyDialog } from "./BIMFamilyPropertyDialog";
 
 const BIM_SYSTEMS_DICTIONARY: Record<string, { label: string; system: 'elettrico' | 'idraulico' }> = {
   // Elettrico
@@ -201,6 +203,7 @@ export function BIMWorkspacePanel({
   const [active2DCat, setActive2DCat] = useState<string>('Verde');
   const [expandedFamilies, setExpandedFamilies] = useState<Set<string>>(new Set(['Muri Portanti', 'Tramezzature']));
   const [showPropertyDialogId, setShowPropertyDialogId] = useState<string | null>(null);
+  const [showFamilyPropertyDialog, setShowFamilyPropertyDialog] = useState<string | null>(null);
 
   const bimElements = entities.filter(e => e.isBIM);
   
@@ -792,9 +795,33 @@ export function BIMWorkspacePanel({
             <FolderTree size={13} className="text-cyan-600" />
             Rami BIM (Albero Struttura)
           </span>
-          <span className="text-[9px] bg-white border border-cyan-200 text-cyan-700 px-1.5 py-0.5 rounded-full font-bold">
-            {bimElements.length} elementi
-          </span>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => {
+                const allVisible = bimElements.every(m => (m as any).isVisible !== false);
+                const nextVisible = !allVisible;
+                setEntities((prev: Entity[]) => {
+                  const next = prev.map(ent => {
+                    if (ent.isBIM) {
+                      return { ...ent, isVisible: nextVisible } as any;
+                    }
+                    return ent;
+                  });
+                  onCommitHistory?.(next);
+                  return next;
+                });
+              }}
+              className={`p-1 rounded-md transition-all duration-200 cursor-pointer ${
+                bimElements.every(m => (m as any).isVisible !== false) ? 'text-amber-500 hover:bg-white border border-transparent hover:border-amber-100' : 'text-slate-400 hover:bg-white border border-slate-200/50'
+              }`}
+              title={bimElements.every(m => (m as any).isVisible !== false) ? "Spegni tutto l'albero BIM" : "Accendi tutto l'albero BIM"}
+            >
+              {bimElements.every(m => (m as any).isVisible !== false) ? <Lightbulb size={12.5} /> : <LightbulbOff size={12.5} />}
+            </button>
+            <span className="text-[9px] bg-white border border-cyan-200 text-cyan-700 px-1.5 py-0.5 rounded-full font-bold">
+              {bimElements.length} elementi
+            </span>
+          </div>
         </div>
 
         <div className="max-h-[350px] overflow-y-auto divide-y divide-slate-100">
@@ -808,7 +835,7 @@ export function BIMWorkspacePanel({
                 <div key={family} className="group/family bg-slate-50/20">
                   {/* Family Header */}
                   <div 
-                    className="flex items-center justify-between p-2.5 hover:bg-slate-50 transition cursor-pointer gap-2"
+                    className="flex items-center p-2.5 hover:bg-slate-50 transition cursor-pointer gap-2"
                     onClick={() => toggleFamily(family)}
                   >
                     <div className="flex items-center gap-1.5 min-w-0 flex-1">
@@ -824,10 +851,11 @@ export function BIMWorkspacePanel({
                         {family}
                       </span>
                       <span className="text-[9px] text-slate-450 font-bold font-mono">({members.length})</span>
+                      <span className="text-[9px] text-cyan-600 font-bold font-mono ml-auto mr-2">{members.reduce((acc, ent) => acc + computeMetrics(ent as any).volumeMc, 0).toFixed(2)} mc</span>
                     </div>
 
                     {/* Actions on family level */}
-                    <div className="flex items-center gap-1.5 shrink-0 opacity-80 group-hover/family:opacity-100 transition duration-200" onClick={(e) => e.stopPropagation()}>
+                    <div className="flex items-center gap-1.5 shrink-0 transition duration-200" onClick={(e) => e.stopPropagation()}>
                       {/* Family Visibility */}
                       <button 
                         onClick={() => {
@@ -847,6 +875,18 @@ export function BIMWorkspacePanel({
                         title={allVisible ? "Spegni tutta la famiglia" : "Accendi tutta la famiglia"}
                       >
                         {allVisible ? <Lightbulb size={12.5} /> : <LightbulbOff size={12.5} />}
+                      </button>
+
+                       {/* Family Properties */}
+                      <button 
+                        onClick={() => {
+                          console.log("Family Property Clicked for:", family);
+                          setShowFamilyPropertyDialog(family);
+                        }}
+                        className="p-1 rounded border border-red-500 bg-red-100 text-red-600 hover:bg-red-200"
+                        title="Parametri e Riepilogo Famiglia"
+                      >
+                        <Sliders size={16} />
                       </button>
 
                       {/* Family Freezing */}
@@ -1205,6 +1245,14 @@ export function BIMWorkspacePanel({
                     >
                       {!isFamilyVisible ? <LightbulbOff size={11} /> : <Lightbulb size={11} />}
                     </button>
+                    {/* Family Properties */}
+                    <button
+                      onClick={() => { console.log('Family button clicked:', familyName); setShowFamilyPropertyDialog(familyName); }}
+                      className="p-1 rounded transition bg-cyan-100 text-cyan-700 hover:bg-cyan-200"
+                      title="Proprietà e Riepilogo Famiglia"
+                    >
+                      <Info size={11} />
+                    </button>
                     {/* Family Freezing */}
                     <button
                       onClick={toggleFamilyFrozen}
@@ -1266,13 +1314,14 @@ export function BIMWorkspacePanel({
                       Altezza Interpiano (m)
                     </label>
                     <input
-                      type="number"
-                      step="0.05"
-                      min="1.0"
-                      max="6.0"
-                      value={selectedEntity.bimHeight || 2.70}
-                      onChange={(e) => updateSelectedBIMField("bimHeight", parseFloat(e.target.value) || 2.70)}
-                      className="w-full border rounded px-1.5 py-1 text-xs bg-white font-semibold"
+                      type="text"
+                      inputMode="numeric"
+                      value={selectedEntity.bimHeight === undefined ? 2.70 : selectedEntity.bimHeight}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        updateSelectedBIMField("bimHeight", val === '' ? '' : (parseFloat(val) || 0));
+                      }}
+                      className="w-full border rounded px-1.5 py-1 text-xs bg-white font-semibold [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
                     />
                   </div>
                   <div>
@@ -1330,11 +1379,14 @@ export function BIMWorkspacePanel({
                   Trasmittanza (U)
                 </label>
                 <input
-                  type="number"
-                  step="0.01"
-                  value={selectedEntity.bimTrasmittanza || 0}
-                  onChange={(e) => updateSelectedBIMField("bimTrasmittanza", parseFloat(e.target.value) || 0)}
-                  className="w-full border rounded px-1.5 py-1 text-xs bg-white text-slate-800"
+                  type="text"
+                  inputMode="numeric"
+                  value={selectedEntity.bimTrasmittanza === undefined ? 0 : selectedEntity.bimTrasmittanza}
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    updateSelectedBIMField("bimTrasmittanza", val === '' ? '' : (parseFloat(val) || 0));
+                  }}
+                  className="w-full border rounded px-1.5 py-1 text-xs bg-white text-slate-800 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
                 />
               </div>
 
@@ -1380,11 +1432,15 @@ export function BIMWorkspacePanel({
                   Inizio (Offset - cm)
                 </label>
                 <input
-                  type="number"
-                  value={(selectedEntity as any).bimOffset || 0}
-                  onChange={(e) => updateSelectedBIMField("bimOffset", parseFloat(e.target.value) || 0)}
+                  type="text"
+                  inputMode="numeric"
+                  value={(selectedEntity as any).bimOffset === undefined ? 0 : (selectedEntity as any).bimOffset}
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    updateSelectedBIMField("bimOffset", val === '' ? '' : (parseFloat(val) || 0));
+                  }}
                   placeholder="Es: 10"
-                  className="w-full border rounded px-2 py-1 bg-white text-xs text-slate-800 focus:outline-none focus:ring-1 focus:ring-cyan-500"
+                  className="w-full border rounded px-2 py-1 bg-white text-xs text-slate-800 focus:outline-none focus:ring-1 focus:ring-cyan-500 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
                 />
               </div>
             </div>
@@ -1397,12 +1453,14 @@ export function BIMWorkspacePanel({
                       Larghezza Spatola (cm)
                     </label>
                     <input
-                      type="number"
-                      min="30"
-                      max="400"
-                      value={(selectedEntity as any).bimWidth || 80}
-                      onChange={(e) => updateSelectedBIMField("bimWidth", parseInt(e.target.value) || 80)}
-                      className="w-full border rounded px-1.5 py-1 text-xs bg-white"
+                      type="text"
+                      inputMode="numeric"
+                      value={(selectedEntity as any).bimWidth === undefined ? 80 : (selectedEntity as any).bimWidth}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        updateSelectedBIMField("bimWidth", val === '' ? '' : (parseInt(val) || 0));
+                      }}
+                      className="w-full border rounded px-1.5 py-1 text-xs bg-white [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
                     />
                   </div>
                   {selectedEntity.bimType === 'window' && (
@@ -1411,12 +1469,14 @@ export function BIMWorkspacePanel({
                         Altezza Infisso (cm)
                       </label>
                       <input
-                        type="number"
-                        min="30"
-                        max="300"
-                        value={(selectedEntity as any).bimWindowHeight || 140}
-                        onChange={(e) => updateSelectedBIMField("bimWindowHeight", parseInt(e.target.value) || 140)}
-                        className="w-full border rounded px-1.5 py-1 text-xs bg-white"
+                        type="text"
+                        inputMode="numeric"
+                        value={(selectedEntity as any).bimWindowHeight === undefined ? 140 : (selectedEntity as any).bimWindowHeight}
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          updateSelectedBIMField("bimWindowHeight", val === '' ? '' : (parseInt(val) || 0));
+                        }}
+                        className="w-full border rounded px-1.5 py-1 text-xs bg-white [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
                       />
                     </div>
                   )}
@@ -1905,6 +1965,14 @@ export function BIMWorkspacePanel({
           />
         );
       })()}
+
+      {showFamilyPropertyDialog && (
+        <BIMFamilyPropertyDialog
+          family={showFamilyPropertyDialog}
+          entities={entities}
+          onClose={() => setShowFamilyPropertyDialog(null)}
+        />
+      )}
     </div>
   );
 }

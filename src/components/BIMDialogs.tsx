@@ -1102,9 +1102,9 @@ export const BIMElementDialog: React.FC<BIMElementDialogProps> = ({
   const [subFamily, setSubFamily] = useState('');
   const [name, setName] = useState('');
   const [color, setColor] = useState(() => BIM_FAMILIES.find(f => f.id === (localStorage.getItem('last_bim_family') || BIM_FAMILIES[0].id))?.defaultColor || '#34d399');
-  const [zPlane, setZPlane] = useState(0);
-  const [zElevation, setZElevation] = useState(0);
-  const [objectHeight, setObjectHeight] = useState(2.70);
+  const [zPlane, setZPlane] = useState<number | ''>(0);
+  const [zElevation, setZElevation] = useState<number | ''>(0);
+  const [objectHeight, setObjectHeight] = useState<number | ''>(270);
   const [hatch, setHatch] = useState<'SOLID' | 'ANSI31' | 'CROSS' | 'NONE'>('SOLID');
   const [bimRenderMode, setBimRenderMode] = useState<'solid' | 'transparent'>('solid');
   
@@ -1133,9 +1133,9 @@ export const BIMElementDialog: React.FC<BIMElementDialogProps> = ({
         setSubFamily('');
         setName(famObj?.name || '');
         setColor(famObj?.defaultColor || '#34d399');
-        setZPlane(parseFloat(localStorage.getItem('last_bim_zPlane') || '0'));
-        setZElevation(parseFloat(localStorage.getItem('last_bim_zElevation') || '0'));
-        setObjectHeight(parseFloat(localStorage.getItem('last_bim_height') || '270'));
+        setZPlane(parseFloat(localStorage.getItem('last_bim_zPlane') || '0') || 0);
+        setZElevation(parseFloat(localStorage.getItem('last_bim_zElevation') || '0') || 0);
+        setObjectHeight(parseFloat(localStorage.getItem('last_bim_height') || '270') || 270);
         setHatch('SOLID');
         setBimRenderMode('solid');
       }
@@ -1165,8 +1165,8 @@ export const BIMElementDialog: React.FC<BIMElementDialogProps> = ({
       subFamily: customFamilyMode ? customFamilyName : subFamily,
       name: name || (customFamilyMode ? customFamilyName : (currentFamily?.name || '')), 
       color, 
-      zPlane, 
-      zElevation, 
+      zPlane: typeof zPlane === 'string' ? parseFloat(zPlane) || 0 : zPlane,
+      zElevation: typeof zElevation === 'string' ? parseFloat(zElevation) || 0 : zElevation,
       objectHeight: parseFloat(objectHeight.toString()), 
       hatch,
       bimRenderMode
@@ -1288,30 +1288,40 @@ export const BIMElementDialog: React.FC<BIMElementDialogProps> = ({
             <div>
               <label className="block text-[8px] text-slate-500 font-black uppercase tracking-widest mb-1 font-mono">Quota Z Base (cm)</label>
               <input
-                type="number"
-                step="1"
+                type="text"
+                inputMode="numeric"
                 value={zPlane}
-                onChange={(e) => setZPlane(parseFloat(e.target.value) || 0)}
-                className="w-full bg-white/5 border border-white/10 text-white rounded p-2 text-xs font-mono font-bold focus:outline-none focus:border-indigo-500 transition-all"
+                onChange={(e) => {
+                  const val = e.target.value;
+                  setZPlane(val === '' ? '' : (parseFloat(val) || 0));
+                }}
+                className="w-full bg-white/5 border border-white/10 text-white rounded p-2 text-xs font-mono font-bold focus:outline-none focus:border-indigo-500 transition-all [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
               />
             </div>
             <div>
               <label className="block text-[8px] text-slate-500 font-black uppercase tracking-widest mb-1 font-mono">Soffitto/Top (cm)</label>
               <input
-                type="number"
-                step="1"
+                type="text"
+                inputMode="numeric"
                 value={zElevation}
-                onChange={(e) => setZElevation(parseFloat(e.target.value) || 0)}
-                className="w-full bg-white/5 border border-white/10 text-white rounded p-2 text-xs font-mono font-bold focus:outline-none focus:border-indigo-500 transition-all"
+                onChange={(e) => {
+                  const val = e.target.value;
+                  setZElevation(val === '' ? '' : (parseFloat(val) || 0));
+                }}
+                className="w-full bg-white/5 border border-white/10 text-white rounded p-2 text-xs font-mono font-bold focus:outline-none focus:border-indigo-500 transition-all [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
               />
             </div>
             <div>
               <label className="block text-[8px] text-slate-500 font-black uppercase tracking-widest mb-1 font-mono">Altezza (cm)</label>
               <input
-                type="number"
+                type="text"
+                inputMode="numeric"
                 value={objectHeight}
-                onChange={(e) => setObjectHeight(parseFloat(e.target.value) || 270)}
-                className="w-full bg-white/5 border border-white/10 text-white rounded p-2 text-xs font-mono font-bold focus:outline-none focus:border-indigo-500 transition-all"
+                onChange={(e) => {
+                  const val = e.target.value;
+                  setObjectHeight(val === '' ? '' : (parseFloat(val) || 0));
+                }}
+                className="w-full bg-white/5 border border-white/10 text-white rounded p-2 text-xs font-mono font-bold focus:outline-none focus:border-indigo-500 transition-all [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
               />
             </div>
           </div>

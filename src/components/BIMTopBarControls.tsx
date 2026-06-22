@@ -35,6 +35,8 @@ import {
   Square
 } from 'lucide-react';
 import { TEMPLATES, Template } from '../data/templates';
+import { Entity } from '../types';
+import { exportEntitiesToIFC } from '../utils/ifcExport';
 
 interface BIMTopBarControlsProps {
   selectedTool: string | null;
@@ -48,22 +50,23 @@ interface BIMTopBarControlsProps {
   setDefaultHatchStyle: (style: any) => void;
   
   // Reactive states from App level
-  bimWallThickness: number;
-  setBimWallThickness: (val: number) => void;
-  bimWallHeight: number;
-  setBimWallHeight: (val: number) => void;
-  bimDoorWidth: number;
-  setBimDoorWidth: (val: number) => void;
-  bimDoorHeight: number;
-  setBimDoorHeight: (val: number) => void;
-  bimWindowWidth: number;
-  setBimWindowWidth: (val: number) => void;
-  bimWindowHeight: number;
-  setBimWindowHeight: (val: number) => void;
-  bimSymbolScale?: number;
-  setBimSymbolScale?: (val: number) => void;
+  bimWallThickness: number | '';
+  setBimWallThickness: (val: number | '') => void;
+  bimWallHeight: number | '';
+  setBimWallHeight: (val: number | '') => void;
+  bimDoorWidth: number | '';
+  setBimDoorWidth: (val: number | '') => void;
+  bimDoorHeight: number | '';
+  setBimDoorHeight: (val: number | '') => void;
+  bimWindowWidth: number | '';
+  setBimWindowWidth: (val: number | '') => void;
+  bimWindowHeight: number | '';
+  setBimWindowHeight: (val: number | '') => void;
+  bimSymbolScale?: number | '';
+  setBimSymbolScale?: (val: number | '') => void;
   setIsBIMFinestreOpen: (val: boolean) => void;
   onOpen3DView?: () => void;
+  entities: Entity[];
 }
 
 export const BIMTopBarControls: React.FC<BIMTopBarControlsProps> = ({
@@ -91,7 +94,8 @@ export const BIMTopBarControls: React.FC<BIMTopBarControlsProps> = ({
   bimSymbolScale = 1,
   setBimSymbolScale,
   setIsBIMFinestreOpen,
-  onOpen3DView
+  onOpen3DView,
+  entities
 }) => {
    const [activeDropdown, setActiveDropdown] = useState<
      'porte' | 'finestre' | 'arredi' | 'sanitari' | 'elettrico' | 'idraulico' | 'finiture' | 'vani' | null
@@ -115,20 +119,20 @@ export const BIMTopBarControls: React.FC<BIMTopBarControlsProps> = ({
   };
 
   // Sync canvas defaults
-  const handleDoorSpecsChange = (w: number, h: number) => {
+  const handleDoorSpecsChange = (w: number | '', h: number | '') => {
     setBimDoorWidth(w);
     setBimDoorHeight(h);
     localStorage.setItem('lastDoorWidth', w.toString());
     localStorage.setItem('lastDoorHeight', h.toString());
-    cadCanvasRef.current?.setBIMDefaults(w, h, 'door');
+    cadCanvasRef.current?.setBIMDefaults(w || 80, h || 210, 'door');
   };
 
-  const handleWindowSpecsChange = (w: number, h: number) => {
+  const handleWindowSpecsChange = (w: number | '', h: number | '') => {
     setBimWindowWidth(w);
     setBimWindowHeight(h);
     localStorage.setItem('lastWindowWidth', w.toString());
     localStorage.setItem('lastWindowHeight', h.toString());
-    cadCanvasRef.current?.setBIMDefaults(w, h, 'window');
+    cadCanvasRef.current?.setBIMDefaults(w || 120, h || 140, 'window');
   };
 
   const doorPresets = [
@@ -316,19 +320,27 @@ export const BIMTopBarControls: React.FC<BIMTopBarControlsProps> = ({
               <div>
                 <label className="block text-neutral-500 mb-0.5">Larghezza</label>
                 <input
-                  type="number"
+                  type="text"
+                  inputMode="numeric"
                   value={bimDoorWidth}
-                  onChange={(e) => handleDoorSpecsChange(parseInt(e.target.value) || 80, bimDoorHeight)}
-                  className="w-full bg-neutral-50 border border-neutral-200 rounded p-1 font-mono text-[10px]"
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    handleDoorSpecsChange(val === '' ? '' : (parseInt(val) || 0), bimDoorHeight);
+                  }}
+                  className="w-full bg-neutral-50 border border-neutral-200 rounded p-1 font-mono text-[10px] [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
                 />
               </div>
               <div>
                 <label className="block text-neutral-500 mb-0.5">Altezza</label>
                 <input
-                  type="number"
+                  type="text"
+                  inputMode="numeric"
                   value={bimDoorHeight}
-                  onChange={(e) => handleDoorSpecsChange(bimDoorWidth, parseInt(e.target.value) || 210)}
-                  className="w-full bg-neutral-50 border border-neutral-200 rounded p-1 font-mono text-[10px]"
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    handleDoorSpecsChange(bimDoorWidth, val === '' ? '' : (parseInt(val) || 0));
+                  }}
+                  className="w-full bg-neutral-50 border border-neutral-200 rounded p-1 font-mono text-[10px] [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
                 />
               </div>
             </div>
@@ -401,19 +413,27 @@ export const BIMTopBarControls: React.FC<BIMTopBarControlsProps> = ({
               <div>
                 <label className="block text-neutral-500 mb-0.5">Larghezza</label>
                 <input
-                  type="number"
+                  type="text"
+                  inputMode="numeric"
                   value={bimWindowWidth}
-                  onChange={(e) => handleWindowSpecsChange(parseInt(e.target.value) || 120, bimWindowHeight)}
-                  className="w-full bg-neutral-50 border border-neutral-200 rounded p-1 font-mono text-[10px]"
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    handleWindowSpecsChange(val === '' ? '' : (parseInt(val) || 0), bimWindowHeight);
+                  }}
+                  className="w-full bg-neutral-50 border border-neutral-200 rounded p-1 font-mono text-[10px] [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
                 />
               </div>
               <div>
                 <label className="block text-neutral-500 mb-0.5">Altezza</label>
                 <input
-                  type="number"
+                  type="text"
+                  inputMode="numeric"
                   value={bimWindowHeight}
-                  onChange={(e) => handleWindowSpecsChange(bimWindowWidth, parseInt(e.target.value) || 140)}
-                  className="w-full bg-neutral-50 border border-neutral-200 rounded p-1 font-mono text-[10px]"
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    handleWindowSpecsChange(bimWindowWidth, val === '' ? '' : (parseInt(val) || 0));
+                  }}
+                  className="w-full bg-neutral-50 border border-neutral-200 rounded p-1 font-mono text-[10px] [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
                 />
               </div>
             </div>
@@ -690,6 +710,14 @@ export const BIMTopBarControls: React.FC<BIMTopBarControlsProps> = ({
       <div className="h-4 w-[1px] bg-neutral-300 mx-1" />
 
       {/* 9. THE 3D VISUALIZATION INTEGRATION */}
+      <button
+        onClick={() => exportEntitiesToIFC(entities)}
+        className="w-7 h-7 rounded-lg bg-green-600 hover:bg-green-700 text-white font-extrabold flex justify-center items-center shadow-md transition hover:scale-105 cursor-pointer ml-2"
+        title="Esporta in formato IFC (BIM)"
+      >
+        <ArrowDownToLine size={14} className="text-white drop-shadow-sm" />
+      </button>
+
       <button
         onClick={onOpen3DView}
         className="w-7 h-7 rounded-lg bg-gradient-to-br from-cyan-600 to-cyan-500 hover:from-cyan-700 hover:to-cyan-600 text-white font-extrabold flex justify-center items-center shadow-md transition hover:scale-105 cursor-pointer ml-2"

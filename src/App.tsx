@@ -471,8 +471,8 @@ export default function App() {
   const [isRotateToolbarOpen, setIsRotateToolbarOpen] = useState(false);
 
   // BIM top bar reactive parameters
-  const [bimWallThickness, setBimWallThickness] = useState<number>(() => parseFloat(localStorage.getItem('lastWallThickness') || '15'));
-  const [bimWallHeight, setBimWallHeight] = useState<number>(() => parseFloat(localStorage.getItem('lastWallHeight') || '270'));
+  const [bimWallThickness, setBimWallThickness] = useState<number | ''>(() => parseFloat(localStorage.getItem('lastWallThickness') || '15') || 15);
+  const [bimWallHeight, setBimWallHeight] = useState<number | ''>(() => parseFloat(localStorage.getItem('lastWallHeight') || '270') || 270);
   const [bimWallRenderMode, setBimWallRenderMode] = useState<'solid' | 'transparent'>(() => (localStorage.getItem('lastWallRenderMode') as 'solid' | 'transparent') || 'solid');
   const [bimWallType, setBimWallType] = useState<string>(() => localStorage.getItem('lastWallType') || "Forati (Laterizio)");
   
@@ -483,11 +483,11 @@ const MASONRY_TYPES = [
   "Blocchi Termici", "Blocchi Portanti", "Blocchi Faccia a Vista", "Blocchi Isolanti Grafite",
   "Blocchi Isolanti Sughero", "Blocchi Isolanti Lana Roccia", "Blocchi Isolanti Perlite", "Laterizio Porizzato"
 ];
-  const [bimDoorWidth, setBimDoorWidth] = useState<number>(() => parseFloat(localStorage.getItem('lastDoorWidth') || '80'));
-  const [bimDoorHeight, setBimDoorHeight] = useState<number>(() => parseFloat(localStorage.getItem('lastDoorHeight') || '210'));
-  const [bimWindowWidth, setBimWindowWidth] = useState<number>(() => parseFloat(localStorage.getItem('lastWindowWidth') || '120'));
-  const [bimWindowHeight, setBimWindowHeight] = useState<number>(() => parseFloat(localStorage.getItem('lastWindowHeight') || '140'));
-  const [bimSymbolScale, setBimSymbolScale] = useState<number>(() => parseFloat(localStorage.getItem('lastBIMSymbolScale') || '1'));
+  const [bimDoorWidth, setBimDoorWidth] = useState<number | ''>(() => parseFloat(localStorage.getItem('lastDoorWidth') || '80') || 80);
+  const [bimDoorHeight, setBimDoorHeight] = useState<number | ''>(() => parseFloat(localStorage.getItem('lastDoorHeight') || '210') || 210);
+  const [bimWindowWidth, setBimWindowWidth] = useState<number | ''>(() => parseFloat(localStorage.getItem('lastWindowWidth') || '120') || 120);
+  const [bimWindowHeight, setBimWindowHeight] = useState<number | ''>(() => parseFloat(localStorage.getItem('lastWindowHeight') || '140') || 140);
+  const [bimSymbolScale, setBimSymbolScale] = useState<number | ''>(() => parseFloat(localStorage.getItem('lastBIMSymbolScale') || '1') || 1);
 
   const [editingRaccordo, setEditingRaccordo] = useState<Entity | null>(null);
   const [raccordoConfig, setRaccordoConfig] = useState<{ type: 'curvo' | 'rettilineo' | 'taglia'; value: number }>({
@@ -2107,6 +2107,7 @@ const MASONRY_TYPES = [
             }}
             setIsBIMFinestreOpen={setIsBIMFinestreOpen}
             onOpen3DView={() => setIs3DViewOpen(true)}
+            entities={entities}
           />
         ) : (
           selectedCategoryTools.map((tool) => (
@@ -2603,12 +2604,12 @@ const MASONRY_TYPES = [
             selectedEntityId={selectedId}
             selectedBIMSymbolType={selectedBIMSymbolType}
             setSelectedBIMSymbolType={setSelectedBIMSymbolType}
-            bimSymbolScale={bimSymbolScale}
+            bimSymbolScale={typeof bimSymbolScale === 'number' ? bimSymbolScale : 0}
             defaultHatchStyle={defaultHatchStyle}
-            bimWallHeight={bimWallHeight}
-            bimDoorHeight={bimDoorHeight}
-            bimWindowHeight={bimWindowHeight}
-            bimWallThickness={bimWallThickness}
+            bimWallHeight={typeof bimWallHeight === 'number' ? bimWallHeight : 0}
+            bimDoorHeight={typeof bimDoorHeight === 'number' ? bimDoorHeight : 0}
+            bimWindowHeight={typeof bimWindowHeight === 'number' ? bimWindowHeight : 0}
+            bimWallThickness={typeof bimWallThickness === 'number' ? bimWallThickness : 0}
             bimWallType={bimWallType}
             bimWallRenderMode={bimWallRenderMode}
             onActionStart={() => {
@@ -3659,25 +3660,29 @@ const MASONRY_TYPES = [
                     <div className="space-y-1">
                       <label className="text-[10px] font-black uppercase text-neutral-400 tracking-widest block font-mono">Spessore (cm)</label>
                       <input
-                        type="number"
+                        type="text"
+                        inputMode="numeric"
                         value={bimWallThickness}
                         onChange={(e) => {
-                          setBimWallThickness(parseInt(e.target.value) || 15);
-                          localStorage.setItem('lastWallThickness', e.target.value);
+                          const val = e.target.value;
+                          setBimWallThickness(val === '' ? '' : (parseInt(val) || 0));
+                          localStorage.setItem('lastWallThickness', val);
                         }}
-                        className="w-full bg-neutral-50 border border-neutral-300 rounded p-2 text-xs font-mono"
+                        className="w-full bg-neutral-50 border border-neutral-300 rounded p-2 text-xs font-mono [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
                       />
                     </div>
                     <div className="space-y-1">
                       <label className="text-[10px] font-black uppercase text-neutral-400 tracking-widest block font-mono">Altezza (cm)</label>
                       <input
-                        type="number"
+                        type="text"
+                        inputMode="numeric"
                         value={bimWallHeight}
                         onChange={(e) => {
-                          setBimWallHeight(parseInt(e.target.value) || 270);
-                          localStorage.setItem('lastWallHeight', e.target.value);
+                          const val = e.target.value;
+                          setBimWallHeight(val === '' ? '' : (parseInt(val) || 0));
+                          localStorage.setItem('lastWallHeight', val);
                         }}
-                        className="w-full bg-neutral-50 border border-neutral-300 rounded p-2 text-xs font-mono"
+                        className="w-full bg-neutral-50 border border-neutral-300 rounded p-2 text-xs font-mono [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
                       />
                     </div>
                   </div>

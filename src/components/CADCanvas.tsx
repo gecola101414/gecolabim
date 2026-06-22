@@ -2474,14 +2474,60 @@ interface CADCanvasProps {
   sketchParams?: any[];
   highlightedSketchId?: string | null;
   showFloatingManual?: boolean;
+  isLavagna?: boolean;
 }
 
-export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entities, activeTool, setActiveTool, setEntities, setEntitiesSilent, onCommitHistory, onSelect, onContextMenu, activeLayerId, layers, defaultLineStyle, setDefaultLineStyle, defaultHatchStyle, defaultTextStyle = { fontFamily: 'sans-serif', fontSize: 14, fontWeight: 'normal', textAlign: 'left' }, eraserRadius, setEraserRadius, eraserType = 'pencil', setEraserType, eraserIntensity = 55, setEraserIntensity, onMouseMovePosition, rulerStyle = 'tecnigrafo', orthoMode = false, setOrthoMode, isContinuousMode = false, cancelTrigger = 0, parallelTrigger = 0, tavole, onUpdateTavole, onDoubleClickTavola, selectedTemplateId, selectedEntityId, selectedBIMSymbolType, setSelectedBIMSymbolType, bimSymbolScale = 1, raccordoConfig, dimensionScale = 1, dimensionDecimals = 2, dimensionMode = 'two-points', dimensionStyle = 'linear', selectionMode = 'manual', onEditRaccordo, onDoubleClickDimension, onDoubleClickBIMElement, onActionStart, onAreaDetected, onSelectionComplete, initialSelectedIds, selectedEntityIds = [], highlightedPoints, rotationEntityId, onSelectForRotation, bimWallHeight = 270, bimDoorHeight = 210, bimWindowHeight = 140, bimWallThickness = 15, bimWallType = 'Forati (Laterizio)', bimWallRenderMode = 'solid', sketchParams = [], highlightedSketchId = null, selectedLine = null, selectedLineClickPoint = null, referenceLine = null, showFloatingManual = false }, ref) => {
+export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entities, activeTool, setActiveTool, setEntities, setEntitiesSilent, onCommitHistory, onSelect, onContextMenu, activeLayerId, layers, defaultLineStyle, setDefaultLineStyle, defaultHatchStyle, defaultTextStyle = { fontFamily: 'sans-serif', fontSize: 14, fontWeight: 'normal', textAlign: 'left' }, eraserRadius, setEraserRadius, eraserType = 'pencil', setEraserType, eraserIntensity = 55, setEraserIntensity, onMouseMovePosition, rulerStyle = 'tecnigrafo', orthoMode = false, setOrthoMode, isContinuousMode = false, cancelTrigger = 0, parallelTrigger = 0, tavole, onUpdateTavole, onDoubleClickTavola, selectedTemplateId, selectedEntityId, selectedBIMSymbolType, setSelectedBIMSymbolType, bimSymbolScale = 1, raccordoConfig, dimensionScale = 1, dimensionDecimals = 2, dimensionMode = 'two-points', dimensionStyle = 'linear', selectionMode = 'manual', onEditRaccordo, onDoubleClickDimension, onDoubleClickBIMElement, onActionStart, onAreaDetected, onSelectionComplete, initialSelectedIds, selectedEntityIds = [], highlightedPoints, rotationEntityId, onSelectForRotation, bimWallHeight = 270, bimDoorHeight = 210, bimWindowHeight = 140, bimWallThickness = 15, bimWallType = 'Forati (Laterizio)', bimWallRenderMode = 'solid', sketchParams = [], highlightedSketchId = null, selectedLine = null, selectedLineClickPoint = null, referenceLine = null, showFloatingManual = false, isLavagna = false }, ref) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const entitiesRef = useRef(entities);
   useEffect(() => {
     entitiesRef.current = entities;
   }, [entities]);
+
+  const shiftEntityByDelta = (ent: Entity, deltaX: number, deltaY: number): Entity => {
+    let updated = { ...ent };
+    
+    if (ent.type === 'line') {
+        updated = { 
+            ...updated, 
+            start: { x: ent.start.x + deltaX, y: ent.start.y + deltaY }, 
+            end: { x: ent.end.x + deltaX, y: ent.end.y + deltaY } 
+        } as any;
+        if (ent.isFreehand && ent.inkPoints) {
+            (updated as any).inkPoints = ent.inkPoints.map(p => ({ ...p, x: p.x + deltaX, y: p.y + deltaY }));
+        }
+    } else if (ent.type === 'circle') {
+        updated = { ...updated, center: { x: ent.center.x + deltaX, y: ent.center.y + deltaY } } as any;
+    } else if (ent.type === 'rectangle') {
+        updated = { ...updated, p1: { x: ent.p1.x + deltaX, y: ent.p1.y + deltaY }, p2: { x: ent.p2.x + deltaX, y: ent.p2.y + deltaY } } as any;
+    } else if (ent.type === 'hatch') {
+        const h = ent as any;
+        updated = { ...updated, points: h.points ? h.points.map((p: Point) => ({ x: p.x + deltaX, y: p.y + deltaY })) : [] } as any;
+    } else if (ent.type === 'point' || ent.type === 'text' || ent.type === 'image') {
+        updated = { ...updated, point: { x: ent.point.x + deltaX, y: ent.point.y + deltaY } } as any;
+    } else if (ent.type === 'arc') {
+        updated = { ...updated, center: { x: ent.center.x + deltaX, y: ent.center.y + deltaY } } as any;
+    } else if (ent.type === 'dimension') {
+        updated = { 
+            ...updated, 
+            start: { x: ent.start.x + deltaX, y: ent.start.y + deltaY }, 
+            end: { x: ent.end.x + deltaX, y: ent.end.y + deltaY } 
+        } as any;
+    }
+
+    // Generic check for points, bimPoints and holes
+    if ((ent as any).bimPoints) {
+        (updated as any).bimPoints = (ent as any).bimPoints.map((p: Point) => ({ x: p.x + deltaX, y: p.y + deltaY }));
+    }
+    if ((ent as any).points && (ent as any).type !== 'hatch') {
+        (updated as any).points = (ent as any).points.map((p: Point) => ({ x: p.x + deltaX, y: p.y + deltaY }));
+    }
+    if ((ent as any).holes) {
+        (updated as any).holes = (ent as any).holes.map((hole: Point[]) => hole.map((p: Point) => ({ x: p.x + deltaX, y: p.y + deltaY })));
+    }
+
+    return updated;
+  };
 
   const findConnectedDimensions = (startDimId: string, allEntities: Entity[]): Set<string> => {
     const connected = new Set<string>([startDimId]);
@@ -2599,9 +2645,14 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
         setCopySourceEntityIds([]);
         setCopyPhase('idle');
         setStatusMessage("Seleziona gli oggetti da copiare, poi premi il tasto destro del mouse per confermare.");
+    } else if (activeTool === 'Move') {
+        setMoveSourceEntityIds([]);
+        setMovePhase('idle');
+        setStatusMessage("Seleziona gli oggetti da spostare, poi premi il tasto destro del mouse o Invio per confermare.");
     } else {
         setCopyPhase('idle');
         setCopyBasePoint(null);
+        setMovePhase('idle');
         setStatusMessage(null);
         if (clonedEntityIds.size > 0) {
             setEntities(prev => prev.filter(ent => !clonedEntityIds.has(ent.id)));
@@ -2619,17 +2670,11 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
           if (activeTool === 'Copy') {
               setCopySourceEntityIds(initialSelectedIds);
           }
+          if (activeTool === 'Move') {
+              setMoveSourceEntityIds(initialSelectedIds);
+          }
           if (activeTool === 'Specchio') {
               setSpecchioSelectedIds(initialSelectedIds);
-          }
-          // Immediate drag support for Move only, to avoid moving originals in Copy mode
-          if (activeTool === 'Move') {
-              setDragEntityId(initialSelectedIds[0]);
-              dragEntityIdRef.current = initialSelectedIds[0];
-              const initPt = lastMouseRef.current || { x: 0, y: 0 };
-              previousMouseRef.current = initPt;
-              setMoveBasePoint(initPt);
-              dragHasMovedRef.current = false;
           }
       }
     }
@@ -2823,6 +2868,8 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
   const dragStartPosRef = useRef<Point | null>(null);
   const [copyPhase, setCopyPhase] = useState<'idle' | 'selectBasePoint' | 'selectDestinationPoint'>('idle');
   const [copyBasePoint, setCopyBasePoint] = useState<Point | null>(null);
+  const [movePhase, setMovePhase] = useState<'idle' | 'selectBasePoint' | 'selectDestinationPoint'>('idle');
+  const [moveSourceEntityIds, setMoveSourceEntityIds] = useState<string[]>([]);
   const [moveBasePoint, setMoveBasePoint] = useState<Point | null>(null);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [tooltipMousePos, setTooltipMousePos] = useState<{ x: number, y: number } | null>(null);
@@ -4478,7 +4525,7 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
 
       // Clear and draw based on view state
       ctx.clearRect(0, 0, canvas.width, canvas.height);
-      ctx.fillStyle = '#EFECE5'; 
+      ctx.fillStyle = isLavagna ? '#121513' : '#EFECE5'; 
       ctx.fillRect(0, 0, canvas.width, canvas.height);
       
       ctx.save();
@@ -4568,7 +4615,13 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
         const isBIMSymbolEnt = entity.isBIM && (entity.bimType === 'electrical_symbol' || entity.bimType === 'hydraulic_symbol');
         const baseWidth = isBIMSymbolEnt ? (0.65 / view.zoom) : getEffectiveCADRenderWidth(entity.lineWidth, entity.mode, view.zoom);
 
-        ctx.strokeStyle = entity.color || ((entity.mode === 'pencil') ? '#bbbbbb' : (entity.mode === 'ink' ? '#000000' : '#000000'));
+        let finalColor = entity.color;
+        if (isLavagna) {
+          if (!finalColor || finalColor === '#000000' || finalColor === '#000' || finalColor === '#111111' || finalColor === '#111' || finalColor === '#444444' || finalColor === '#444' || finalColor === '#bbbbbb') {
+            finalColor = '#FAF9F6';
+          }
+        }
+        ctx.strokeStyle = finalColor || ((entity.mode === 'pencil') ? (isLavagna ? '#FAF9F6' : '#bbbbbb') : (isLavagna ? '#FAF9F6' : '#000000'));
         ctx.lineWidth = baseWidth;
         ctx.globalAlpha = entity.opacity !== undefined ? entity.opacity : 1.0;
         if (layer && layer.frozen) {
@@ -4592,7 +4645,9 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
 
         const isCurrentlyDragged = dragEntityIds.includes(entity.id);
         const isPropSelected = (selectedEntityIds as string[]).includes(entity.id);
-        const isReallySelected = isPropSelected || isCurrentlyDragged;
+        const isReallySelected = isPropSelected || isCurrentlyDragged ||
+            (activeTool === 'Move' && moveSourceEntityIds.includes(entity.id)) ||
+            (activeTool === 'Copy' && copySourceEntityIds.includes(entity.id));
         const pulse = isReallySelected ? (Math.sin(Date.now() / 150) + 1) / 2 : 0;
 
         if ((entity.id === selectedParallelLine?.id && blink) || (selectedEntityId === entity.id) || isReallySelected || (positioningGroupId && entity.groupId === positioningGroupId) || (positioningEntityId && entity.id === positioningEntityId) || selectedRaccordoLineIds.includes(entity.id)) {
@@ -4619,6 +4674,9 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
         } else if (copySourceEntityIds.includes(entity.id) && activeTool === 'Copy') {
             ctx.strokeStyle = '#22c55e'; // Green highlight for original mother object(s)
             ctx.lineWidth = baseWidth + 4 / view.zoom;
+        } else if (moveSourceEntityIds.includes(entity.id) && activeTool === 'Move') {
+            ctx.strokeStyle = '#22c55e'; // Green highlight for original object(s) to move
+            ctx.lineWidth = baseWidth + 4 / view.zoom;
         } else if (activeTool === 'Trim' && highlightedTrimSegment && entity.id === highlightedTrimLine?.id) {
             // Eraser highlight only
         }
@@ -4627,7 +4685,7 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
         let highlightColor = ctx.strokeStyle;
         if (isFlashing) {
              isHighlighted = true;
-        } else if ((entity.id === selectedParallelLine?.id && blink) || (selectedEntityId === entity.id) || (positioningGroupId && entity.groupId === positioningGroupId) || (positioningEntityId && entity.id === positioningEntityId) || selectedRaccordoLineIds.includes(entity.id)) {
+        } else if ((entity.id === selectedParallelLine?.id && blink) || (selectedEntityId === entity.id) || isReallySelected || (positioningGroupId && entity.groupId === positioningGroupId) || (positioningEntityId && entity.id === positioningEntityId) || selectedRaccordoLineIds.includes(entity.id)) {
              isHighlighted = true;
         } else if (activeTool === 'Dimension' && selectionMode === 'object' && entity.id === hoveredDimensionEntityId) {
              isHighlighted = true;
@@ -4635,6 +4693,8 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
         } else if ((dragEntityIds.includes(entity.id) || entity.id === highlightedTrimLine?.id) && (activeTool === 'Move' || activeTool === 'Cancella' || activeTool === 'Join' || activeTool === 'Copy')) {
              isHighlighted = true;
         } else if (copySourceEntityIds.includes(entity.id) && activeTool === 'Copy') {
+             isHighlighted = true;
+        } else if (moveSourceEntityIds.includes(entity.id) && activeTool === 'Move') {
              isHighlighted = true;
         }
 
@@ -5165,7 +5225,7 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
         } else if (entity.type === 'point') {
           ctx.beginPath();
           ctx.arc(entity.point.x, entity.point.y, 2 / view.zoom, 0, Math.PI * 2);
-          ctx.fillStyle = '#000000'; // Force black points
+          ctx.fillStyle = isLavagna ? '#FAF9F6' : '#000000'; // Force white points on blackboard, black otherwise
           ctx.fill();
         } else if (entity.type === 'rectangle') {
           const width = entity.p2.x - entity.p1.x;
@@ -5174,7 +5234,11 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
           ctx.stroke();
         } else if (entity.type === 'text') {
           ctx.font = `${entity.fontWeight || 'normal'} ${entity.fontSize / view.zoom}px ${entity.fontFamily || 'sans-serif'}`;
-          ctx.fillStyle = entity.color || '#000000';
+          let textColor = entity.color || '#000000';
+          if (isLavagna) {
+            textColor = '#FAF9F6';
+          }
+          ctx.fillStyle = textColor;
           ctx.textAlign = (entity.textAlign as CanvasTextAlign) || 'left';
           ctx.textBaseline = 'top';
 
@@ -5825,9 +5889,9 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
                 : Math.max(0.4, 0.7 * (defaultLineStyle.lineWidth / view.zoom));
             
             ctx.lineWidth = baseWidth;
-            ctx.strokeStyle = defaultLineStyle.mode === 'ink' 
+            ctx.strokeStyle = isLavagna ? '#FAF9F6' : (defaultLineStyle.mode === 'ink' 
                 ? '#000000' 
-                : getAlphaColor(defaultLineStyle.color, 0.6);
+                : getAlphaColor(defaultLineStyle.color, 0.6));
             
             ctx.beginPath();
             ctx.moveTo(drawing.freehandPoints[0].x, drawing.freehandPoints[0].y);
@@ -5841,7 +5905,7 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
                 ? '#9ca3af' // Gray for virtual
                 : (isKnownAngle 
                     ? '#22c55e' 
-                    : (defaultLineStyle.color || ((defaultLineStyle.mode === 'pencil') ? 'rgba(187, 187, 187, 0.5)' : (defaultLineStyle.mode === 'ink' ? '#000000' : 'rgba(0, 0, 0, 1.0)'))));
+                    : (isLavagna ? '#FAF9F6' : (defaultLineStyle.color || ((defaultLineStyle.mode === 'pencil') ? 'rgba(187, 187, 187, 0.5)' : (defaultLineStyle.mode === 'ink' ? '#000000' : 'rgba(0, 0, 0, 1.0)')))));
             ctx.lineWidth = drawing.wheelLength !== undefined 
                 ? 4 / view.zoom 
                 : (defaultLineStyle.mode === 'ink' 
@@ -6357,7 +6421,7 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
           const { w, h } = getTavolaDimensions(tav);
           
           // Draw thin dashed sheet outline
-          ctx.strokeStyle = '#2563eb';
+          ctx.strokeStyle = isLavagna ? 'rgba(250, 249, 246, 0.4)' : '#2563eb';
           ctx.lineWidth = 1.5 / view.zoom;
           ctx.setLineDash([5 / view.zoom, 4 / view.zoom]);
           ctx.strokeRect(tav.position.x, tav.position.y, w, h);
@@ -6384,7 +6448,7 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
             ctx.rect(tav.position.x, tav.position.y, w, h);
             ctx.clip();
 
-            ctx.strokeStyle = tav.gridColor || 'rgba(99, 102, 241, 0.15)';
+            ctx.strokeStyle = isLavagna ? 'rgba(250, 249, 246, 0.1)' : (tav.gridColor || 'rgba(99, 102, 241, 0.15)');
             ctx.lineWidth = 0.5 / view.zoom;
             ctx.setLineDash([]); // Draw subtle solid lines
 
@@ -10252,8 +10316,30 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
         return;
       }
     } else if (activeTool === 'Move') {
-        if (dragEntityId) {
-            // Already moving (sticky or deliberate click-to-drop)
+        if (movePhase === 'selectBasePoint') {
+            const snap = getSnappedPoint(rawPoint, entities, activeTool, null);
+            const basePt = snap.snapped ? snap.point : rawPoint;
+            setMoveBasePoint(basePt);
+            
+            const sourceIds = moveSourceEntityIds.length > 0 
+                ? moveSourceEntityIds 
+                : (selectedEntityIds.length > 0 ? selectedEntityIds : []);
+            
+            if (sourceIds.length > 0) {
+                setDragEntityIds(sourceIds);
+                dragEntityIdsRef.current = sourceIds;
+                setDragEntityId(sourceIds[0]);
+                dragEntityIdRef.current = sourceIds[0];
+                previousMouseRef.current = basePt;
+                dragHasMovedRef.current = false;
+                setMovePhase('selectDestinationPoint');
+                setStatusMessage("Clicca per confermare lo spostamento. Premi Invio o Tasto Destro per concludere.");
+            } else {
+                setStatusMessage("Nessun oggetto selezionato.");
+                setMovePhase('idle');
+            }
+            return;
+        } else if (movePhase === 'selectDestinationPoint') {
             const staticEntities = entities.filter(ent => !dragEntityIds.includes(ent.id));
             const snapRes = getSnappedPoint(rawPoint, staticEntities, activeTool, null);
             let snapPoint = snapRes.snapped ? snapRes.point : rawPoint;
@@ -10275,33 +10361,7 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
             setEntities(prev => {
                 const updatedEntities = prev.map(ent => {
                     if (dragEntityIds.includes(ent.id)) {
-                        const updated = JSON.parse(JSON.stringify(ent)) as Entity;
-                        if (updated.type === 'line' || updated.type === 'dimension') {
-                            updated.start.x += finalDeltaX;
-                            updated.start.y += finalDeltaY;
-                            updated.end.x += finalDeltaX;
-                            updated.end.y += finalDeltaY;
-                        } else if (updated.type === 'circle' || updated.type === 'arc') {
-                            updated.center.x += finalDeltaX;
-                            updated.center.y += finalDeltaY;
-                        } else if (updated.type === 'rectangle') {
-                            updated.p1.x += finalDeltaX;
-                            updated.p1.y += finalDeltaY;
-                            updated.p2.x += finalDeltaX;
-                            updated.p2.y += finalDeltaY;
-                        } else if (updated.type === 'point' || updated.type === 'text') {
-                            updated.point.x += finalDeltaX;
-                            updated.point.y += finalDeltaY;
-                        } else if (updated.type === 'image') {
-                            updated.point.x += finalDeltaX;
-                            updated.point.y += finalDeltaY;
-                        } else if ((updated.type as string) === 'polygon' || (updated.type as string) === 'path') {
-                            (updated as any).points = (updated as any).points.map((p: Point) => ({ x: p.x + finalDeltaX, y: p.y + finalDeltaY }));
-                            if ((updated as any).holes) {
-                                (updated as any).holes = (updated as any).holes.map((hole: Point[]) => hole.map((p: Point) => ({ x: p.x + finalDeltaX, y: p.y + finalDeltaY })));
-                            }
-                        }
-                        return updated;
+                        return shiftEntityByDelta(ent, finalDeltaX, finalDeltaY);
                     }
                     return ent;
                 });
@@ -10313,47 +10373,36 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
             dragEntityIdRef.current = null;
             setActiveMoveSnapPoint(null);
             setMoveBasePoint(null);
+            setMovePhase('selectBasePoint');
+            setStatusMessage("Oggetto spostato. Clicca un nuovo punto base per spostarlo ancora, o premi Invio/Tasto Destro per concludere.");
+            setDragEntityIds([]);
+            dragEntityIdsRef.current = [];
             return;
         }
 
-        const snap = getSnappedPoint(rawPoint, entities, activeTool, null);
-        const found = getEntityAtPoint(rawPoint);
-        const snappedFound = snap.snapped ? getEntityAtPoint(snap.point) : null;
-        
-        let target = found || snappedFound;
+        if (movePhase === 'idle') {
+            const snap = getSnappedPoint(rawPoint, entities, activeTool, null);
+            const found = getEntityAtPoint(snap.snapped ? snap.point : rawPoint) || getEntityAtPoint(rawPoint);
 
-        if (target) {
-            // Case 1: Clicked on an entity or its snap point
-            const targetIds = resolveGroups([target.id], entities);
-            if (!dragEntityIds.some(id => targetIds.includes(id))) {
-                setDragEntityIds(targetIds);
+            if (found) {
+                const targetIds = resolveGroups([found.id], entities);
+                setFlashIds(targetIds);
+                setMoveSourceEntityIds(prev => {
+                    const exists = targetIds.every(id => prev.includes(id));
+                    let next: string[];
+                    if (exists) {
+                        next = prev.filter(id => !targetIds.includes(id));
+                    } else {
+                        next = Array.from(new Set([...prev, ...targetIds]));
+                    }
+                    return next;
+                });
+            } else {
+                setSelectionWindow({ start: rawPoint, current: rawPoint });
+                lastMouseRef.current = rawPoint;
+                previousMouseRef.current = rawPoint;
+                setActiveMoveSnapPoint(null);
             }
-            setDragEntityId(target.id);
-            dragEntityIdRef.current = target.id;
-            setSelectionWindow(null);
-            const bPt = snap.snapped ? snap.point : rawPoint;
-            lastMouseRef.current = bPt;
-            previousMouseRef.current = bPt;
-            setMoveBasePoint(bPt);
-            setActiveMoveSnapPoint(null);
-        } else if (dragEntityIds.length > 0) {
-            // Case 2: Something is selected, click ANYWHERE (snap or raw) to start move
-            setDragEntityId(dragEntityIds[0]); // Using first id as flag for handleMouseMove
-            dragEntityIdRef.current = dragEntityIds[0];
-            setSelectionWindow(null);
-            const bPt = snap.snapped ? snap.point : rawPoint;
-            lastMouseRef.current = bPt;
-            previousMouseRef.current = bPt;
-            setMoveBasePoint(bPt);
-            setActiveMoveSnapPoint(null);
-        } else {
-            // Case 3: Nothing selected and clicked empty space -> Start selection window
-            setDragEntityIds([]);
-            setSelectionWindow({ start: rawPoint, current: rawPoint });
-            lastMouseRef.current = rawPoint;
-            previousMouseRef.current = rawPoint;
-            setMoveBasePoint(null);
-            setActiveMoveSnapPoint(null);
         }
     } else if (activeTool === 'Copy') {
         if (copyPhase === 'selectBasePoint') {
@@ -10402,6 +10451,7 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
 
             if (target) {
                 const targetIds = resolveGroups([target.id], entities);
+                setFlashIds(targetIds);
                 setCopySourceEntityIds(prev => {
                     const exists = targetIds.every(id => prev.includes(id));
                     let next: string[];
@@ -11268,48 +11318,7 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
     if (Math.abs(deltaX) > 1e-6 || Math.abs(deltaY) > 1e-6) {
         const updater = (prev: Entity[]) => prev.map(ent => {
             if (targetIds.includes(ent.id)) {
-                let updated = { ...ent };
-                
-                if (ent.type === 'line') {
-                    updated = { 
-                        ...updated, 
-                        start: { x: ent.start.x + deltaX, y: ent.start.y + deltaY }, 
-                        end: { x: ent.end.x + deltaX, y: ent.end.y + deltaY } 
-                    } as any;
-                    if (ent.isFreehand && ent.inkPoints) {
-                        (updated as any).inkPoints = ent.inkPoints.map(p => ({ ...p, x: p.x + deltaX, y: p.y + deltaY }));
-                    }
-                } else if (ent.type === 'circle') {
-                    updated = { ...updated, center: { x: ent.center.x + deltaX, y: ent.center.y + deltaY } } as any;
-                } else if (ent.type === 'rectangle') {
-                    updated = { ...updated, p1: { x: ent.p1.x + deltaX, y: ent.p1.y + deltaY }, p2: { x: ent.p2.x + deltaX, y: ent.p2.y + deltaY } } as any;
-                } else if (ent.type === 'hatch') {
-                    const h = ent as any;
-                    updated = { ...updated, points: h.points ? h.points.map((p: Point) => ({ x: p.x + deltaX, y: p.y + deltaY })) : [] } as any;
-                } else if (ent.type === 'point' || ent.type === 'text' || ent.type === 'image') {
-                    updated = { ...updated, point: { x: ent.point.x + deltaX, y: ent.point.y + deltaY } } as any;
-                } else if (ent.type === 'arc') {
-                    updated = { ...updated, center: { x: ent.center.x + deltaX, y: ent.center.y + deltaY } } as any;
-                } else if (ent.type === 'dimension') {
-                    updated = { 
-                        ...updated, 
-                        start: { x: ent.start.x + deltaX, y: ent.start.y + deltaY }, 
-                        end: { x: ent.end.x + deltaX, y: ent.end.y + deltaY } 
-                    } as any;
-                }
-
-                // Generic check for points, bimPoints and holes (e.g. rooms, custom elements shape translation)
-                if ((ent as any).bimPoints) {
-                    (updated as any).bimPoints = (ent as any).bimPoints.map((p: Point) => ({ x: p.x + deltaX, y: p.y + deltaY }));
-                }
-                if ((ent as any).points && (ent as any).type !== 'hatch') {
-                    (updated as any).points = (ent as any).points.map((p: Point) => ({ x: p.x + deltaX, y: p.y + deltaY }));
-                }
-                if ((ent as any).holes) {
-                    (updated as any).holes = (ent as any).holes.map((hole: Point[]) => hole.map((p: Point) => ({ x: p.x + deltaX, y: p.y + deltaY })));
-                }
-
-                return updated;
+                return shiftEntityByDelta(ent, deltaX, deltaY);
             }
             return ent;
         });
@@ -11522,9 +11531,10 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
                 return prev.filter(ent => !ids.includes(ent.id));
             });
         } else if (activeTool === 'Move' || activeTool === 'Copy') {
-            setDragEntityIds(ids);
-            if (activeTool === 'Copy') {
-                setCopySourceEntityIds(ids);
+            if (activeTool === 'Move') {
+                setMoveSourceEntityIds(prev => Array.from(new Set([...prev, ...ids])));
+            } else {
+                setCopySourceEntityIds(prev => Array.from(new Set([...prev, ...ids])));
             }
         } else if (activeTool === 'Join') {
             setDragEntityIds(prev => Array.from(new Set([...prev, ...ids])));
@@ -11755,6 +11765,49 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
       }
   };
 
+  const handleMoveToolAction = () => {
+      const sourceIds = moveSourceEntityIds.length > 0 
+          ? moveSourceEntityIds 
+          : (selectedEntityIds.length > 0 ? selectedEntityIds : []);
+
+      if (movePhase === 'idle') {
+          if (sourceIds.length > 0) {
+              setMoveSourceEntityIds(sourceIds);
+              setMovePhase('selectBasePoint');
+              setStatusMessage("Ora clicca sul punto base di spostamento.");
+          } else {
+              setStatusMessage("Nessun oggetto selezionato. Seleziona gli oggetti da spostare, poi premi destro o invio.");
+          }
+      } else if (movePhase === 'selectBasePoint') {
+          // If the user right-clicks or presses enter while prompted for a base point,
+          // they want to finish/cancel the move operation.
+          setMovePhase('idle');
+          setStatusMessage(null);
+          setMoveSourceEntityIds([]);
+          setDragEntityId(null);
+          dragEntityIdRef.current = null;
+          setDragEntityIds([]);
+          dragEntityIdsRef.current = [];
+          setActiveMoveSnapPoint(null);
+          setMoveBasePoint(null);
+      } else if (movePhase === 'selectDestinationPoint') {
+          // Confirm movement at current position
+          setEntities(prev => {
+              onCommitHistory?.(prev);
+              return [...prev];
+          });
+          setMovePhase('idle');
+          setStatusMessage(null);
+          setMoveSourceEntityIds([]);
+          setDragEntityId(null);
+          dragEntityIdRef.current = null;
+          setDragEntityIds([]);
+          dragEntityIdsRef.current = [];
+          setActiveMoveSnapPoint(null);
+          setMoveBasePoint(null);
+      }
+  };
+
   const handleContextMenu = (e: React.MouseEvent) => {
     e.preventDefault();
 
@@ -11787,6 +11840,12 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
     // Se siamo nello stato di selezione oggetti per Copia, il testo destro conferma
     if (activeTool === 'Copy') {
         handleCopyToolAction();
+        return;
+    }
+
+    // Se siamo nello stato di selezione oggetti per Sposta (Move), il tasto destro conferma
+    if (activeTool === 'Move') {
+        handleMoveToolAction();
         return;
     }
 
@@ -11850,9 +11909,9 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
         dragTavolaIdRef.current = null;
       }
       if (dragEntityId && (activeTool === 'Move' || activeTool === 'Copy')) {
-        if (activeTool === 'Copy') {
-          // In Copy mode, dropping and cloning are handled entirely by clicking (mousedown).
-          // We must never clear or stop dragging on mouseup (no action on mouseup for Copy tool).
+        if (activeTool === 'Copy' || activeTool === 'Move') {
+          // In Copy/Move mode, dropping is handled entirely by clicking (mousedown) or confirmations.
+          // We must never clear or stop dragging on mouseup.
           return;
         }
         setDragEntityId(null);
@@ -11898,6 +11957,9 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
         if (e.key === 'Enter') {
             if (activeTool === 'Copy') {
                 handleCopyToolAction();
+                return;
+            } else if (activeTool === 'Move') {
+                handleMoveToolAction();
                 return;
             }
         }
@@ -11981,6 +12043,15 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
                 dragEntityIdRef.current = null;
                 dragEntityIdsRef.current = [];
             }
+            if (activeTool === 'Move') {
+                setMovePhase('idle');
+                setMoveSourceEntityIds([]);
+                setMoveBasePoint(null);
+                setDragEntityId(null);
+                dragEntityIdRef.current = null;
+                dragEntityIdsRef.current = [];
+                setStatusMessage(null);
+            }
             if (activeTool === 'Specchio') {
                 setSpecchioState('axis_start');
                 setSpecchioAxisPt1(null);
@@ -12062,7 +12133,7 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
         window.removeEventListener('keydown', handleKeyDown);
         window.removeEventListener('keyup', handleKeyUp);
     };
-  }, [activeTool, dragEntityIds, entities, drawing, selectedParallelLine, showManualInput, orthoMode, setOrthoMode, tecnigrafoOrigin, lockedFocalPoint, activeMoveSnapPoint, hoverSnap, tecnigrafoLock, specchioMode, specchioSelectedIds, defaultLineStyle, setDefaultLineStyle, setActiveTool, copyPhase, copySourceEntityIds, selectedEntityIds, copyBasePoint]);
+  }, [activeTool, dragEntityIds, entities, drawing, selectedParallelLine, showManualInput, orthoMode, setOrthoMode, tecnigrafoOrigin, lockedFocalPoint, activeMoveSnapPoint, hoverSnap, tecnigrafoLock, specchioMode, specchioSelectedIds, defaultLineStyle, setDefaultLineStyle, setActiveTool, copyPhase, copySourceEntityIds, selectedEntityIds, copyBasePoint, movePhase, moveSourceEntityIds, moveBasePoint]);
 
     const moveLineParallel = (line: LineEntity, length: number, rawPoint: Point) => {
         const dxLine = line.end.x - line.start.x;
