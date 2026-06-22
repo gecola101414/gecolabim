@@ -2108,6 +2108,7 @@ const MASONRY_TYPES = [
             setIsBIMFinestreOpen={setIsBIMFinestreOpen}
             onOpen3DView={() => setIs3DViewOpen(true)}
             entities={entities}
+            setEntities={setEntities}
           />
         ) : (
           selectedCategoryTools.map((tool) => (

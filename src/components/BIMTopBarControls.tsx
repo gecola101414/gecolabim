@@ -32,11 +32,13 @@ import {
   Phone,
   Video,
   Cuboid,
-  Square
+  Square,
+  FolderOpen
 } from 'lucide-react';
 import { TEMPLATES, Template } from '../data/templates';
 import { Entity } from '../types';
 import { exportEntitiesToIFC } from '../utils/ifcExport';
+import { parseIFCContent } from '../utils/ifcImport';
 
 interface BIMTopBarControlsProps {
   selectedTool: string | null;
@@ -67,6 +69,7 @@ interface BIMTopBarControlsProps {
   setIsBIMFinestreOpen: (val: boolean) => void;
   onOpen3DView?: () => void;
   entities: Entity[];
+  setEntities?: React.Dispatch<React.SetStateAction<Entity[]>>;
 }
 
 export const BIMTopBarControls: React.FC<BIMTopBarControlsProps> = ({
@@ -95,13 +98,51 @@ export const BIMTopBarControls: React.FC<BIMTopBarControlsProps> = ({
   setBimSymbolScale,
   setIsBIMFinestreOpen,
   onOpen3DView,
-  entities
+  entities,
+  setEntities
 }) => {
    const [activeDropdown, setActiveDropdown] = useState<
      'porte' | 'finestre' | 'arredi' | 'sanitari' | 'elettrico' | 'idraulico' | 'finiture' | 'vani' | null
    >(null);
 
   const containerRef = useRef<HTMLDivElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const handleImportIFC = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try {
+        const text = e.target?.result as string;
+        if (!text) return;
+        const imported = parseIFCContent(text);
+        if (imported.length === 0) {
+          alert("Nessun elemento geometrico BIM riconosciuto nel file IFC.");
+          return;
+        }
+
+        const msg = `Trovati ${imported.length} elementi BIM nel file IFC.\n\nVuoi AGGIUNGERLI al disegno corrente (fai click su OK) o SOSTITUIRE l'intero progetto esistente (fai click su Annulla)?`;
+        const joinCurrent = window.confirm(msg);
+
+        if (setEntities) {
+          if (joinCurrent) {
+            setEntities(prev => [...prev, ...imported]);
+          } else {
+            setEntities(imported);
+          }
+          alert("Progetto IFC importato con successo! ✅");
+        } else {
+          alert("Errore interno: setEntities non collegato.");
+        }
+      } catch (err: any) {
+        alert("Errore durante il parsing del file IFC: " + err.message);
+      }
+    };
+    reader.readAsText(file);
+    if (event.target) event.target.value = '';
+  };
 
   // Close dropdowns on clicking outside
   useEffect(() => {
@@ -710,6 +751,22 @@ export const BIMTopBarControls: React.FC<BIMTopBarControlsProps> = ({
       <div className="h-4 w-[1px] bg-neutral-300 mx-1" />
 
       {/* 9. THE 3D VISUALIZATION INTEGRATION */}
+      <input 
+        type="file" 
+        ref={fileInputRef} 
+        onChange={handleImportIFC} 
+        accept=".ifc" 
+        className="hidden" 
+      />
+
+      <button
+        onClick={() => fileInputRef.current?.click()}
+        className="w-7 h-7 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white font-extrabold flex justify-center items-center shadow-md transition hover:scale-105 cursor-pointer ml-2"
+        title="Importa file IFC"
+      >
+        <FolderOpen size={14} className="text-white drop-shadow-sm" />
+      </button>
+
       <button
         onClick={() => exportEntitiesToIFC(entities)}
         className="w-7 h-7 rounded-lg bg-green-600 hover:bg-green-700 text-white font-extrabold flex justify-center items-center shadow-md transition hover:scale-105 cursor-pointer ml-2"
