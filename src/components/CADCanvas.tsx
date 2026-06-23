@@ -19,6 +19,40 @@ const getEffectiveCADRenderWidth = (lw: number, mode: string | undefined, zoom: 
     return Math.max(0.2, lw / zoom);
 };
 
+const fastCloneEntity = (ent: Entity): Entity => {
+    const cloned = { ...ent } as any;
+    if (ent.type === 'line' || ent.type === 'dimension') {
+        cloned.start = { x: ent.start.x, y: ent.start.y };
+        cloned.end = { x: ent.end.x, y: ent.end.y };
+        if ((ent as any).isFreehand && (ent as any).inkPoints) {
+            (cloned as any).inkPoints = (ent as any).inkPoints.map((p: any) => ({ ...p }));
+        }
+    } else if (ent.type === 'circle' || ent.type === 'arc') {
+        cloned.center = { x: ent.center.x, y: ent.center.y };
+    } else if (ent.type === 'rectangle') {
+        cloned.p1 = { x: ent.p1.x, y: ent.p1.y };
+        cloned.p2 = { x: ent.p2.x, y: ent.p2.y };
+    } else if (ent.type === 'hatch') {
+        if ((ent as any).points) {
+            cloned.points = (ent as any).points.map((p: Point) => ({ x: p.x, y: p.y }));
+        }
+    } else if (ent.type === 'point' || ent.type === 'text' || ent.type === 'image') {
+        cloned.point = { x: ent.point.x, y: ent.point.y };
+    }
+    
+    // Generic elements
+    if ((ent as any).bimPoints) {
+        cloned.bimPoints = (ent as any).bimPoints.map((p: Point) => ({ x: p.x, y: p.y }));
+    }
+    if ((ent as any).points && ent.type !== 'hatch') {
+        cloned.points = (ent as any).points.map((p: Point) => ({ x: p.x, y: p.y }));
+    }
+    if ((ent as any).holes) {
+        cloned.holes = (ent as any).holes.map((hole: Point[]) => hole.map((p: Point) => ({ x: p.x, y: p.y })));
+    }
+    return cloned;
+};
+
 export interface CADCanvasAPI {
   getCurrentMousePosition: () => Point;
   rotateMaskAtPoint: (e: React.MouseEvent) => boolean;
@@ -71,6 +105,99 @@ const normalizeAngle = (a: number) => {
   let deg = a % 360;
   if (deg < 0) deg += 360;
   return deg;
+};
+
+const computeRealisticInkPoint = (
+  pts: Point[],
+  i: number,
+  mode: 'pencil' | 'ink',
+  zoom: number
+): { width: number; alpha: number } => {
+  if (pts.length < 2) {
+    return { width: 1.0, alpha: mode === 'ink' ? 0.95 : 0.5 };
+  }
+  const pPrev = i > 0 ? pts[i - 1] : pts[0];
+  const pCurr = pts[i];
+  const pNext = i < pts.length - 1 ? pts[i + 1] : pts[pts.length - 1];
+
+  // Calculate speed as distance in screen pixels to smooth out jitter
+  const d1 = i > 0 ? Math.sqrt(Math.pow(pCurr.x - pPrev.x, 2) + Math.pow(pCurr.y - pPrev.y, 2)) * zoom : 0;
+  const d2 = i < pts.length - 1 ? Math.sqrt(Math.pow(pNext.x - pCurr.x, 2) + Math.pow(pNext.y - pCurr.y, 2)) * zoom : 0;
+  
+  let dist = d1;
+  if (i === 0) dist = d2;
+  else if (i === pts.length - 1) dist = d1;
+  else dist = (d1 + d2) / 2; // local smooth average speed
+
+  let baseAlpha = 1.0;
+  let baseWidth = 1.0;
+
+  if (mode === 'ink') {
+    // Deterministic organic textures based on index 'i' to prevent flickering on redraws
+    const wave1 = Math.sin(i * 1.1);
+    const wave2 = Math.cos(i * 2.3);
+    const jitter = (wave1 * 0.04) + (wave2 * 0.02); // subtle bleeding/shake
+
+    if (dist < 2.5) {
+      // Extremely slow: rich thick black ink flow with slight natural pooling/bleeding (sbavatura)
+      baseAlpha = 1.0;
+      baseWidth = 1.28 + jitter;
+    } else if (dist < 7.0) {
+      // Slow-medium normal: nice dense black
+      const t = (dist - 2.5) / 4.5;
+      baseAlpha = (1.0 * (1 - t)) + (0.92 * t);
+      baseWidth = (1.28 * (1 - t)) + (1.06 * t) + (wave1 * 0.03);
+    } else if (dist < 18.0) {
+      // Fast: slightly thinner but solid and highly intense (fewer empty spots, increased intensity by 50%)
+      const t = (dist - 7.0) / 11.0;
+      baseAlpha = (0.92 * (1 - t)) + (0.76 * t);
+      baseWidth = (1.06 * (1 - t)) + (0.86 * t) + (wave1 * 0.03);
+      
+      // Sparse scratchy dropout - "qualche residuo non troppi"
+      const noise = (Math.sin(i * 1.7) + Math.cos(i * 2.9)) / 2; // -1 to 1
+      if (noise > 0.78) { // rare
+        baseAlpha = baseAlpha * 0.82; // mild texture drop instead of empty space
+        baseWidth = baseWidth * 0.92;
+      }
+    } else {
+      // Very fast: ink is a bit starved but still retains high intensity (50% higher than before)
+      const t = Math.min(1.0, (dist - 18.0) / 22.0);
+      baseAlpha = (0.76 * (1 - t)) + (0.58 * t);
+      baseWidth = (0.86 * (1 - t)) + (0.70 * t);
+      
+      // Rare scratched trace "giusto per dare il senso della kina reale con qualche sbavatura"
+      const noise = (Math.sin(i * 2.5) + Math.cos(i * 3.7)) / 2;
+      if (noise > 0.72) {
+        baseAlpha = baseAlpha * 0.62; // soft scratching
+        baseWidth = baseWidth * 0.82;
+      }
+    }
+  } else {
+    // Pencil mode: also has speed sensitivity but softer, lighter feel
+    if (dist < 3) {
+      baseAlpha = 0.75;
+      baseWidth = 1.1;
+    } else if (dist < 12) {
+      const t = (dist - 3) / 9;
+      baseAlpha = (0.75 * (1 - t)) + (0.48 * t);
+      baseWidth = (1.1 * (1 - t)) + (0.8 * t);
+    } else {
+      const t = Math.min(1, (dist - 12) / 20);
+      baseAlpha = (0.48 * (1 - t)) + (0.22 * t);
+      baseWidth = (0.8 * (1 - t)) + (0.5 * t);
+      
+      // Soft pencil texture noise
+      const noise = Math.sin(i * 1.9) * 0.5 + 0.5;
+      if (noise > 0.7) {
+        baseAlpha = baseAlpha * 0.6;
+      }
+    }
+  }
+
+  return {
+    width: Math.max(0.1, baseWidth),
+    alpha: Math.max(0.05, Math.min(1.0, baseAlpha))
+  };
 };
 
 const projectCADVertex = (entity: any, p: Point, localH: number = 0): Point => {
@@ -2712,6 +2839,8 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
   const skipToolResetRef = useRef<boolean>(false);
   const isStickyCopyRef = useRef<boolean>(false);
   const dragHasMovedRef = useRef<boolean>(false);
+  const lastDragMousePosRef = useRef<{ clientX: number; clientY: number; shiftKey: boolean; buttons: number } | null>(null);
+  const dragFrameRequestedRef = useRef<boolean>(false);
   const [drawing, setDrawing] = useState<DrawingState | null>(null);
   const drawingProgressRef = useRef(1);
   useEffect(() => {
@@ -3573,8 +3702,38 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
     const snaps: {point: Point, type: 'CAD' | 'smart', subtype?: string, refPoint?: Point, refEntityId?: string, constraintAxis?: 'x' | 'y'}[] = [];
     const keyPoints: Point[] = [];
     
+    // Spatial Culling Optimization: if entities dataset is large, pre-filter entities near the cursor to make snap queries instantly fast O(1)
+    let inputEntities = entities;
+    if (entities.length > 50) {
+        const cullingRadius = 500 / view.zoom;
+        inputEntities = entities.filter(ent => {
+            if (ent.type === 'line' || ent.type === 'dimension') {
+                const minX = Math.min(ent.start.x, ent.end.x);
+                const maxX = Math.max(ent.start.x, ent.end.x);
+                const minY = Math.min(ent.start.y, ent.end.y);
+                const maxY = Math.max(ent.start.y, ent.end.y);
+                return !(maxX < point.x - cullingRadius || minX > point.x + cullingRadius ||
+                         maxY < point.y - cullingRadius || minY > point.y + cullingRadius);
+            }
+            if (ent.type === 'circle' || ent.type === 'arc') {
+                const distSq = (ent.center.x - point.x) ** 2 + (ent.center.y - point.y) ** 2;
+                const radius = ent.radius || 0;
+                return distSq <= (cullingRadius + radius) ** 2;
+            }
+            if (ent.type === 'rectangle') {
+                const minX = Math.min(ent.p1.x, ent.p2.x);
+                const maxX = Math.max(ent.p1.x, ent.p2.x);
+                const minY = Math.min(ent.p1.y, ent.p2.y);
+                const maxY = Math.max(ent.p1.y, ent.p2.y);
+                return !(maxX < point.x - cullingRadius || minX > point.x + cullingRadius ||
+                         maxY < point.y - cullingRadius || minY > point.y + cullingRadius);
+            }
+            return true;
+        });
+    }
+
     // Project input entities so snap coordinates precisely match actual 2D projected/slanted geometry
-    const projectedEntities = entities.map(getProjectedEntity);
+    const projectedEntities = inputEntities.map(getProjectedEntity);
 
     // Only snap to visible and non-frozen layers
     const layerMapForVisible = new Map<string, Layer>(layers.map(l => [l.id, l]));
@@ -4212,8 +4371,8 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
     overrideConfig?: { type: 'curvo' | 'rettilineo' | 'taglia'; value: number },
     forceOriginalLines?: { originalLine1: LineEntity; originalLine2: LineEntity }
   ) => {
-    const line1 = (forceOriginalLines ? forceOriginalLines.originalLine1 : entities.find(e => e.id === id1)) as LineEntity | undefined;
-    const line2 = (forceOriginalLines ? forceOriginalLines.originalLine2 : entities.find(e => e.id === id2)) as LineEntity | undefined;
+    const line1 = (entities.find(e => e.id === id1) || (forceOriginalLines ? forceOriginalLines.originalLine1 : undefined)) as LineEntity | undefined;
+    const line2 = (entities.find(e => e.id === id2) || (forceOriginalLines ? forceOriginalLines.originalLine2 : undefined)) as LineEntity | undefined;
     if (!line1 || !line2 || line1.type !== 'line' || line2.type !== 'line') return;
 
     // 1. Find line-line intersection of the infinite lines
@@ -4234,26 +4393,83 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
     const intersectY = ((x1 * y2 - y1 * x2) * (y3 - y4) - (y1 - y2) * (x3 * y4 - y3 * x4)) / denom;
     const I = { x: intersectX, y: intersectY };
 
-    // 2. Determine ray directions V1 and V2 starting from I along the lines, away from I
-    const dStart1 = Math.sqrt((line1.start.x - I.x) ** 2 + (line1.start.y - I.y) ** 2);
-    const dEnd1 = Math.sqrt((line1.end.x - I.x) ** 2 + (line1.end.y - I.y) ** 2);
-    const farEndpoint1 = dStart1 > dEnd1 ? line1.start : line1.end;
-    const len1 = Math.max(dStart1, dEnd1);
-
-    const dStart2 = Math.sqrt((line2.start.x - I.x) ** 2 + (line2.start.y - I.y) ** 2);
-    const dEnd2 = Math.sqrt((line2.end.x - I.x) ** 2 + (line2.end.y - I.y) ** 2);
-    const farEndpoint2 = dStart2 > dEnd2 ? line2.start : line2.end;
-    const len2 = Math.max(dStart2, dEnd2);
-
-    if (len1 < 1e-3 || len2 < 1e-3) {
-      if (!existingRaccordoId) {
-        alert("Geometria di uno dei segmenti non valida.");
-      }
+    // 2. Determine projectively correct rays V1 and V2 pointing from I towards the active/clicked portion of each line
+    const dx1 = line1.end.x - line1.start.x;
+    const dy1 = line1.end.y - line1.start.y;
+    const lineLen1 = Math.sqrt(dx1 * dx1 + dy1 * dy1);
+    if (lineLen1 < 1e-3) {
+      if (!existingRaccordoId) alert("Geometria di uno dei segmenti non valida.");
       return;
     }
+    const U1 = { x: dx1 / lineLen1, y: dy1 / lineLen1 };
 
-    const V1 = { x: (farEndpoint1.x - I.x) / len1, y: (farEndpoint1.y - I.y) / len1 };
-    const V2 = { x: (farEndpoint2.x - I.x) / len2, y: (farEndpoint2.y - I.y) / len2 };
+    let V1: Point;
+    let Far1: Point;
+    let maxLen1: number;
+    let isStartFar1: boolean;
+
+    if (existingRaccordoId) {
+      // Robust Editing: Reconstruct original segment state directly using relative distances
+      // to avoid using stale clickPt coordinates after moving/modifying lines
+      const dStart = Math.sqrt((line1.start.x - I.x) ** 2 + (line1.start.y - I.y) ** 2);
+      const dEnd = Math.sqrt((line1.end.x - I.x) ** 2 + (line1.end.y - I.y) ** 2);
+      isStartFar1 = dStart > dEnd;
+      Far1 = isStartFar1 ? line1.start : line1.end;
+      maxLen1 = Math.max(dStart, dEnd);
+      V1 = {
+        x: (Far1.x - I.x) / (maxLen1 || 1),
+        y: (Far1.y - I.y) / (maxLen1 || 1)
+      };
+    } else {
+      // New raccordo creation based on clickPt coordinate branch selection
+      const dotClick1 = (clickPt1.x - I.x) * U1.x + (clickPt1.y - I.y) * U1.y;
+      V1 = {
+        x: dotClick1 >= 0 ? U1.x : -U1.x,
+        y: dotClick1 >= 0 ? U1.y : -U1.y
+      };
+      const projStart1 = (line1.start.x - I.x) * V1.x + (line1.start.y - I.y) * V1.y;
+      const projEnd1 = (line1.end.x - I.x) * V1.x + (line1.end.y - I.y) * V1.y;
+      isStartFar1 = projStart1 > projEnd1;
+      Far1 = isStartFar1 ? line1.start : line1.end;
+      maxLen1 = Math.max(projStart1, projEnd1);
+    }
+
+    const dx2 = line2.end.x - line2.start.x;
+    const dy2 = line2.end.y - line2.start.y;
+    const lineLen2 = Math.sqrt(dx2 * dx2 + dy2 * dy2);
+    if (lineLen2 < 1e-3) {
+      if (!existingRaccordoId) alert("Geometria di uno dei segmenti non valida.");
+      return;
+    }
+    const U2 = { x: dx2 / lineLen2, y: dy2 / lineLen2 };
+
+    let V2: Point;
+    let Far2: Point;
+    let maxLen2: number;
+    let isStartFar2: boolean;
+
+    if (existingRaccordoId) {
+      const dStart = Math.sqrt((line2.start.x - I.x) ** 2 + (line2.start.y - I.y) ** 2);
+      const dEnd = Math.sqrt((line2.end.x - I.x) ** 2 + (line2.end.y - I.y) ** 2);
+      isStartFar2 = dStart > dEnd;
+      Far2 = isStartFar2 ? line2.start : line2.end;
+      maxLen2 = Math.max(dStart, dEnd);
+      V2 = {
+        x: (Far2.x - I.x) / (maxLen2 || 1),
+        y: (Far2.y - I.y) / (maxLen2 || 1)
+      };
+    } else {
+      const dotClick2 = (clickPt2.x - I.x) * U2.x + (clickPt2.y - I.y) * U2.y;
+      V2 = {
+        x: dotClick2 >= 0 ? U2.x : -U2.x,
+        y: dotClick2 >= 0 ? U2.y : -U2.y
+      };
+      const projStart2 = (line2.start.x - I.x) * V2.x + (line2.start.y - I.y) * V2.y;
+      const projEnd2 = (line2.end.x - I.x) * V2.x + (line2.end.y - I.y) * V2.y;
+      isStartFar2 = projStart2 > projEnd2;
+      Far2 = isStartFar2 ? line2.start : line2.end;
+      maxLen2 = Math.max(projStart2, projEnd2);
+    }
 
     // 3. Compute angle theta between V1 and V2
     const cosTheta = Math.max(-1, Math.min(1, V1.x * V2.x + V1.y * V2.y));
@@ -4280,23 +4496,13 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
       T = pVal;
     }
 
-    // 4. Determine endpoints that lie on the rays pointing away from I
-    const dot1 = (x1 - I.x) * V1.x + (y1 - I.y) * V1.y;
-    const dot2 = (x2 - I.x) * V1.x + (y2 - I.y) * V1.y;
-    const farEndpoint1_proj = dot1 > dot2 ? line1.start : line1.end;
-    const maxLen1 = Math.max(dot1, dot2);
-
-    const dot3 = (x3 - I.x) * V2.x + (y3 - I.y) * V2.y;
-    const dot4 = (x4 - I.x) * V2.x + (y4 - I.y) * V2.y;
-    const farEndpoint2_proj = dot3 > dot4 ? line2.start : line2.end;
-    const maxLen2 = Math.max(dot3, dot4);
-
-    // Check if configuration parameter is too large
-    if (T > maxLen1 || T > maxLen2) {
+    // 4. Soft clamp T dynamically to prevent reversing or crashing, leaving at least 0.5cm of segments
+    const maxAllowedT = Math.max(0.1, Math.min(maxLen1, maxLen2) - 0.5);
+    if (T > maxAllowedT) {
       if (!existingRaccordoId) {
-        alert(`Il parametro inserito (${pVal} cm - offset ${T.toFixed(1)} cm) è troppo grande rispetto alla lunghezza di una delle due linee.`);
+        alert(`Il parametro inserito (${pVal} cm - offset ${T.toFixed(1)} cm) è troppo grande rispetto alla lunghezza di una delle due linee. Sarà applicato il valore massimo di ${(maxAllowedT * (config.type === 'curvo' ? Math.tan(theta/2) : 1)).toFixed(1)} cm.`);
       }
-      return;
+      T = maxAllowedT;
     }
 
     // 5. New clipped endpoints on both segments
@@ -4306,17 +4512,17 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
     // Commit history
     onCommitHistory?.(entities);
 
-    // Prepare modified lines
+    // Prepare modified lines preserving original start/end directions to avoid flipping line orientations
     const updatedLine1: LineEntity = {
       ...line1,
-      start: farEndpoint1,
-      end: C1
+      start: isStartFar1 ? Far1 : C1,
+      end: isStartFar1 ? C1 : Far1
     };
 
     const updatedLine2: LineEntity = {
       ...line2,
-      start: farEndpoint2,
-      end: C2
+      start: isStartFar2 ? Far2 : C2,
+      end: isStartFar2 ? C2 : Far2
     };
 
     const defaultOriginalLine1 = forceOriginalLines ? forceOriginalLines.originalLine1 : JSON.parse(JSON.stringify(line1));
@@ -4329,7 +4535,7 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
       originalLine2: defaultOriginalLine2,
       clickPt1,
       clickPt2,
-      config: { type: config.type, value: config.value }
+      config: { type: config.type, value: config.type === 'curvo' && T === maxAllowedT ? T * Math.tan(theta/2) : config.value }
     };
 
     let newConnector: Entity;
@@ -4391,6 +4597,8 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
       } as LineEntity;
     }
 
+    const shouldAddConnector = !isBothWalls && T > 0.001;
+
     setEntities(prev => {
       // 1. Remove existing raccordo for this pair OR the specific existingRaccordoId being edited
       const filtered = prev.filter(ent => {
@@ -4401,87 +4609,91 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
               if (isSamePair) return false;
           }
           
-          // Improved Precise Trimming: Identify and remove overlapping residues or collinear tails
-          if (ent.type === 'line' && ent.id !== id1 && ent.id !== id2) {
+          // Improved Precise Trimming: Identify and remove overlapping residues or collinear tails with a robust 1.5cm tolerance
+          if (ent.type === 'line' && ent.id !== id1 && ent.id !== id2 && (!ent.isBIM || ent.bimType !== 'wall')) {
              const l = ent as LineEntity;
+             const tolerance = 1.5; // robust tolerance in cm
              
-             // Tolerance for collinearity should be very tight now that I is high-precision
-             const tolerance = 0.05; 
-             
-             // Check Line 1 collinearity
+             // Check Line 1 collinearity with robust distance check (projection along V1 relative to I)
              const distStart1 = Math.abs((l.start.x - I.x) * V1.y - (l.start.y - I.y) * V1.x);
              const distEnd1 = Math.abs((l.end.x - I.x) * V1.y - (l.end.y - I.y) * V1.x);
              if (distStart1 < tolerance && distEnd1 < tolerance) {
-                 const dotS = (l.start.x - I.x) * V1.x + (l.start.y - I.y) * V1.y;
-                 const dotE = (l.end.x - I.x) * V1.x + (l.end.y - I.y) * V1.y;
-                 // If the whole line is on the wrong side relative to I (towards V1), remove it
-                 if (dotS < tolerance && dotE < tolerance) return false;
+                 const projS = (l.start.x - I.x) * V1.x + (l.start.y - I.y) * V1.y;
+                 const projE = (l.end.x - I.x) * V1.x + (l.end.y - I.y) * V1.y;
+                 // If both endpoints are completely on the discard side of C1, delete the line
+                 if (projS < T - 0.1 && projE < T - 0.1) {
+                     // Only delete if it belongs to the corner (at least one endpoint has projection > -100cm from intersection I)
+                     if (projS > -100.0 || projE > -100.0) return false;
+                 }
              }
 
              // Check Line 2 collinearity
              const distStart2 = Math.abs((l.start.x - I.x) * V2.y - (l.start.y - I.y) * V2.x);
              const distEnd2 = Math.abs((l.end.x - I.x) * V2.y - (l.end.y - I.y) * V2.x);
              if (distStart2 < tolerance && distEnd2 < tolerance) {
-                 const dotS = (l.start.x - I.x) * V2.x + (l.start.y - I.y) * V2.y;
-                 const dotE = (l.end.x - I.x) * V2.x + (l.end.y - I.y) * V2.y;
-                 if (dotS < tolerance && dotE < tolerance) return false;
+                 const projS = (l.start.x - I.x) * V2.x + (l.start.y - I.y) * V2.y;
+                 const projE = (l.end.x - I.x) * V2.x + (l.end.y - I.y) * V2.y;
+                 // If both endpoints are completely on the discard side of C2, delete the line
+                 if (projS < T - 0.1 && projE < T - 0.1) {
+                     // Only delete if it belongs to the corner (at least one endpoint has projection > -100cm from intersection I)
+                     if (projS > -100.0 || projE > -100.0) return false;
+                 }
              }
           }
           return true;
       });
 
-      // 2. Identify the lines to update 
+      // 2. Identify the lines to update and trim any crossed collinear segments at C1 and C2
       const updated = filtered.map(ent => {
         if (ent.id === id1) return updatedLine1;
         if (ent.id === id2) return updatedLine2;
+        
+        // Also trim overlapping collinear lines
+        if (ent.type === 'line' && (!ent.isBIM || ent.bimType !== 'wall')) {
+           const l = ent as LineEntity;
+           const tolerance = 1.5;
+           
+           // Check Line 1 collinearity
+           const distStart1 = Math.abs((l.start.x - I.x) * V1.y - (l.start.y - I.y) * V1.x);
+           const distEnd1 = Math.abs((l.end.x - I.x) * V1.y - (l.end.y - I.y) * V1.x);
+           if (distStart1 < tolerance && distEnd1 < tolerance) {
+               const projS = (l.start.x - I.x) * V1.x + (l.start.y - I.y) * V1.y;
+               const projE = (l.end.x - I.x) * V1.x + (l.end.y - I.y) * V1.y;
+               
+               if (projS >= T - 0.1 && projE < T - 0.1) {
+                   return { ...l, end: C1 };
+               }
+               if (projE >= T - 0.1 && projS < T - 0.1) {
+                   return { ...l, start: C1 };
+               }
+           }
+           
+           // Check Line 2 collinearity
+           const distStart2 = Math.abs((l.start.x - I.x) * V2.y - (l.start.y - I.y) * V2.x);
+           const distEnd2 = Math.abs((l.end.x - I.x) * V2.y - (l.end.y - I.y) * V2.x);
+           if (distStart2 < tolerance && distEnd2 < tolerance) {
+               const projS = (l.start.x - I.x) * V2.x + (l.start.y - I.y) * V2.y;
+               const projE = (l.end.x - I.x) * V2.x + (l.end.y - I.y) * V2.y;
+               
+               if (projS >= T - 0.1 && projE < T - 0.1) {
+                   return { ...l, end: C2 };
+               }
+               if (projE >= T - 0.1 && projS < T - 0.1) {
+                   return { ...l, start: C2 };
+               }
+           }
+        }
+        
         return ent;
       });
       
-      const shouldAddConnector = !isBothWalls && T > 0.001;
       return (shouldAddConnector ? updated.concat(newConnector) : updated) as Entity[];
     });
 
-    // Smooth cinematic camera transition to the focal point of the raccordo
-    const canvas = canvasRef.current;
-    if (canvas) {
-      // Calculate a target zoom that puts the intersection point comfortably in view
-      // We aim for a zoom level that feels like a "macro" shot of the detail
-      const targetZoom = Math.min(2.5, 1.2); 
-      const targetPan = {
-          x: (canvas.width / 2) - I.x * targetZoom,
-          y: (canvas.height / 2) - I.y * targetZoom
-      };
-      
-      const startZoom = view.zoom;
-      const startPan = { ...view.pan };
-      const duration = 850; // Elegant, deliberate transition
-      const startTime = performance.now();
-      
-      const animate = (time: number) => {
-        const elapsed = time - startTime;
-        const progress = Math.min(elapsed / duration, 1);
-        
-        // Cinematic Ease Out Quint for smooth landing
-        const ease = 1 - Math.pow(1 - progress, 5);
-        
-        const currentZoom = startZoom + (targetZoom - startZoom) * ease;
-        const currentPan = {
-          x: startPan.x + (targetPan.x - startPan.x) * ease,
-          y: startPan.y + (targetPan.y - startPan.y) * ease
-        };
-        
-        setView({ zoom: currentZoom, pan: currentPan });
-        
-        if (progress < 1) {
-          requestAnimationFrame(animate);
-        }
-      };
-      
-      requestAnimationFrame(animate);
-    }
+
 
     // Automatically trigger edit if it's a new raccordo or has onEditRaccordo
-    if (onEditRaccordo) {
+    if (onEditRaccordo && shouldAddConnector) {
         onEditRaccordo(newConnector);
     }
   };
@@ -4638,7 +4850,8 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
             const g = Math.round(0 + (197 - 0) * flashIntensity);
             const b = Math.round(0 + (94 - 0) * flashIntensity);
             ctx.strokeStyle = `rgb(${r}, ${g}, ${b})`;
-            ctx.lineWidth = baseWidth + (2 + 3 * flashIntensity) / view.zoom;
+            // Use fine spessore minimo of 1px for green blinking
+            ctx.lineWidth = (1 / view.zoom) + (2 + 3 * flashIntensity) / view.zoom;
             ctx.shadowColor = `rgba(34, 197, 94, ${0.6 * flashIntensity})`;
             ctx.shadowBlur = 10 * flashIntensity;
         }
@@ -4655,28 +4868,33 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
             // Let the flashing styles take precedence for initial attention blink
           } else if (entity.type === 'hatch') {
             ctx.strokeStyle = '#22c55e'; // Green highlight for selected hatch
-            ctx.lineWidth = baseWidth + 3 / view.zoom;
+            ctx.lineWidth = 1.5 / view.zoom; // Spessore minimo
           } else {
             // Se fa parte della selezione multipla (prop) o trascinamento, usa il Verde pulsante come richiesto
             ctx.strokeStyle = isReallySelected ? `rgba(34, 197, 94, ${0.8 + 0.2 * pulse})` : '#fbbf24'; // Pulsing Green if captured, Amber if single select
-            ctx.lineWidth = baseWidth + (isReallySelected ? (4 + 2 * pulse) : 2) / view.zoom;
+            
+            // For pulsing/highlight green selection, use spessore minimo of 1.2px instead of object's actual wide stroke width
+            const hBaseWidth = isReallySelected ? (1.2 / view.zoom) : baseWidth;
+            ctx.lineWidth = hBaseWidth + (isReallySelected ? (3 + 1.5 * pulse) : 2) / view.zoom;
             if (isReallySelected) {
               ctx.shadowColor = 'rgba(34, 197, 94, 0.6)';
-              ctx.shadowBlur = 12 * pulse;
+              ctx.shadowBlur = 10 * pulse;
             }
           }
         } else if (activeTool === 'Dimension' && selectionMode === 'object' && entity.id === hoveredDimensionEntityId) {
             ctx.strokeStyle = '#22c55e'; // Green highlight for hovered entity in dimension object selection mode
-            ctx.lineWidth = baseWidth + 3 / view.zoom;
+            ctx.lineWidth = (1.2 / view.zoom) + 2 / view.zoom;
         } else if ((dragEntityIds.includes(entity.id) || entity.id === highlightedTrimLine?.id) && (activeTool === 'Move' || activeTool === 'Cancella' || activeTool === 'Join' || activeTool === 'Copy')) {
             ctx.strokeStyle = activeTool === 'Cancella' ? '#ef4444' : activeTool === 'Join' ? '#22c55e' : '#3b82f6';
-            ctx.lineWidth = baseWidth + 4 / view.zoom;
+            const isGreenHighlight = activeTool === 'Join';
+            const hBaseWidth = isGreenHighlight ? (1.2 / view.zoom) : baseWidth;
+            ctx.lineWidth = hBaseWidth + 3 / view.zoom;
         } else if (copySourceEntityIds.includes(entity.id) && activeTool === 'Copy') {
             ctx.strokeStyle = '#22c55e'; // Green highlight for original mother object(s)
-            ctx.lineWidth = baseWidth + 4 / view.zoom;
+            ctx.lineWidth = (1.2 / view.zoom) + 3 / view.zoom; // thin normal
         } else if (moveSourceEntityIds.includes(entity.id) && activeTool === 'Move') {
             ctx.strokeStyle = '#22c55e'; // Green highlight for original object(s) to move
-            ctx.lineWidth = baseWidth + 4 / view.zoom;
+            ctx.lineWidth = (1.2 / view.zoom) + 3 / view.zoom; // thin normal
         } else if (activeTool === 'Trim' && highlightedTrimSegment && entity.id === highlightedTrimLine?.id) {
             // Eraser highlight only
         }
@@ -5011,10 +5229,9 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
      
                       ctx.beginPath();
                       // Per i pennini Kina usiamo lo spessore pieno in modo più netto, calcolato con la nuova logica
-                      ctx.lineWidth = l.mode === 'ink' 
-                          ? getEffectiveCADRenderWidth(l.lineWidth, l.mode, view.zoom) * (0.8 + pt.width * 0.4)
+                      ctx.lineWidth = (isHighlighted || l.mode === 'ink')                          ? isHighlighted ? (1.5 / view.zoom) : (getEffectiveCADRenderWidth(l.lineWidth, l.mode, view.zoom) * (0.8 + pt.width * 0.4))
                           : Math.max(0.1, pt.width * (l.lineWidth / view.zoom));
-                      ctx.strokeStyle = isHighlighted ? highlightColor : (l.mode === 'ink' ? '#000000' : getAlphaColor(l.color, pt.alpha));
+                      ctx.strokeStyle = isHighlighted ? highlightColor : (l.mode === 'ink' ? getAlphaColor('#000000', pt.alpha) : getAlphaColor(l.color, pt.alpha));
                       ctx.moveTo(lastX, lastY);
                       ctx.lineTo(px, py);
                       ctx.stroke();
@@ -5041,8 +5258,8 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
                       const py = by + ny * wave;
 
                       ctx.beginPath();
-                      ctx.lineWidth = l.mode === 'ink'
-                          ? getEffectiveCADRenderWidth(l.lineWidth, l.mode, view.zoom)
+                      ctx.lineWidth = (isHighlighted || l.mode === 'ink')
+                          ? isHighlighted ? (1.5 / view.zoom) : getEffectiveCADRenderWidth(l.lineWidth, l.mode, view.zoom)
                           : Math.max(0.2, (0.5 + Math.random() * 0.5) * (l.lineWidth / view.zoom));
                       ctx.strokeStyle = isHighlighted ? highlightColor : (l.mode === 'ink' ? '#000000' : getAlphaColor(l.color, 0.3 + Math.random() * 0.4));
                       ctx.moveTo(lastX, lastY);
@@ -5430,181 +5647,183 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
       if (activeTool === 'Eraser') {
           ctx.save();
           
-          // 2. Draw classic beveled drafting erasers with pointed precision tip
-          // No more circle of influence as requested - the rubber itself is the guide.
           ctx.translate(eraserPos.x, eraserPos.y);
-          ctx.rotate(-Math.PI / 12); // subtle natural tilt
-
-          // Materialize them larger for better visibility
-          const w = 40 / view.zoom; 
-          const h = 12 / view.zoom;
+          ctx.rotate(-Math.PI / 8); // Nice pronounced natural tilt from right to left (leaning leftward)
 
           if (eraserType === 'pencil') {
-              // Kneaded eraser (gomma pane) look: light grey/off-white
-              // Draw main rubber wedge body
-              ctx.fillStyle = '#d9d9d9'; 
-              ctx.shadowBlur = 4 / view.zoom;
-              ctx.shadowColor = 'rgba(0,0,0,0.2)';
-              
-              ctx.beginPath();
-              // Pointed right to left: tip at (0,0)
-              ctx.moveTo(w, -h);
-              ctx.lineTo(w * 0.25, -h);
-              ctx.lineTo(0, 0); // precise sharp tip at cursor point (0,0)
-              ctx.lineTo(w * 0.25, h);
-              ctx.lineTo(w, h);
-              ctx.closePath();
-              ctx.fill();
+              // Classic grayish rectangular rubber eraser (e.g., Milan 430 style)
+              const ew = 42 / view.zoom; 
+              const eh = 24 / view.zoom;
 
-              // Add a grey smudge on the tip
-              ctx.fillStyle = '#a3a3a3';
-              ctx.beginPath();
-              ctx.arc(w * 0.05, 0, 2 / view.zoom, 0, Math.PI * 2);
-              ctx.fill();
-
-              // Shadow/bevel 3D facet (diagonal bevel)
-              ctx.fillStyle = '#e2e8f0'; 
-              ctx.beginPath();
-              ctx.moveTo(w * 0.25, -h);
-              ctx.lineTo(0, 0);
-              ctx.lineTo(w * 0.25, 0);
-              ctx.closePath();
-              ctx.fill();
-
-              // Royal blue paper sleeve wrap
-              ctx.fillStyle = '#1e3a8a'; 
-              ctx.beginPath();
-              ctx.moveTo(w * 1.05, -h * 1.1);
-              ctx.lineTo(w * 0.4, -h * 1.1);
-              ctx.lineTo(w * 0.4, h * 1.1);
-              ctx.lineTo(w * 1.05, h * 1.1);
-              ctx.closePath();
-              ctx.fill();
-
-              // Light blue stripe detail for professional look
-              ctx.fillStyle = '#3b82f6';
-              ctx.beginPath();
-              ctx.moveTo(w * 0.95, -h * 1.1);
-              ctx.lineTo(w * 0.8, -h * 1.1);
-              ctx.lineTo(w * 0.8, h * 1.1);
-              ctx.lineTo(w * 0.95, h * 1.1);
-              ctx.closePath();
-              ctx.fill();
-          } else if (eraserType === 'all') {
-              // Classic professional yellow drafting ink/china eraser with precision wedge tip
-              // Main yellow rubber wedge body
-              ctx.fillStyle = '#fbbf24'; // Bright yellow
-              ctx.shadowBlur = 4 / view.zoom;
-              ctx.shadowColor = 'rgba(0,0,0,0.2)';
-
-              ctx.beginPath();
-              ctx.moveTo(-w, -h);
-              ctx.lineTo(-w * 0.25, -h);
-              ctx.lineTo(0, 0); // precise sharp tip at cursor point (0,0)
-              ctx.lineTo(-w * 0.25, h);
-              ctx.lineTo(-w, h);
-              ctx.closePath();
-              ctx.fill();
-
-              // Bevel shadow
-              ctx.fillStyle = '#d97706'; 
-              ctx.beginPath();
-              ctx.moveTo(-w * 0.25, -h);
-              ctx.lineTo(0, 0);
-              ctx.lineTo(-w * 0.25, 0);
-              ctx.closePath();
-              ctx.fill();
-
-              // White cardboard sleeve
-              ctx.fillStyle = '#ffffff'; 
-              ctx.beginPath();
-              ctx.moveTo(-w * 1.05, -h * 1.1);
-              ctx.lineTo(-w * 0.4, -h * 1.1);
-              ctx.lineTo(-w * 0.4, h * 1.1);
-              ctx.lineTo(-w * 1.05, h * 1.1);
-              ctx.closePath();
-              ctx.fill();
-
-              // Technical brand graphic bar
-              ctx.fillStyle = '#334155';
-              ctx.beginPath();
-              ctx.moveTo(-w * 0.9, -h * 1.1);
-              ctx.lineTo(-w * 0.7, -h * 1.1);
-              ctx.lineTo(-w * 0.7, h * 1.1);
-              ctx.lineTo(-w * 0.9, h * 1.1);
-              ctx.closePath();
-              ctx.fill();
-
-              // Brand orange dot/accent
-              ctx.fillStyle = '#f97316';
-              ctx.beginPath();
-              ctx.arc(-w * 0.55, 0, 2 / view.zoom, 0, Math.PI * 2);
-              ctx.fill();
-          } else if (eraserType === 'lametta') {
-              // Classic metal razor blade (Lametta Gillette)
-              // We want the active corner (the tip of the sharp inclined edge) to be at (0,0)
-              // Let's draw it reaching up and to the right, tilted.
-              const rw = 32 / view.zoom;
-              const rh = 16 / view.zoom;
-
-              // Use a gradient for steel metal shine
-              const gradient = ctx.createLinearGradient(0, -rh, rw, 0);
-              gradient.addColorStop(0, '#e2e8f0'); // bright steel highlight
-              gradient.addColorStop(0.3, '#cbd5e1'); // brushed steel
-              gradient.addColorStop(0.5, '#94a3b8'); // steel shadow
-              gradient.addColorStop(0.7, '#cbd5e1'); // shiny light
-              gradient.addColorStop(1, '#64748b'); // dark edge
-
-              ctx.fillStyle = gradient;
-              ctx.strokeStyle = '#475569';
-              ctx.lineWidth = 1 / view.zoom;
               ctx.shadowBlur = 5 / view.zoom;
-              ctx.shadowColor = 'rgba(0,0,0,0.35)';
+              ctx.shadowColor = 'rgba(0,0,0,0.2)';
 
+              // Draw the main grayish rubber body
+              ctx.fillStyle = '#d4d4d8'; // Soft grigino gray
+              ctx.strokeStyle = '#a1a1aa';
+              ctx.lineWidth = 1 / view.zoom;
               ctx.beginPath();
-              // Back-right corner
-              ctx.moveTo(rw, -rh);
-              // Notched upper edge
-              ctx.lineTo(rw * 0.9, -rh * 1.05);
-              ctx.lineTo(rw * 0.1, -rh * 1.05);
-              // Left notched side
-              ctx.lineTo(0, -rh);
-              // Active inclined sharp edge of the blade ending exactly at (0,0)
-              ctx.lineTo(0, 0); // precise sharp corner at (0,0) for the erasing tip
-              ctx.lineTo(rw * 0.15, 0);
-              ctx.lineTo(rw, -rh * 0.1); 
+              // Round corners slightly for a realistic rubber look
+              if (ctx.roundRect) {
+                  ctx.roundRect(0, -eh, ew, eh, 3 / view.zoom);
+              } else {
+                  ctx.rect(0, -eh, ew, eh);
+              }
+              ctx.fill();
+              ctx.stroke();
+
+              // Add a nice 3D bevel/facet effect
+              ctx.fillStyle = '#e4e4e7'; // Lighter top-left bevel highlight
+              ctx.beginPath();
+              ctx.moveTo(0, -eh);
+              ctx.lineTo(ew, -eh);
+              ctx.lineTo(ew - 3/view.zoom, -eh + 4/view.zoom);
+              ctx.lineTo(3/view.zoom, -eh + 4/view.zoom);
+              ctx.closePath();
+              ctx.fill();
+
+              ctx.fillStyle = '#a1a1aa'; // Darker bottom-right shadow facet
+              ctx.beginPath();
+              ctx.moveTo(ew, -eh);
+              ctx.lineTo(ew, 0);
+              ctx.lineTo(ew - 3/view.zoom, -3/view.zoom);
+              ctx.lineTo(ew - 3/view.zoom, -eh + 3/view.zoom);
+              ctx.closePath();
+              ctx.fill();
+
+              // Red-blue sleeve / cardboard band wrap
+              ctx.shadowBlur = 0; // Disable shadow for internal details
+              ctx.fillStyle = '#1e40af'; // Royal blue paper sleeve
+              ctx.beginPath();
+              ctx.rect(ew * 0.45, -eh - 0.5/view.zoom, ew * 0.5, eh + 1/view.zoom);
+              ctx.fill();
+
+              // Draw white brand stripe
+              ctx.fillStyle = '#ffffff';
+              ctx.beginPath();
+              ctx.rect(ew * 0.65, -eh - 0.5/view.zoom, ew * 0.12, eh + 1/view.zoom);
+              ctx.fill();
+
+              // Text label "GECOLA" in nice small monospace text
+              ctx.fillStyle = '#ffffff';
+              ctx.font = `bold ${Math.max(5, 6 / view.zoom)}px sans-serif`;
+              ctx.textAlign = 'center';
+              ctx.fillText("GECOLA", ew * 0.58, -eh / 2 + 2/view.zoom);
+          } else if (eraserType === 'all') {
+              // Classic professional yellow drafting ink/china eraser (parallelepiped)
+              const ew = 44 / view.zoom; 
+              const eh = 22 / view.zoom;
+              const depth = 6 / view.zoom; // 3D depth offset
+
+              ctx.shadowBlur = 6 / view.zoom;
+              ctx.shadowColor = 'rgba(0,0,0,0.22)';
+
+              // Front face: fully yellow
+              ctx.fillStyle = '#fbbf24'; // Rich golden yellow
+              ctx.strokeStyle = '#d97706';
+              ctx.lineWidth = 1 / view.zoom;
+              ctx.beginPath();
+              ctx.rect(0, -eh, ew, eh);
+              ctx.fill();
+              ctx.stroke();
+
+              // Top face (for 3D parallelepiped effect)
+              ctx.fillStyle = '#fef08a'; // Bright yellow highlight
+              ctx.beginPath();
+              ctx.moveTo(0, -eh);
+              ctx.lineTo(depth, -eh - depth);
+              ctx.lineTo(ew + depth, -eh - depth);
+              ctx.lineTo(ew, -eh);
               ctx.closePath();
               ctx.fill();
               ctx.stroke();
 
-              // Detailing - Draw the distinctive brand cut-out in the center of the Gillette blade
-              ctx.shadowColor = 'transparent'; // no shadow for internal cuts
-              ctx.fillStyle = '#1e293b'; // transparent dark slot look
-              
-              // Draw central slot and diamonds
+              // Side face (for 3D parallelepiped effect)
+              ctx.fillStyle = '#ca8a04'; // Dark yellow shadow
               ctx.beginPath();
-              // Slot rectangle
-              ctx.rect(rw * 0.25, -rh * 0.6, rw * 0.5, rh * 0.2);
+              ctx.moveTo(ew, -eh);
+              ctx.lineTo(ew + depth, -eh - depth);
+              ctx.lineTo(ew + depth, -depth);
+              ctx.lineTo(ew, 0);
+              ctx.closePath();
               ctx.fill();
+              ctx.stroke();
 
-              // Left circle/diamond notch
-              ctx.beginPath();
-              ctx.arc(rw * 0.35, -rh * 0.5, rh * 0.15, 0, Math.PI * 2);
-              ctx.arc(rw * 0.65, -rh * 0.5, rh * 0.15, 0, Math.PI * 2);
-              ctx.fill();
-
-              // Blade branding "GILLETTE" text (inline with classic fonts)
-              ctx.fillStyle = '#334155';
-              ctx.font = `bold ${Math.max(6, 6 / view.zoom)}px monospace`;
+              // Add some brown text on front yellow face, like "CHINA"
+              ctx.shadowBlur = 0;
+              ctx.fillStyle = '#78350f';
+              ctx.font = `bold ${Math.max(6, 7 / view.zoom)}px monospace`;
               ctx.textAlign = 'center';
-              ctx.fillText("GILLETTE", rw * 0.5, -rh * 0.2);
+              ctx.fillText("CHINA", ew / 2, -eh / 2 + 2/view.zoom);
+          } else if (eraserType === 'lametta') {
+              // Classic metal razor blade (Lametta Gillette)
+              const rw = 72 / view.zoom;
+              const rh = 34 / view.zoom;
 
-              // Draw the sharp edge highlight line on the active cutting side
-              ctx.strokeStyle = '#ffffff';
-              ctx.lineWidth = 1.5 / view.zoom;
+              ctx.shadowBlur = 4 / view.zoom;
+              ctx.shadowColor = 'rgba(0,0,0,0.3)';
+
+              // Stainless steel gradient
+              const gradient = ctx.createLinearGradient(0, -rh, rw, 0);
+              gradient.addColorStop(0, '#f1f5f9'); // Brilliant shine
+              gradient.addColorStop(0.3, '#cbd5e1'); // Metal grey
+              gradient.addColorStop(0.6, '#94a3b8'); // Steel shade
+              gradient.addColorStop(1, '#cbd5e1'); // Shiny edge
+
+              ctx.fillStyle = gradient;
+              ctx.strokeStyle = '#475569';
+              ctx.lineWidth = 1 / view.zoom;
+
               ctx.beginPath();
-              ctx.moveTo(0, 0);
-              ctx.lineTo(rw * 0.15, 0);
+              // Rounded corner bevels for classic razor blade shape
+              ctx.moveTo(0, 0); // Precise active cutting corner at y=0, x=0
+              ctx.lineTo(rw, 0);
+              ctx.lineTo(rw, -rh * 0.1);
+              ctx.lineTo(rw * 0.96, -rh * 0.15);
+              ctx.lineTo(rw * 0.96, -rh * 0.85);
+              ctx.lineTo(rw, -rh * 0.9);
+              ctx.lineTo(rw, -rh);
+              ctx.lineTo(0, -rh);
+              ctx.lineTo(0, -rh * 0.9);
+              ctx.lineTo(rw * 0.04, -rh * 0.85);
+              ctx.lineTo(rw * 0.04, -rh * 0.15);
+              ctx.lineTo(0, -rh * 0.1);
+              ctx.closePath();
+              ctx.fill();
+              ctx.stroke();
+
+              // Gillette's signature central cutout slot
+              ctx.shadowBlur = 0;
+              ctx.fillStyle = '#0f172a'; // Dark backdrop for slot hole
+              
+              const sw = rw * 0.55;
+              const sh = rh * 0.15;
+              const sx = rw * 0.225;
+              const sy = -rh * 0.58;
+              
+              ctx.beginPath();
+              ctx.rect(sx, sy, sw, sh);
+              ctx.fill();
+
+              // Diamond cutouts inside slot
+              ctx.beginPath();
+              ctx.arc(sx + sw * 0.15, sy + sh/2, sh * 1.05, 0, Math.PI * 2);
+              ctx.arc(sx + sw * 0.5, sy + sh/2, sh * 1.05, 0, Math.PI * 2);
+              ctx.arc(sx + sw * 0.85, sy + sh/2, sh * 1.05, 0, Math.PI * 2);
+              ctx.fill();
+
+              // Engraving/Text brand: "GILETTE"
+              ctx.fillStyle = '#334155';
+              ctx.font = `bold ${Math.max(5, 5.5 / view.zoom)}px monospace`;
+              ctx.textAlign = 'center';
+              ctx.fillText("GILETTE", rw * 0.5, -rh * 0.25);
+
+              // Sharp shaving edge highlights
+              ctx.strokeStyle = '#ffffff';
+              ctx.lineWidth = 1.2 / view.zoom;
+              ctx.beginPath();
+              ctx.moveTo(rw * 0.05, 0);
+              ctx.lineTo(rw * 0.95, 0);
               ctx.stroke();
           }
 
@@ -5884,21 +6103,34 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
         if (drawing.isFreehand && drawing.freehandPoints && drawing.freehandPoints.length > 1) {
             ctx.save();
             ctx.setLineDash([]);
-            const baseWidth = defaultLineStyle.mode === 'ink'
-                ? getEffectiveCADRenderWidth(defaultLineStyle.lineWidth, defaultLineStyle.mode, view.zoom)
-                : Math.max(0.4, 0.7 * (defaultLineStyle.lineWidth / view.zoom));
             
-            ctx.lineWidth = baseWidth;
-            ctx.strokeStyle = isLavagna ? '#FAF9F6' : (defaultLineStyle.mode === 'ink' 
-                ? '#000000' 
-                : getAlphaColor(defaultLineStyle.color, 0.6));
-            
-            ctx.beginPath();
-            ctx.moveTo(drawing.freehandPoints[0].x, drawing.freehandPoints[0].y);
+            let lastX = drawing.freehandPoints[0].x;
+            let lastY = drawing.freehandPoints[0].y;
             for (let i = 1; i < drawing.freehandPoints.length; i++) {
-                ctx.lineTo(drawing.freehandPoints[i].x, drawing.freehandPoints[i].y);
+                const pt = drawing.freehandPoints[i];
+                const px = pt.x;
+                const py = pt.y;
+                
+                const style = computeRealisticInkPoint(drawing.freehandPoints, i, defaultLineStyle.mode === 'ink' ? 'ink' : 'pencil', view.zoom);
+                
+                ctx.beginPath();
+                ctx.lineWidth = defaultLineStyle.mode === 'ink'
+                    ? (getEffectiveCADRenderWidth(defaultLineStyle.lineWidth, defaultLineStyle.mode, view.zoom) * (0.8 + style.width * 0.4))
+                    : Math.max(0.1, style.width * (defaultLineStyle.lineWidth / view.zoom));
+                
+                ctx.strokeStyle = isLavagna 
+                    ? getAlphaColor('#FAF9F6', style.alpha) 
+                    : (defaultLineStyle.mode === 'ink' 
+                        ? getAlphaColor('#000000', style.alpha) 
+                        : getAlphaColor(defaultLineStyle.color, style.alpha));
+                
+                ctx.moveTo(lastX, lastY);
+                ctx.lineTo(px, py);
+                ctx.stroke();
+                
+                lastX = px;
+                lastY = py;
             }
-            ctx.stroke();
             ctx.restore();
         } else {
             ctx.strokeStyle = drawing.isVirtual
@@ -7560,45 +7792,82 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
         }
         lastEraserExecutionTime.current = Date.now();
         const isLametta = eraserType === 'lametta';
-        const radius = isLametta ? (10.0 / view.zoom) : (eraserRadius / view.zoom);
-        const decrement = isLametta ? 1.1 : (eraserIntensity / 100);
+        
+        // Precision Gillette razor blade erases at a super tiny pinpoint 1.6px radius
+        const radius = isLametta ? (1.6 / view.zoom) : (eraserRadius / view.zoom);
         const now = Date.now();
         
+        const getBaseEntityId = (id: string): string => {
+            const markers = ['_out_', '_in_', '_rect_', '_arc_', '_fsplit_'];
+            let currentId = id;
+            for (const marker of markers) {
+                const idx = currentId.indexOf(marker);
+                if (idx !== -1) {
+                    currentId = currentId.substring(0, idx);
+                }
+            }
+            return currentId;
+        };
+
         let changed = false;
         const newEntities: Entity[] = [];
 
         for (const ent of entitiesRef.current) {
-            // Check if we should ignore this entity based on eraser type
-            // White pencil eraser only cancels pencil lines
             const isPencilEntity = (ent as any).mode === 'pencil';
+            const isInkEntity = (ent as any).mode === 'ink';
             
+            // 1. Gray pencil eraser only cancels pencil lines
             if (eraserType === 'pencil') {
-                // If it's a white eraser, it ONLY affects pencil lines.
-                // It must IGNORE ink/china and CAD/BIM/Text entities.
                 if (!isPencilEntity) {
                     newEntities.push(ent);
                     continue;
                 }
             }
-            // If eraserType is 'all' (Yellow), it affects everything, so no skip.
+            
+            // 2. Yellow eraser only cancels ink/china lines
+            if (eraserType === 'all') {
+                if (!isInkEntity) {
+                    newEntities.push(ent);
+                    continue;
+                }
+            }
+            
+            // 3. Gillette blade (lametta) cancels everything at its sharp pinpoint corner, so no skip.
+
+            const baseId = getBaseEntityId(ent.id);
 
             if (ent.type === 'line') {
                 if (ent.inkPoints) {
-                    // ANY line with inkPoints (freehand or straight with wave effect)
-                    // fade individual points inside the eraser circle!
+                    // Freehand lines (pencil or ink)
                     let pointHit = false;
                     const updatedPoints = ent.inkPoints.map((pt, i) => {
                         const dist = Math.sqrt((rawPoint.x - pt.x)**2 + (rawPoint.y - pt.y)**2);
                         if (dist <= radius) {
                             const pointKey = `${ent.id}_${i}`;
                             const lastErase = lastEraseTimeByPoint.current[pointKey] || 0;
-                            if (now - lastErase > (isLametta ? 0 : 450)) {
-                                if (!isLametta) {
-                                    lastEraseTimeByPoint.current[pointKey] = now;
-                                }
+                            const cooldown = isLametta ? 120 : 350; // faster, responsive for lametta
+                            if (now - lastErase > cooldown) {
+                                lastEraseTimeByPoint.current[pointKey] = now;
                                 pointHit = true;
-                                // Decrease opacity (alpha) of this freehand step by decrement value!
-                                const nextAlpha = Math.max(0, pt.alpha - decrement);
+                                let nextAlpha = pt.alpha;
+                                if (eraserType === 'pencil') {
+                                    if (pt.alpha > 0.6) {
+                                        nextAlpha = 0.5; // First pass leaves a gray residue
+                                    } else {
+                                        nextAlpha = 0; // Second pass removes completely
+                                    }
+                                } else if (eraserType === 'all') {
+                                    if (pt.alpha > 0.75) {
+                                        nextAlpha = 0.66; // First pass residue
+                                    } else if (pt.alpha > 0.4) {
+                                        nextAlpha = 0.33; // Second pass residue
+                                    } else {
+                                        nextAlpha = 0; // Third pass removes completely
+                                    }
+                                } else if (eraserType === 'lametta') {
+                                    // Lametta leaves a very faint scratched trace, consumed paper effect!
+                                    nextAlpha = 0.15; 
+                                }
                                 return { ...pt, alpha: nextAlpha };
                             }
                         }
@@ -7607,14 +7876,36 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
                     
                     if (pointHit) {
                         changed = true;
-                        // Filter out sequences of consecutive points that are completely invisible
-                        const allTransparent = updatedPoints.every(pt => pt.alpha <= 0.05);
-                        if (!allTransparent) {
-                            newEntities.push({
-                                ...ent,
-                                inkPoints: updatedPoints
-                            });
+                        
+                        // Physically split the freehand line into separate entities at any erased points (alpha <= 0.05)
+                        const subArrays: typeof ent.inkPoints[] = [];
+                        let currentSub: typeof ent.inkPoints = [];
+                        
+                        for (const pt of updatedPoints) {
+                            if (pt.alpha > 0.05) {
+                                currentSub.push(pt);
+                            } else {
+                                if (currentSub.length > 0) {
+                                    subArrays.push(currentSub);
+                                    currentSub = [];
+                                }
+                            }
                         }
+                        if (currentSub.length > 0) {
+                            subArrays.push(currentSub);
+                        }
+                        
+                        subArrays.forEach((sub, idx) => {
+                            if (sub.length > 0) {
+                                newEntities.push({
+                                    ...ent,
+                                    id: ent.id + `_fsplit_${idx}_` + Math.random(),
+                                    start: { x: sub[0].x, y: sub[0].y },
+                                    end: { x: sub[sub.length - 1].x, y: sub[sub.length - 1].y },
+                                    inkPoints: sub
+                                });
+                            }
+                        });
                     } else {
                         newEntities.push(ent);
                     }
@@ -7623,7 +7914,7 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
                     const splitResult = splitLineSegmentWithCircle(ent.start, ent.end, rawPoint, radius);
                     if (splitResult.inside.length > 0) {
                         changed = true;
-                        // Keep outside segments completely untouched (original opacity maintained!)
+                        // Keep outside segments completely untouched
                         splitResult.outside.forEach((seg, i) => {
                             newEntities.push({
                                 ...ent,
@@ -7634,8 +7925,32 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
                         });
                         // Fade inside segments
                         splitResult.inside.forEach((seg, i) => {
+                            const lastErase = lastEraseTimeByEntityId.current[baseId] || 0;
                             const currentOpacity = ent.opacity !== undefined ? ent.opacity : 1.0;
-                            const nextOpacity = currentOpacity - decrement;
+                            let nextOpacity = currentOpacity;
+                            
+                            const cooldown = isLametta ? 120 : 350;
+                            if (now - lastErase > cooldown) {
+                                if (eraserType === 'pencil') {
+                                    if (currentOpacity > 0.6) {
+                                        nextOpacity = 0.5; // First pass residue
+                                    } else {
+                                        nextOpacity = 0; // Second pass removes completely
+                                    }
+                                } else if (eraserType === 'all') {
+                                    if (currentOpacity > 0.75) {
+                                        nextOpacity = 0.66; // First pass residue
+                                    } else if (currentOpacity > 0.4) {
+                                        nextOpacity = 0.33; // Second pass residue
+                                    } else {
+                                        nextOpacity = 0; // Third pass removes completely
+                                    }
+                                } else if (eraserType === 'lametta') {
+                                    nextOpacity = 0.15; // Lametta leaves faint scratched trace
+                                }
+                                lastEraseTimeByEntityId.current[baseId] = now;
+                            }
+                            
                             if (nextOpacity > 0.05) {
                                 newEntities.push({
                                     ...ent,
@@ -7670,8 +7985,32 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
                     });
                     // Inside parts are kept and faded
                     splitRes.inside.forEach((interval, i) => {
+                        const lastErase = lastEraseTimeByEntityId.current[baseId] || 0;
                         const currentOpacity = ent.opacity !== undefined ? ent.opacity : 1.0;
-                        const nextOpacity = currentOpacity - decrement;
+                        let nextOpacity = currentOpacity;
+                        
+                        const cooldown = isLametta ? 120 : 350;
+                        if (now - lastErase > cooldown) {
+                            if (eraserType === 'pencil') {
+                                if (currentOpacity > 0.6) {
+                                    nextOpacity = 0.5;
+                                } else {
+                                    nextOpacity = 0;
+                                }
+                            } else if (eraserType === 'all') {
+                                if (currentOpacity > 0.75) {
+                                    nextOpacity = 0.66;
+                                } else if (currentOpacity > 0.4) {
+                                    nextOpacity = 0.33;
+                                } else {
+                                    nextOpacity = 0;
+                                }
+                            } else if (eraserType === 'lametta') {
+                                nextOpacity = 0.15;
+                            }
+                            lastEraseTimeByEntityId.current[baseId] = now;
+                        }
+
                         if (nextOpacity > 0.05) {
                             newEntities.push({
                                 ...ent,
@@ -7719,8 +8058,32 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
                             } as LineEntity);
                         });
                         splitResult.inside.forEach((seg, i) => {
+                            const lastErase = lastEraseTimeByEntityId.current[baseId] || 0;
                             const currentOpacity = ent.opacity !== undefined ? ent.opacity : 1.0;
-                            const nextOpacity = currentOpacity - decrement;
+                            let nextOpacity = currentOpacity;
+                            
+                            const cooldown = isLametta ? 120 : 350;
+                            if (now - lastErase > cooldown) {
+                                if (eraserType === 'pencil') {
+                                    if (currentOpacity > 0.6) {
+                                        nextOpacity = 0.5;
+                                    } else {
+                                        nextOpacity = 0;
+                                    }
+                                } else if (eraserType === 'all') {
+                                    if (currentOpacity > 0.75) {
+                                        nextOpacity = 0.66;
+                                    } else if (currentOpacity > 0.4) {
+                                        nextOpacity = 0.33;
+                                    } else {
+                                        nextOpacity = 0;
+                                    }
+                                } else if (eraserType === 'lametta') {
+                                    nextOpacity = 0.15;
+                                }
+                                lastEraseTimeByEntityId.current[baseId] = now;
+                            }
+
                             if (nextOpacity > 0.05) {
                                 hitLinesResult.push({
                                     id: ent.id + `_rect_edge_${idx}_in_${i}_` + Math.random(),
@@ -7764,13 +8127,22 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
                 
                 if (hitDimension) {
                     const lastErase = lastEraseTimeByEntityId.current[ent.id] || 0;
-                    if (now - lastErase > (isLametta ? 0 : 450)) {
-                        if (!isLametta) {
-                            lastEraseTimeByEntityId.current[ent.id] = now;
-                        }
+                    const cooldown = isLametta ? 120 : 450;
+                    if (now - lastErase > cooldown) {
+                        lastEraseTimeByEntityId.current[ent.id] = now;
                         changed = true;
                         const currentOpacity = ent.opacity !== undefined ? ent.opacity : 1.0;
-                        const nextOpacity = currentOpacity - decrement;
+                        let nextOpacity = currentOpacity;
+                        if (eraserType === 'pencil') {
+                            if (currentOpacity > 0.6) nextOpacity = 0.5;
+                            else nextOpacity = 0;
+                        } else if (eraserType === 'all') {
+                            if (currentOpacity > 0.75) nextOpacity = 0.66;
+                            else if (currentOpacity > 0.4) nextOpacity = 0.33;
+                            else nextOpacity = 0;
+                        } else if (eraserType === 'lametta') {
+                            nextOpacity = 0.15;
+                        }
                         if (nextOpacity > 0.05) {
                             newEntities.push({
                                 ...ent,
@@ -7791,13 +8163,22 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
                 }
                 if (hitHatch) {
                     const lastErase = lastEraseTimeByEntityId.current[ent.id] || 0;
-                    if (now - lastErase > (isLametta ? 0 : 450)) {
-                        if (!isLametta) {
-                            lastEraseTimeByEntityId.current[ent.id] = now;
-                        }
+                    const cooldown = isLametta ? 120 : 450;
+                    if (now - lastErase > cooldown) {
+                        lastEraseTimeByEntityId.current[ent.id] = now;
                         changed = true;
                         const currentOpacity = ent.opacity !== undefined ? ent.opacity : 1.0;
-                        const nextOpacity = currentOpacity - decrement;
+                        let nextOpacity = currentOpacity;
+                        if (eraserType === 'pencil') {
+                            if (currentOpacity > 0.6) nextOpacity = 0.5;
+                            else nextOpacity = 0;
+                        } else if (eraserType === 'all') {
+                            if (currentOpacity > 0.75) nextOpacity = 0.66;
+                            else if (currentOpacity > 0.4) nextOpacity = 0.33;
+                            else nextOpacity = 0;
+                        } else if (eraserType === 'lametta') {
+                            nextOpacity = 0.15;
+                        }
                         if (nextOpacity > 0.05) {
                             newEntities.push({
                                 ...ent,
@@ -7819,13 +8200,22 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
                 }
                 if (hitPoint) {
                     const lastErase = lastEraseTimeByEntityId.current[ent.id] || 0;
-                    if (now - lastErase > (isLametta ? 0 : 450)) {
-                        if (!isLametta) {
-                            lastEraseTimeByEntityId.current[ent.id] = now;
-                        }
+                    const cooldown = isLametta ? 120 : 450;
+                    if (now - lastErase > cooldown) {
+                        lastEraseTimeByEntityId.current[ent.id] = now;
                         changed = true;
                         const currentOpacity = ent.opacity !== undefined ? ent.opacity : 1.0;
-                        const nextOpacity = currentOpacity - decrement;
+                        let nextOpacity = currentOpacity;
+                        if (eraserType === 'pencil') {
+                            if (currentOpacity > 0.6) nextOpacity = 0.5;
+                            else nextOpacity = 0;
+                        } else if (eraserType === 'all') {
+                            if (currentOpacity > 0.75) nextOpacity = 0.66;
+                            else if (currentOpacity > 0.4) nextOpacity = 0.33;
+                            else nextOpacity = 0;
+                        } else if (eraserType === 'lametta') {
+                            nextOpacity = 0.15;
+                        }
                         if (nextOpacity > 0.05) {
                             newEntities.push({
                                 ...ent,
@@ -8804,7 +9194,7 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
                 setEntities(prev => {
                     const updatedEntities = prev.map(ent => {
                         if (dragEntityIds.includes(ent.id)) {
-                            const updated = JSON.parse(JSON.stringify(ent)) as Entity;
+                            const updated = fastCloneEntity(ent);
                             if (updated.type === 'line' || updated.type === 'dimension') {
                                 updated.start.x += finalDeltaX;
                                 updated.start.y += finalDeltaY;
@@ -9210,7 +9600,7 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
           const newGroupId = oldGroupId ? 'g_cloned_' + Date.now().toString() + '_' + Math.random().toString(36).substr(2, 5) : undefined;
 
           const clones: Entity[] = originalEntitiesToClone.map(ent => {
-              const cloned = JSON.parse(JSON.stringify(ent)) as Entity;
+              const cloned = fastCloneEntity(ent);
               cloned.id = idMap[ent.id];
               if (ent.groupId && newGroupId) {
                   cloned.groupId = newGroupId;
@@ -11230,104 +11620,132 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
             }
         }
     } else if ((activeTool === 'Move' || activeTool === 'Copy' || activeTool === 'Testo') && dragEntityIdRef.current) {
-    let targetIds = dragEntityIdsRef.current.length > 0 ? [...dragEntityIdsRef.current] : [dragEntityIdRef.current!];
-    
-    let deltaX = 0;
-    let deltaY = 0;
-    let snapFound: Point | null = null;
-    let snapPointUsed = rawPoint;
-
-    const activeBasePoint = activeTool === 'Copy' ? copyBasePoint : moveBasePoint;
-
-    if (activeBasePoint !== null) {
-        const staticEntities = entities.filter(e => !targetIds.includes(e.id));
-        const snapRes = getSnappedPoint(rawPoint, staticEntities, activeTool, null);
-        let snapPoint = snapRes.snapped ? snapRes.point : rawPoint;
+        lastDragMousePosRef.current = {
+            clientX: e.clientX,
+            clientY: e.clientY,
+            shiftKey: e.shiftKey,
+            buttons: e.buttons
+        };
         
-        if (snapRes.snapped) {
-            snapFound = snapRes.point;
-        }
+        if (!dragFrameRequestedRef.current) {
+            dragFrameRequestedRef.current = true;
+            requestAnimationFrame(() => {
+                dragFrameRequestedRef.current = false;
+                if (!lastDragMousePosRef.current) return;
+                
+                const { clientX, clientY, shiftKey, buttons } = lastDragMousePosRef.current;
+                const canvasEl = canvasRef.current;
+                if (!canvasEl) return;
+                const canvasRect = canvasEl.getBoundingClientRect();
+                const currentRawPoint = getDampenedCoordinate(
+                    screenToCanvas(clientX - canvasRect.left, clientY - canvasRect.top)
+                );
+                
+                let targetIds = dragEntityIdsRef.current.length > 0 ? [...dragEntityIdsRef.current] : [dragEntityIdRef.current!];
+                
+                let deltaX = 0;
+                let deltaY = 0;
+                let snapFound: Point | null = null;
+                let snapPointUsed = currentRawPoint;
 
-        const effectiveOrthoMode = orthoMode || isShiftPressedRef.current;
-        if (effectiveOrthoMode && !snapRes.snapped) {
-            const dx = snapPoint.x - activeBasePoint.x;
-            const dy = snapPoint.y - activeBasePoint.y;
-            if (Math.abs(dx) > Math.abs(dy)) {
-                snapPoint.y = activeBasePoint.y;
-            } else {
-                snapPoint.x = activeBasePoint.x;
-            }
-        }
+                const activeBasePoint = activeTool === 'Copy' ? copyBasePoint : moveBasePoint;
 
-        snapPointUsed = snapPoint;
-        deltaX = snapPoint.x - previousMouseRef.current.x;
-        deltaY = snapPoint.y - previousMouseRef.current.y;
-        
-        if (Math.abs(deltaX) > 1e-4 || Math.abs(deltaY) > 1e-4) {
-            dragHasMovedRef.current = true;
-        }
-    } else {
-        // 1. Nominal movement from cursor
-        deltaX = rawPoint.x - previousMouseRef.current.x;
-        deltaY = rawPoint.y - previousMouseRef.current.y;
+                if (activeBasePoint !== null) {
+                    const staticEntities = entities.filter(e => !targetIds.includes(e.id));
+                    const snapRes = getSnappedPoint(currentRawPoint, staticEntities, activeTool, null);
+                    let snapPoint = snapRes.snapped ? snapRes.point : currentRawPoint;
+                    
+                    if (snapRes.snapped) {
+                        snapFound = snapRes.point;
+                    }
 
-        if (Math.abs(deltaX) > 1e-4 || Math.abs(deltaY) > 1e-4) {
-            dragHasMovedRef.current = true;
-        }
+                    const effectiveOrthoMode = orthoMode || isShiftPressedRef.current;
+                    if (effectiveOrthoMode && !snapRes.snapped) {
+                        const dx = snapPoint.x - activeBasePoint.x;
+                        const dy = snapPoint.y - activeBasePoint.y;
+                        if (Math.abs(dx) > Math.abs(dy)) {
+                            snapPoint.y = activeBasePoint.y;
+                        } else {
+                            snapPoint.x = activeBasePoint.x;
+                        }
+                    }
 
-        // 2. Multi-point Snap Challenge
-        const threshold = 15 / view.zoom;
-        const movedEntities = entities.filter(e => targetIds.includes(e.id));
-        const staticEntities = entities.filter(e => !targetIds.includes(e.id));
-        const bgSnaps = getSnapPoints(rawPoint, staticEntities, 'Move', null).filter(s => s.type === 'CAD');
+                    snapPointUsed = snapPoint;
+                    deltaX = snapPoint.x - previousMouseRef.current.x;
+                    deltaY = snapPoint.y - previousMouseRef.current.y;
+                    
+                    if (Math.abs(deltaX) > 1e-4 || Math.abs(deltaY) > 1e-4) {
+                        dragHasMovedRef.current = true;
+                    }
+                } else {
+                    // 1. Nominal movement from cursor
+                    deltaX = currentRawPoint.x - previousMouseRef.current.x;
+                    deltaY = currentRawPoint.y - previousMouseRef.current.y;
 
-        let bestAdj = { x: 0, y: 0 };
-        let minSnapSq = Infinity;
+                    if (Math.abs(deltaX) > 1e-4 || Math.abs(deltaY) > 1e-4) {
+                        dragHasMovedRef.current = true;
+                    }
 
-        for (const ent of movedEntities) {
-            const kps = getEntityKeyPoints(ent);
-            for (const kp of kps) {
-                const translatedKp = { x: kp.x + deltaX, y: kp.y + deltaY };
-                for (const snap of bgSnaps) {
-                    const distSq = (translatedKp.x - snap.point.x) ** 2 + (translatedKp.y - snap.point.y) ** 2;
-                    if (distSq < threshold * threshold && distSq < minSnapSq) {
-                        minSnapSq = distSq;
-                        bestAdj = { x: snap.point.x - translatedKp.x, y: snap.point.y - translatedKp.y };
-                        snapFound = snap.point;
+                    // 2. Multi-point Snap Challenge
+                    const threshold = 15 / view.zoom;
+                    const movedEntities = entities.filter(e => targetIds.includes(e.id));
+                    const staticEntities = entities.filter(e => !targetIds.includes(e.id));
+                    const bgSnaps = getSnapPoints(currentRawPoint, staticEntities, 'Move', null).filter(s => s.type === 'CAD');
+
+                    let bestAdj = { x: 0, y: 0 };
+                    let minSnapSq = Infinity;
+
+                    // Optimization: if dragging/copying many objects, only calculate snappings for primary focused object to save temporary memory and CPU
+                    const entitiesToSnap = movedEntities.length > 5
+                        ? movedEntities.filter(e => e.id === dragEntityIdRef.current || e.id === (targetIds[0] || ''))
+                        : movedEntities;
+
+                    for (const ent of entitiesToSnap) {
+                        const kps = getEntityKeyPoints(ent);
+                        for (const kp of kps) {
+                            const translatedKp = { x: kp.x + deltaX, y: kp.y + deltaY };
+                            for (const snap of bgSnaps) {
+                                const distSq = (translatedKp.x - snap.point.x) ** 2 + (translatedKp.y - snap.point.y) ** 2;
+                                if (distSq < threshold * threshold && distSq < minSnapSq) {
+                                    minSnapSq = distSq;
+                                    bestAdj = { x: snap.point.x - translatedKp.x, y: snap.point.y - translatedKp.y };
+                                    snapFound = snap.point;
+                                }
+                            }
+                        }
+                    }
+
+                    deltaX += bestAdj.x;
+                    deltaY += bestAdj.y;
+
+                    const effectiveOrthoMode = orthoMode || isShiftPressedRef.current;
+                    const isOrthoForMoveCopy = (activeTool === 'Copy' || activeTool === 'Move') && effectiveOrthoMode;
+                    
+                    if (isOrthoForMoveCopy) {
+                      if (Math.abs(deltaX) > Math.abs(deltaY)) {
+                          deltaY = 0;
+                      } else {
+                          deltaX = 0;
+                      }
                     }
                 }
-            }
+                setActiveMoveSnapPoint(snapFound);
+
+                if (Math.abs(deltaX) > 1e-6 || Math.abs(deltaY) > 1e-6) {
+                    const updater = (prev: Entity[]) => prev.map(ent => {
+                        if (targetIds.includes(ent.id)) {
+                            return shiftEntityByDelta(ent, deltaX, deltaY);
+                        }
+                        return ent;
+                    });
+                    if (setEntitiesSilent) setEntitiesSilent(updater);
+                    else setEntities(updater);
+                    
+                    previousMouseRef.current = snapPointUsed;
+                }
+            });
         }
-
-        deltaX += bestAdj.x;
-        deltaY += bestAdj.y;
-
-        const effectiveOrthoMode = orthoMode || isShiftPressedRef.current;
-        const isOrthoForMoveCopy = (activeTool === 'Copy' || activeTool === 'Move') && effectiveOrthoMode;
-        
-        if (isOrthoForMoveCopy) {
-          if (Math.abs(deltaX) > Math.abs(deltaY)) {
-              deltaY = 0;
-          } else {
-              deltaX = 0;
-          }
-        }
-    }
-    setActiveMoveSnapPoint(snapFound);
-
-    if (Math.abs(deltaX) > 1e-6 || Math.abs(deltaY) > 1e-6) {
-        const updater = (prev: Entity[]) => prev.map(ent => {
-            if (targetIds.includes(ent.id)) {
-                return shiftEntityByDelta(ent, deltaX, deltaY);
-            }
-            return ent;
-        });
-        if (setEntitiesSilent) setEntitiesSilent(updater);
-        else setEntities(updater);
-        
-        previousMouseRef.current = snapPointUsed;
-        return; 
-    }
+        return;
 } else if (activeTool === 'Parallel' && selectedParallelLine) {
         setParallelMouse(rawPoint);
         const line = selectedParallelLine as LineEntity;
@@ -11489,12 +11907,15 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
             start: pts[0],
             end: pts[pts.length - 1],
             isFreehand: true,
-            inkPoints: pts.map(p => ({
-                x: p.x,
-                y: p.y,
-                width: 0.5 + Math.random() * 0.5,
-                alpha: 0.4 + Math.random() * 0.4
-            })),
+            inkPoints: pts.map((p, i) => {
+                const style = computeRealisticInkPoint(pts, i, defaultLineStyle.mode === 'ink' ? 'ink' : 'pencil', view.zoom);
+                return {
+                    x: p.x,
+                    y: p.y,
+                    width: style.width,
+                    alpha: style.alpha
+                };
+            }),
             layer: activeLayerId
         };
         setEntities(prev => {
@@ -11650,7 +12071,7 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
       const deltaY = (destinationHoverPoint && startPoint) ? (destinationHoverPoint.y - startPoint.y) : 0;
 
       const clones: Entity[] = originalEntitiesToClone.map(ent => {
-          const cloned = JSON.parse(JSON.stringify(ent)) as Entity;
+          const cloned = fastCloneEntity(ent);
           cloned.id = idMap[ent.id];
           if (ent.groupId && newGroupId) cloned.groupId = newGroupId;
           
