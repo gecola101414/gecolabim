@@ -20,7 +20,6 @@ import { BIMElementDialog, FinestreDialog, FloorManagerDialog } from "./componen
 import { BIMWorkspacePanel } from "./components/BIMWorkspacePanel";
 import { BIMTopBarControls } from "./components/BIMTopBarControls";
 import { BIM3DViewer } from "./components/BIM3DViewer";
-import { AICreditManager } from "./components/AICreditManager";
 import { TEMPLATES } from './data/templates';
 import { GUIDE_DATABASE, GuideItem } from './data/guides';
 import { Entity, Point, Layer, Measurement, Tavola, Floor } from "./types";
@@ -82,8 +81,7 @@ import {
   Settings2,
   Maximize,
   RefreshCw,
-  Sliders,
-  Coins
+  Sliders
 } from "lucide-react";
 
 const RotateScaleIcon = ({ size = 16 }: { size?: number }) => (
@@ -557,7 +555,6 @@ const MASONRY_TYPES = [
   const [activeSidebarTab, setActiveSidebarTab] = useState<'penne' | 'tavole' | 'layers' | 'maschere' | 'testo' | 'gemini' | 'manuale' | 'bim'>(() => (localStorage.getItem('activeSidebarTab') as any) || 'penne');
   const [isBIMElementDialogOpen, setIsBIMElementDialogOpen] = useState(false);
   const [is3DViewOpen, setIs3DViewOpen] = useState(false);
-  const [isAICreditManagerOpen, setIsAICreditManagerOpen] = useState(false);
   const [detectedAreaPoints, setDetectedAreaPoints] = useState<Point[] | { points: Point[], holes?: Point[][] } | null>(null);
   const [editingEntityId, setEditingEntityId] = useState<string | null>(null);
   const [hoveredGuide, setHoveredGuide] = useState<GuideItem | null>(null);
@@ -2120,14 +2117,6 @@ const MASONRY_TYPES = [
         >
           <span className="font-bold text-sm">DXF</span>
           <span className="text-[10px] font-bold">Salva CAD</span>
-        </button>
-        <button
-          onClick={() => setIsAICreditManagerOpen(true)}
-          className="px-4 flex flex-col items-center justify-center gap-0.5 hover:bg-indigo-50 text-indigo-600 border-l border-neutral-300 transition-colors"
-          title="Gestione e Ricarica Crediti AI"
-        >
-          <Coins size={16} className="text-indigo-500 animate-pulse" />
-          <span className="text-[10px] font-bold">Crediti AI</span>
         </button>
       </header>
       <div className="h-8 bg-white border-b border-neutral-300 flex items-center px-4 gap-2">
@@ -6064,21 +6053,6 @@ const MASONRY_TYPES = [
           </motion.div>
         )}
       </AnimatePresence>
-
-      {isAICreditManagerOpen && (
-        <div className="fixed inset-0 bg-black/50 backdrop-blur-xs flex items-center justify-center p-4 z-[99999] pointer-events-auto overflow-y-auto">
-          <div className="relative w-full max-w-2xl bg-white rounded-2xl shadow-2xl">
-            <button 
-              onClick={() => setIsAICreditManagerOpen(false)}
-              className="absolute top-4 right-4 text-gray-400 hover:text-gray-600 p-1.5 bg-gray-100 hover:bg-gray-200 rounded-full transition-all z-10 cursor-pointer"
-              title="Chiudi"
-            >
-              <X className="w-5 h-5" />
-            </button>
-            <AICreditManager />
-          </div>
-        </div>
-      )}
 
       {/* BIM Dialog Submenus were removed and redesigned in the inline top bars for higher efficiency */}
     </div>
