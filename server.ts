@@ -7,23 +7,20 @@ import { GoogleGenAI } from "@google/genai";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-async function startServer() {
-  const app = express();
-  app.use(cors());
-  app.use(express.json());
+const app = express();
+app.use(cors());
+app.use(express.json());
 
-  const PORT = 3000;
-
-  const ai = new GoogleGenAI({
-    apiKey: process.env.GEMINI_API_KEY!,
-    httpOptions: {
-      headers: {
-        'User-Agent': 'aistudio-build',
-      }
+const ai = new GoogleGenAI({
+  apiKey: process.env.GEMINI_API_KEY!,
+  httpOptions: {
+    headers: {
+      'User-Agent': 'aistudio-build',
     }
-  });
+  }
+});
 
-  // API routes FIRST
+// API routes FIRST
   app.post("/api/ai-draw", async (req, res) => {
     try {
         const { prompt, basePosition } = req.body;
@@ -146,24 +143,31 @@ User Brief Description: "${description}"`,
     }
   });
 
-  // Vite middleware for development
-  if (process.env.NODE_ENV !== "production") {
-    const vite = await createViteServer({
-      server: { middlewareMode: true },
-      appType: "spa",
-    });
-    app.use(vite.middlewares);
-  } else {
-    const distPath = path.join(__dirname, 'dist');
-    app.use(express.static(distPath));
-    app.get('*', (req, res) => {
-      res.sendFile(path.join(distPath, 'index.html'));
-    });
+  // Export the Express app for serverless deployments like Vercel
+  export { app };
+
+  // Only start the server listening if we are running in standalone mode (not as a serverless function)
+  async function runStandalone() {
+    if (process.env.VERCEL !== "1") {
+      if (process.env.NODE_ENV !== "production") {
+        const vite = await createViteServer({
+          server: { middlewareMode: true },
+          appType: "spa",
+        });
+        app.use(vite.middlewares);
+      } else {
+        const distPath = path.join(__dirname, 'dist');
+        app.use(express.static(distPath));
+        app.get('*', (req, res) => {
+          res.sendFile(path.join(distPath, 'index.html'));
+        });
+      }
+
+      const PORT = 3000;
+      app.listen(PORT, "0.0.0.0", () => {
+        console.log(`Server running on http://localhost:${PORT}`);
+      });
+    }
   }
 
-  app.listen(PORT, "0.0.0.0", () => {
-    console.log(`Server running on http://localhost:${PORT}`);
-  });
-}
-
-startServer();
+  runStandalone();

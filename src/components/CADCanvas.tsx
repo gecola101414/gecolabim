@@ -2776,6 +2776,8 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
         setMoveSourceEntityIds([]);
         setMovePhase('idle');
         setStatusMessage("Seleziona gli oggetti da spostare, poi premi il tasto destro del mouse o Invio per confermare.");
+    } else if (activeTool === 'Allunga') {
+        setStatusMessage("Allunga: Clicca su un segmento vicino all'estremo da allungare. Proseguirà fino ad incontrare un altro oggetto.");
     } else {
         setCopyPhase('idle');
         setCopyBasePoint(null);
@@ -2830,6 +2832,9 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
       setSpecchioMode('copy');
       setShowSpecchioDialog(false);
     }
+    if (activeTool !== 'Allunga') {
+      setAllungaHover(null);
+    }
   }, [activeTool]);
   const holdTimerRef = useRef<NodeJS.Timeout | null>(null);
   const holdStartPosRef = useRef<{ x: number; y: number } | null>(null);
@@ -2865,6 +2870,7 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
   const [selectedParallelLine, setSelectedParallelLine] = useState<Entity | null>(null);
   const [highlightedTrimLine, setHighlightedTrimLine] = useState<Entity | null>(null);
   const [highlightedTrimSegment, setHighlightedTrimSegment] = useState<{ type: 'line' | 'arc'; start?: Point; end?: Point; center?: Point; radius?: number; startAngle?: number; endAngle?: number } | null>(null);
+  const [allungaHover, setAllungaHover] = useState<{ lineId: string; endExtending: 'start' | 'end'; originalPt: Point; targetPt: Point } | null>(null);
   const [hoverSnap, setHoverSnap] = useState<{
     point: Point;
     snapped: boolean;
@@ -4128,10 +4134,19 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
 
       // Cheap bounding box culling
       if (ent.type === 'line') {
-          const minX = Math.min(ent.start.x, ent.end.x) - clickThreshold;
-          const maxX = Math.max(ent.start.x, ent.end.x) + clickThreshold;
-          const minY = Math.min(ent.start.y, ent.end.y) - clickThreshold;
-          const maxY = Math.max(ent.start.y, ent.end.y) + clickThreshold;
+          let minX, maxX, minY, maxY;
+          const lineEnt = ent as LineEntity;
+          if (lineEnt.isFreehand && lineEnt.inkPoints && lineEnt.inkPoints.length > 0) {
+              minX = Math.min(...lineEnt.inkPoints.map(p => p.x)) - clickThreshold;
+              maxX = Math.max(...lineEnt.inkPoints.map(p => p.x)) + clickThreshold;
+              minY = Math.min(...lineEnt.inkPoints.map(p => p.y)) - clickThreshold;
+              maxY = Math.max(...lineEnt.inkPoints.map(p => p.y)) + clickThreshold;
+          } else {
+              minX = Math.min(ent.start.x, ent.end.x) - clickThreshold;
+              maxX = Math.max(ent.start.x, ent.end.x) + clickThreshold;
+              minY = Math.min(ent.start.y, ent.end.y) - clickThreshold;
+              maxY = Math.max(ent.start.y, ent.end.y) + clickThreshold;
+          }
           if (point.x < minX || point.x > maxX || point.y < minY || point.y > maxY) {
               // Special case for BIM doors/windows which might have extra geometry outside the main line
               if (!ent.isBIM || ent.bimType === 'wall' || (ent.bimType && ent.bimType.includes('symbol')) || !ent.bimType) continue;
@@ -4142,7 +4157,13 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
       let dist = Infinity;
 
       if (ent.type === 'line') {
-        dist = distanceToSegment(point, ent.start, ent.end);
+        const lineEnt = ent as LineEntity;
+        if (lineEnt.isFreehand && lineEnt.inkPoints && lineEnt.inkPoints.length > 1) {
+            const res = getClosestPointOnPolyline(point, lineEnt.inkPoints);
+            dist = res.dist;
+        } else {
+            dist = distanceToSegment(point, ent.start, ent.end);
+        }
         if (dist < clickThreshold) hit = true;
         
         // Enhance selection for BIM doors by checking hit on the leaf line too
@@ -6643,6 +6664,73 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
         }
       }
 
+      // Draw Allunga (Extend) hover preview
+      if (allungaHover) {
+          const line = entities.find(e => e.id === allungaHover.lineId);
+          if (line && line.type === 'line') {
+              const l = line as LineEntity;
+              ctx.save();
+              ctx.strokeStyle = '#10b981'; // Beautiful emerald
+              ctx.lineWidth = 3.5 / view.zoom;
+              ctx.beginPath();
+              ctx.moveTo(l.start.x, l.start.y);
+              ctx.lineTo(l.end.x, l.end.y);
+              ctx.stroke();
+              ctx.restore();
+          }
+          
+          ctx.save();
+          ctx.strokeStyle = '#10b981'; // Emerald color
+          ctx.lineWidth = 2 / view.zoom;
+          ctx.setLineDash([6 / view.zoom, 4 / view.zoom]);
+          ctx.beginPath();
+          ctx.moveTo(allungaHover.originalPt.x, allungaHover.originalPt.y);
+          ctx.lineTo(allungaHover.targetPt.x, allungaHover.targetPt.y);
+          ctx.stroke();
+          ctx.setLineDash([]);
+          
+          const sz = 7 / view.zoom;
+          ctx.lineWidth = 2 / view.zoom;
+          ctx.strokeStyle = '#059669'; // Darker emerald
+          
+          ctx.beginPath();
+          ctx.rect(allungaHover.targetPt.x - sz, allungaHover.targetPt.y - sz, sz * 2, sz * 2);
+          ctx.stroke();
+          
+          ctx.beginPath();
+          ctx.moveTo(allungaHover.targetPt.x - sz * 1.5, allungaHover.targetPt.y);
+          ctx.lineTo(allungaHover.targetPt.x + sz * 1.5, allungaHover.targetPt.y);
+          ctx.moveTo(allungaHover.targetPt.x, allungaHover.targetPt.y - sz * 1.5);
+          ctx.lineTo(allungaHover.targetPt.x, allungaHover.targetPt.y + sz * 1.5);
+          ctx.stroke();
+          
+          const extLen = Math.hypot(allungaHover.targetPt.x - allungaHover.originalPt.x, allungaHover.targetPt.y - allungaHover.originalPt.y);
+          const label = `+${Math.round(extLen * 10) / 10} mm`;
+          ctx.font = `bold ${11 / view.zoom}px sans-serif`;
+          const metrics = ctx.measureText(label);
+          const padX = 6 / view.zoom;
+          const padY = 3 / view.zoom;
+          const bW = metrics.width + padX * 2;
+          const bH = 16 / view.zoom;
+          const mX = (allungaHover.originalPt.x + allungaHover.targetPt.x) / 2;
+          const mY = (allungaHover.originalPt.y + allungaHover.targetPt.y) / 2;
+          
+          ctx.fillStyle = 'rgba(209, 250, 229, 0.9)'; // Light emerald green background
+          ctx.strokeStyle = '#6ee7b7';
+          ctx.lineWidth = 1 / view.zoom;
+          ctx.beginPath();
+          ctx.roundRect(mX - bW / 2, mY - bH / 2, bW, bH, 3 / view.zoom);
+          ctx.fill();
+          ctx.stroke();
+          
+          ctx.fillStyle = '#047857'; // Dark emerald green text
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.fillText(label, mX, mY + 0.5 / view.zoom);
+          
+          ctx.restore();
+      }
+
       // Draw visible Tavole (Sheet templates) in CAD model units
       if (tavole) {
         tavole.forEach(tav => {
@@ -7617,7 +7705,7 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
     render(); // Initial render for this effect run
   }, [entities, layers, view, flashIds, flashIntensity, selectedParallelLine, blink, selectedEntityId, 
       positioningGroupId, positioningEntityId, selectedRaccordoLineIds, dragEntityIds, highlightedTrimLine, 
-      highlightedTrimSegment, activeTool, specchioMode, specchioSelectedIds, copySourceEntityIds, eraserPos, 
+      highlightedTrimSegment, allungaHover, activeTool, specchioMode, specchioSelectedIds, copySourceEntityIds, eraserPos, 
       tecnigrafoOrigin, tecnigrafoLock, manualRoomPoints, drawing, highlightedPoints, selectedLine, referenceLine]);
 
 
@@ -8241,55 +8329,103 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
     const pts: Point[] = [];
     if (entA.id === entB.id) return pts;
 
+    const getPolylineSegmentsIntersections = (lineStart: Point, lineEnd: Point, poly: Point[]): Point[] => {
+        const intersections: Point[] = [];
+        for (let i = 0; i < poly.length - 1; i++) {
+            const p3 = poly[i];
+            const p4 = poly[i+1];
+            const x1 = lineStart.x, y1 = lineStart.y, x2 = lineEnd.x, y2 = lineEnd.y;
+            const x3 = p3.x, y3 = p3.y, x4 = p4.x, y4 = p4.y;
+            const denom = (y4 - y3) * (x2 - x1) - (x4 - x3) * (y2 - y1);
+            if (denom !== 0) {
+                const t = ((x4 - x3) * (y1 - y3) - (y4 - y3) * (x1 - x3)) / denom;
+                const u = ((x2 - x1) * (y1 - y3) - (y2 - y1) * (x1 - x3)) / denom;
+                const eps = 1e-4;
+                if (t >= -eps && t <= 1 + eps && u >= -eps && u <= 1 + eps) {
+                    const tClamped = Math.max(0, Math.min(1, t));
+                    intersections.push({ x: x1 + tClamped * (x2 - x1), y: y1 + tClamped * (y2 - y1) });
+                }
+            }
+        }
+        return intersections;
+    };
+
     // Both are lines
     if (entA.type === 'line' && entB.type === 'line') {
-        const x1 = entA.start.x, y1 = entA.start.y, x2 = entA.end.x, y2 = entA.end.y;
-        const x3 = entB.start.x, y3 = entB.start.y, x4 = entB.end.x, y4 = entB.end.y;
-        const denom = (y4 - y3) * (x2 - x1) - (x4 - x3) * (y2 - y1);
-        if (denom !== 0) {
-            const t = ((x4 - x3) * (y1 - y3) - (y4 - y3) * (x1 - x3)) / denom;
-            const u = ((x2 - x1) * (y1 - y3) - (y2 - y1) * (x1 - x3)) / denom;
-            const eps = 1e-4;
-            if (t >= -eps && t <= 1 + eps && u >= -eps && u <= 1 + eps) {
-                const tClamped = Math.max(0, Math.min(1, t));
-                pts.push({ x: x1 + tClamped * (x2 - x1), y: y1 + tClamped * (y2 - y1) });
+        const polyA = (entA as LineEntity).inkPoints;
+        const polyB = (entB as LineEntity).inkPoints;
+        if (polyA && polyA.length > 1 && polyB && polyB.length > 1) {
+            polyA.forEach((_, i) => {
+                if (i === polyA.length - 1) return;
+                const ptsSub = getPolylineSegmentsIntersections(polyA[i], polyA[i+1], polyB);
+                pts.push(...ptsSub);
+            });
+            return pts;
+        } else if (polyA && polyA.length > 1) {
+            return getPolylineSegmentsIntersections((entB as LineEntity).start, (entB as LineEntity).end, polyA);
+        } else if (polyB && polyB.length > 1) {
+            return getPolylineSegmentsIntersections((entA as LineEntity).start, (entA as LineEntity).end, polyB);
+        } else {
+            const x1 = entA.start.x, y1 = entA.start.y, x2 = entA.end.x, y2 = entA.end.y;
+            const x3 = entB.start.x, y3 = entB.start.y, x4 = entB.end.x, y4 = entB.end.y;
+            const denom = (y4 - y3) * (x2 - x1) - (x4 - x3) * (y2 - y1);
+            if (denom !== 0) {
+                const t = ((x4 - x3) * (y1 - y3) - (y4 - y3) * (x1 - x3)) / denom;
+                const u = ((x2 - x1) * (y1 - y3) - (y2 - y1) * (x1 - x3)) / denom;
+                const eps = 1e-4;
+                if (t >= -eps && t <= 1 + eps && u >= -eps && u <= 1 + eps) {
+                    const tClamped = Math.max(0, Math.min(1, t));
+                    pts.push({ x: x1 + tClamped * (x2 - x1), y: y1 + tClamped * (y2 - y1) });
+                }
             }
         }
     }
     // line and circle / arc
     else if ((entA.type === 'line' && (entB.type === 'circle' || entB.type === 'arc')) ||
              ((entA.type === 'circle' || entA.type === 'arc') && entB.type === 'line')) {
-        const line = entA.type === 'line' ? entA : entB as LineEntity;
+        const line = entA.type === 'line' ? entA as LineEntity : entB as LineEntity;
         const circle = entA.type === 'line' ? entB as (CircleEntity | ArcEntity) : entA as (CircleEntity | ArcEntity);
         
-        const d = { x: line.end.x - line.start.x, y: line.end.y - line.start.y };
-        const v = { x: line.start.x - circle.center.x, y: line.start.y - circle.center.y };
-        const a = d.x * d.x + d.y * d.y;
-        const b = 2 * (v.x * d.x + v.y * d.y);
-        const c = (v.x * v.x + v.y * v.y) - circle.radius * circle.radius;
-        if (a !== 0) {
-            const discriminant = b * b - 4 * a * c;
-            if (discriminant >= 0) {
-                const sqrtD = Math.sqrt(discriminant);
-                const t1 = (-b - sqrtD) / (2 * a);
-                const t2 = (-b + sqrtD) / (2 * a);
-                const eps = 1e-4;
-                [t1, t2].forEach(t => {
-                    if (t >= -eps && t <= 1 + eps) {
-                        const tClamped = Math.max(0, Math.min(1, t));
-                        const p = { x: line.start.x + tClamped * d.x, y: line.start.y + tClamped * d.y };
-                        // If it's an arc, check if angle is inside
-                        if (circle.type === 'arc') {
-                            const angle = Math.atan2(p.y - circle.center.y, p.x - circle.center.x) * 180 / Math.PI;
-                            if (isAngleInArc(angle, circle.startAngle, circle.endAngle)) {
-                                pts.push(p);
+        const getCircleSegmentIntersections = (s: Point, e: Point): Point[] => {
+            const subPts: Point[] = [];
+            const d = { x: e.x - s.x, y: e.y - s.y };
+            const v = { x: s.x - circle.center.x, y: s.y - circle.center.y };
+            const a = d.x * d.x + d.y * d.y;
+            const b = 2 * (v.x * d.x + v.y * d.y);
+            const c = (v.x * v.x + v.y * v.y) - circle.radius * circle.radius;
+            if (a !== 0) {
+                const discriminant = b * b - 4 * a * c;
+                if (discriminant >= 0) {
+                    const sqrtD = Math.sqrt(discriminant);
+                    const t1 = (-b - sqrtD) / (2 * a);
+                    const t2 = (-b + sqrtD) / (2 * a);
+                    const eps = 1e-4;
+                    [t1, t2].forEach(t => {
+                        if (t >= -eps && t <= 1 + eps) {
+                            const tClamped = Math.max(0, Math.min(1, t));
+                            const p = { x: s.x + tClamped * d.x, y: s.y + tClamped * d.y };
+                            if (circle.type === 'arc') {
+                                const angle = Math.atan2(p.y - circle.center.y, p.x - circle.center.x) * 180 / Math.PI;
+                                if (isAngleInArc(angle, circle.startAngle, circle.endAngle)) {
+                                    subPts.push(p);
+                                }
+                            } else {
+                                subPts.push(p);
                             }
-                        } else {
-                            pts.push(p);
                         }
-                    }
-                });
+                    });
+                }
             }
+            return subPts;
+        };
+
+        if (line.inkPoints && line.inkPoints.length > 1) {
+            line.inkPoints.forEach((_, i) => {
+                if (i === line.inkPoints.length - 1) return;
+                pts.push(...getCircleSegmentIntersections(line.inkPoints[i], line.inkPoints[i+1]));
+            });
+        } else {
+            pts.push(...getCircleSegmentIntersections(line.start, line.end));
         }
     }
     // two circles / arcs
@@ -9089,6 +9225,129 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
 
     setHighlightedTrimLine(null);
     setHighlightedTrimSegment(null);
+  };
+
+  const executeAllunga = (rawPoint: Point) => {
+    const target = getEntityAtPoint(rawPoint, 15);
+    if (!target || target.type !== 'line') return;
+
+    const line = target as LineEntity;
+    const distStart = Math.hypot(rawPoint.x - line.start.x, rawPoint.y - line.start.y);
+    const distEnd = Math.hypot(rawPoint.x - line.end.x, rawPoint.y - line.end.y);
+    
+    const endExtending = distStart < distEnd ? 'start' : 'end';
+    let pivot = endExtending === 'start' ? line.end : line.start;
+    const extPt = endExtending === 'start' ? line.start : line.end;
+    
+    if (line.isFreehand && line.inkPoints && line.inkPoints.length > 1) {
+        if (endExtending === 'start') {
+            pivot = line.inkPoints[1];
+        } else {
+            pivot = line.inkPoints[line.inkPoints.length - 2];
+        }
+    }
+    
+    const dx = extPt.x - pivot.x;
+    const dy = extPt.y - pivot.y;
+    const len = Math.hypot(dx, dy);
+    
+    if (len > 0.01) {
+        const dirX = dx / len;
+        const dirY = dy / len;
+        
+        const farX = extPt.x + dirX * 100000;
+        const farY = extPt.y + dirY * 100000;
+        const ray: LineEntity = { id: 'temp_ray', type: 'line', start: extPt, end: { x: farX, y: farY }, color: '', lineWidth: 1, layer: '', mode: 'CAD' };
+        
+        const intersections: { pt: Point; dist: number }[] = [];
+        entitiesRef.current.forEach(other => {
+            if (other.id === line.id) return;
+            const layer = layers.find(l => l.id === other.layer);
+            if (layer && !layer.visible) return;
+            
+            const pts = getIntersections(ray, other);
+            pts.forEach(p => {
+                const dist = Math.hypot(p.x - extPt.x, p.y - extPt.y);
+                if (dist > 0.05) {
+                    intersections.push({ pt: p, dist });
+                }
+            });
+        });
+        
+        intersections.sort((a, b) => a.dist - b.dist);
+        if (intersections.length > 0) {
+            const nextPoint = intersections[0].pt;
+            
+            onCommitHistory?.(entitiesRef.current);
+            
+            setEntities(prev => {
+                return prev.map(item => {
+                    if (item.id === line.id) {
+                        if (line.isFreehand && line.inkPoints) {
+                            const newInkPoints = [...line.inkPoints];
+                            if (endExtending === 'start') {
+                                const firstPt = line.inkPoints[0];
+                                const newPt = {
+                                    x: nextPoint.x,
+                                    y: nextPoint.y,
+                                    width: firstPt?.width ?? 1,
+                                    alpha: firstPt?.alpha ?? 1
+                                };
+                                newInkPoints.unshift(newPt);
+                                return { ...item, start: nextPoint, inkPoints: newInkPoints } as Entity;
+                            } else {
+                                const lastPt = line.inkPoints[line.inkPoints.length - 1];
+                                const newPt = {
+                                    x: nextPoint.x,
+                                    y: nextPoint.y,
+                                    width: lastPt?.width ?? 1,
+                                    alpha: lastPt?.alpha ?? 1
+                                };
+                                newInkPoints.push(newPt);
+                                return { ...item, end: nextPoint, inkPoints: newInkPoints } as Entity;
+                            }
+                        } else {
+                            if (endExtending === 'start') {
+                                return { ...item, start: nextPoint } as Entity;
+                            } else {
+                                return { ...item, end: nextPoint } as Entity;
+                            }
+                        }
+                    }
+                    return item;
+                });
+            });
+            
+            const newExtPt = nextPoint;
+            const newRay: LineEntity = { id: 'temp_ray', type: 'line', start: newExtPt, end: { x: newExtPt.x + dirX * 100000, y: newExtPt.y + dirY * 100000 }, color: '', lineWidth: 1, layer: '', mode: 'CAD' };
+            
+            const nextIntersections: { pt: Point; dist: number }[] = [];
+            entitiesRef.current.forEach(other => {
+                if (other.id === line.id) return;
+                const layer = layers.find(l => l.id === other.layer);
+                if (layer && !layer.visible) return;
+                
+                const pts = getIntersections(newRay, other);
+                pts.forEach(p => {
+                    const dist = Math.hypot(p.x - newExtPt.x, p.y - newExtPt.y);
+                    if (dist > 0.05) {
+                        nextIntersections.push({ pt: p, dist });
+                    }
+                });
+            });
+            nextIntersections.sort((a, b) => a.dist - b.dist);
+            if (nextIntersections.length > 0) {
+                setAllungaHover({
+                    lineId: line.id,
+                    endExtending,
+                    originalPt: newExtPt,
+                    targetPt: nextIntersections[0].pt
+                });
+            } else {
+                setAllungaHover(null);
+            }
+        }
+    }
   };
 
   const captureSelection = (start: Point, end: Point) => {
@@ -11057,6 +11316,9 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
         } else {
             setSelectionWindow({ start: rawPoint, current: rawPoint });
         }
+    } else if (activeTool === 'Allunga') {
+        const rawPoint = getDampenedCoordinate(screenToCanvas(e.clientX - rect.left, e.clientY - rect.top), e);
+        executeAllunga(rawPoint);
     } else if (activeTool === 'Cancella') {
         const rawPoint = getDampenedCoordinate(screenToCanvas(e.clientX - rect.left, e.clientY - rect.top), e);
         const found = getEntityAtPoint(rawPoint);
@@ -11829,6 +12091,70 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
             }
         } else {
             setHighlightedTrimSegment(null);
+        }
+    } else if (activeTool === 'Allunga') {
+        const rawPoint = getDampenedCoordinate(screenToCanvas(e.clientX - rect.left, e.clientY - rect.top), e);
+        const target = getEntityAtPoint(rawPoint, 15);
+        if (target && target.type === 'line') {
+            const line = target as LineEntity;
+            const distStart = Math.hypot(rawPoint.x - line.start.x, rawPoint.y - line.start.y);
+            const distEnd = Math.hypot(rawPoint.x - line.end.x, rawPoint.y - line.end.y);
+            
+            const endExtending = distStart < distEnd ? 'start' : 'end';
+            let pivot = endExtending === 'start' ? line.end : line.start;
+            const extPt = endExtending === 'start' ? line.start : line.end;
+            
+            if (line.isFreehand && line.inkPoints && line.inkPoints.length > 1) {
+                if (endExtending === 'start') {
+                    pivot = line.inkPoints[1];
+                } else {
+                    pivot = line.inkPoints[line.inkPoints.length - 2];
+                }
+            }
+            
+            const dx = extPt.x - pivot.x;
+            const dy = extPt.y - pivot.y;
+            const len = Math.hypot(dx, dy);
+            
+            if (len > 0.01) {
+                const dirX = dx / len;
+                const dirY = dy / len;
+                
+                const farX = extPt.x + dirX * 100000;
+                const farY = extPt.y + dirY * 100000;
+                const ray: LineEntity = { id: 'temp_ray', type: 'line', start: extPt, end: { x: farX, y: farY }, color: '', lineWidth: 1, layer: '', mode: 'CAD' };
+                
+                const intersections: { pt: Point; dist: number }[] = [];
+                entitiesRef.current.forEach(other => {
+                    if (other.id === line.id) return;
+                    const layer = layers.find(l => l.id === other.layer);
+                    if (layer && !layer.visible) return;
+                    
+                    const pts = getIntersections(ray, other);
+                    pts.forEach(p => {
+                        const dist = Math.hypot(p.x - extPt.x, p.y - extPt.y);
+                        if (dist > 0.05) {
+                            intersections.push({ pt: p, dist });
+                        }
+                    });
+                });
+                
+                intersections.sort((a, b) => a.dist - b.dist);
+                if (intersections.length > 0) {
+                    setAllungaHover({
+                        lineId: line.id,
+                        endExtending,
+                        originalPt: extPt,
+                        targetPt: intersections[0].pt
+                    });
+                } else {
+                    setAllungaHover(null);
+                }
+            } else {
+                setAllungaHover(null);
+            }
+        } else {
+            setAllungaHover(null);
         }
     } else if (activeTool === 'Cancella') {
         setHighlightedTrimLine(getEntityAtPoint(rawPoint) || null);

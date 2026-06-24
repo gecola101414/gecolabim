@@ -141,6 +141,24 @@ const RaccordoIcon = ({ size = 16 }: { size?: number }) => (
   </svg>
 );
 
+const AllungaIcon = ({ size = 16 }: { size?: number }) => (
+  <svg 
+    width={size} 
+    height={size} 
+    viewBox="0 0 24 24" 
+    fill="none" 
+    stroke="currentColor" 
+    strokeWidth="2" 
+    strokeLinecap="round" 
+    strokeLinejoin="round"
+  >
+    <line x1="4" y1="12" x2="14" y2="12" />
+    <path d="M14 12h6" strokeDasharray="2 2" />
+    <path d="M17 9l3 3-3 3" />
+    <line x1="20" y1="6" x2="20" y2="18" stroke="currentColor" strokeWidth="1" />
+  </svg>
+);
+
 const OrthoIcon = ({ size = 16 }: { size?: number }) => (
   <svg 
     width={size} 
@@ -1557,6 +1575,7 @@ const MASONRY_TYPES = [
         { name: "Specchio", icon: MirrorIcon },
         { name: "Testo", icon: Type },
         { name: "Trim", icon: Scissors },
+        { name: "Allunga", icon: AllungaIcon },
         { name: "Eraser", icon: Eraser },
         { name: "Parallel", icon: ParallelIcon },
         { name: "RotateScale", icon: RotateScaleIcon },
