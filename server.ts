@@ -146,7 +146,8 @@ const ai = new GoogleGenAI({
 });
 
 // 2. API DI RECUPERO CREDITI (/api/credits)
-// Recupera il saldo residuo in tempo reale basato sull'email dell'utente
+// Recupera il saldo residuo in tempo reale basato sull'email dell'utente.
+// Se l'utente è nuovo, regala automaticamente €1.00 di credito iniziale di benvenuto!
 app.get("/api/credits", async (req: any, res: any) => {
   try {
     const { email } = req.query;
@@ -168,8 +169,31 @@ app.get("/api/credits", async (req: any, res: any) => {
       return;
     }
 
-    const balance = data ? parseFloat(data.balance) : 0.00;
-    res.json({ email, balance });
+    let balance = 0.00;
+    if (!data) {
+      // REGALO BENVENUTO: Creiamo l'utente sul database con €1.00 di credito iniziale gratis!
+      const welcomeBonus = 1.00;
+      const { data: insertData, error: insertError } = await supabase
+        .from("user_credits")
+        .insert({
+          email: email,
+          balance: welcomeBonus
+        })
+        .select("balance")
+        .single();
+
+      if (insertError) {
+        console.error("Errore nell'assegnare il bonus di benvenuto di €1.00:", insertError);
+        balance = 0.00;
+      } else {
+        console.log(`[BONUS] Creato portafoglio di benvenuto con €1.00 per: ${email}`);
+        balance = insertData ? parseFloat(insertData.balance) : welcomeBonus;
+      }
+    } else {
+      balance = parseFloat(data.balance);
+    }
+
+    res.json({ email, balance, isNewUser: !data });
   } catch (error: any) {
     console.error("Errore generico in /api/credits:", error);
     res.status(500).json({ error: error.message || "Errore del server." });
@@ -256,7 +280,29 @@ app.post("/api/chat", async (req: any, res: any) => {
       return;
     }
 
-    const balance = userRecord ? parseFloat(userRecord.balance) : 0.00;
+    let balance = 0.00;
+    if (!userRecord) {
+      // REGALO BENVENUTO: Se l'utente non ha ancora un record nel database, creiamo il record con il bonus di benvenuto di €1.00
+      const welcomeBonus = 1.00;
+      const { data: insertData, error: insertError } = await supabase
+        .from("user_credits")
+        .insert({
+          email: email,
+          balance: welcomeBonus
+        })
+        .select("balance")
+        .single();
+
+      if (insertError) {
+        console.error("Errore nell'assegnare il bonus di benvenuto in chat:", insertError);
+        balance = 0.00;
+      } else {
+        console.log(`[BONUS] Creato portafoglio di benvenuto con €1.00 al primo messaggio per: ${email}`);
+        balance = insertData ? parseFloat(insertData.balance) : welcomeBonus;
+      }
+    } else {
+      balance = parseFloat(userRecord.balance);
+    }
 
     // Se il saldo è insufficiente (<= 0), blocca la chiamata e restituisce errore 402 (Payment Required)
     if (balance <= 0) {

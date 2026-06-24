@@ -222,14 +222,17 @@ export function AICreditManager() {
             <Coins className="w-36 h-36" />
           </div>
           <p className="text-xs uppercase font-semibold text-indigo-100 tracking-widest mb-1">Saldo Residuo</p>
-          <div className="flex items-baseline gap-1 mb-4">
+          <div className="flex items-baseline gap-1 mb-2">
             {loadingBalance ? (
               <Loader2 className="w-8 h-8 animate-spin" />
             ) : (
               <span className="text-3.5xl font-black tracking-tight" id="credits-balance-display">
-                € {balance !== null ? balance.toFixed(2) : "0.00"}
+                € {balance !== null ? balance.toFixed(2) : "1.00"}
               </span>
             )}
+          </div>
+          <div className="bg-white/15 backdrop-blur-md rounded-lg px-2.5 py-1.5 text-[11px] mb-3 border border-white/10">
+            🎁 <strong>Bonus di Benvenuto Attivo:</strong> Ti abbiamo regalato <strong>€1,00 di credito iniziale</strong> per verificare subito il funzionamento (pari a 100 domande)!
           </div>
           <div className="text-[11px] text-indigo-100 flex items-center gap-1.5">
             <div className="w-2 h-2 rounded-full bg-green-400 animate-pulse"></div>
