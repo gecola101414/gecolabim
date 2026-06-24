@@ -3,7 +3,7 @@ import { Canvas, useFrame } from '@react-three/fiber';
 import { OrbitControls, PerspectiveCamera, OrthographicCamera, Grid, Stars, Float, Text, Html, ContactShadows, Environment, Edges, GizmoHelper, GizmoViewcube, Line } from '@react-three/drei';
 import * as THREE from 'three';
 import { useThree } from '@react-three/fiber';
-import { Entity, Point, LineEntity, RectEntity } from '../types';
+import { Entity, Point, LineEntity, RectEntity, Floor } from '../types';
 import { X, ZoomIn, ZoomOut, RotateCw, Box, Layers, Database, Maximize, Home, Compass, Eye, EyeOff, Lightbulb, LightbulbOff, Info, Settings, MousePointer2, Move, Scissors, Play, Pause, RefreshCw, ArrowDown, ArrowUp, ArrowLeft, ArrowRight, Edit, Trash2, Wand2, Lock, Unlock, FolderTree, ChevronDown, ChevronRight, Sliders, Layers3 } from 'lucide-react';
 import { BIMElementDialog, PorteDialog, FinestreDialog } from './BIMDialogs';
 import { BIMPropertyCardDialog } from './BIMPropertyCardDialog';
@@ -12,6 +12,7 @@ interface BIM3DViewerProps {
   entities: Entity[];
   onClose: () => void;
   setEntities: React.Dispatch<React.SetStateAction<Entity[]>> | ((updater: (prev: Entity[]) => Entity[]) => void);
+  floors?: Floor[];
 }
 
 const getRoomAreaMq = (roomPoints: Point[]): number => {
@@ -2013,7 +2014,7 @@ const SectionPlaneHelper = ({ height, active, mode, entities }: { height: number
   );
 };
 
-export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, setEntities }) => {
+export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, setEntities, floors = [] }) => {
   const [resetTrigger, setResetTrigger] = useState(0);
   const [focusTrigger, setFocusTrigger] = useState(0);
   const [viewMode, setViewMode] = useState<'PERSPECTIVE' | 'TOP'>('PERSPECTIVE');
@@ -5055,6 +5056,7 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
             hatch: (selectedEntity as any).bimHatchPattern || 'SOLID'
           }}
           onDelete={() => handleDeleteEntity(selectedEntity.id)}
+          floors={floors}
         />
       )}
 

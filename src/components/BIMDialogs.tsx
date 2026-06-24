@@ -41,7 +41,7 @@ import {
   Lock,
   Unlock
 } from "lucide-react";
-import { Point, Entity } from '../types';
+import { Point, Entity, Floor } from '../types';
 import { TEMPLATES, Template } from '../data/templates';
 import { TemplatePreview } from './TemplatePreview';
 import { BIM_FAMILIES, BIMFamily } from '../data/bimFamilies';
@@ -1085,6 +1085,7 @@ interface BIMElementDialogProps {
     bimRenderMode?: 'solid' | 'transparent';
   };
   onDelete?: () => void;
+  floors: Floor[];
 }
 
 export const BIMElementDialog: React.FC<BIMElementDialogProps> = ({
@@ -1093,7 +1094,8 @@ export const BIMElementDialog: React.FC<BIMElementDialogProps> = ({
   onConfirm,
   points,
   initialData,
-  onDelete
+  onDelete,
+  floors
 }) => {
   const { position, handlePointerDown, handlePointerMove, handlePointerUp } = useDraggableDialog(isOpen, { x: 300, y: 130 });
   
@@ -1102,9 +1104,9 @@ export const BIMElementDialog: React.FC<BIMElementDialogProps> = ({
   const [subFamily, setSubFamily] = useState('');
   const [name, setName] = useState('');
   const [color, setColor] = useState(() => BIM_FAMILIES.find(f => f.id === (localStorage.getItem('last_bim_family') || BIM_FAMILIES[0].id))?.defaultColor || '#34d399');
-  const [zPlane, setZPlane] = useState<number | ''>(0);
-  const [zElevation, setZElevation] = useState<number | ''>(0);
-  const [objectHeight, setObjectHeight] = useState<number | ''>(270);
+  const [selectedFloorId, setSelectedFloorId] = useState<string>('');
+  const [zElevationInput, setZElevationInput] = useState<string>('0');
+  const [objectHeightInput, setObjectHeightInput] = useState<string>('270');
   const [hatch, setHatch] = useState<'SOLID' | 'ANSI31' | 'CROSS' | 'NONE'>('SOLID');
   const [bimRenderMode, setBimRenderMode] = useState<'solid' | 'transparent'>('solid');
   
@@ -1115,14 +1117,27 @@ export const BIMElementDialog: React.FC<BIMElementDialogProps> = ({
 
   useEffect(() => {
     if (isOpen) {
+      // Find the best matching floor for initialData or saved last_bim_zPlane
+      const targetZPlane = initialData ? initialData.zPlane : parseFloat(localStorage.getItem('last_bim_zPlane') || '0') || 0;
+      let bestFloor = floors.find(f => f.elevation === targetZPlane);
+      if (!bestFloor && floors.length > 0) {
+        bestFloor = floors.reduce((prev, curr) => 
+          Math.abs(curr.elevation - targetZPlane) < Math.abs(prev.elevation - targetZPlane) ? curr : prev
+        );
+      }
+      if (bestFloor) {
+        setSelectedFloorId(bestFloor.id);
+      } else if (floors.length > 0) {
+        setSelectedFloorId(floors[0].id);
+      }
+
       if (initialData) {
         setFamilyId(initialData.familyId);
         setSubFamily(initialData.subFamily);
         setName(initialData.name);
         setColor(initialData.color);
-        setZPlane(initialData.zPlane);
-        setZElevation(initialData.zElevation);
-        setObjectHeight(initialData.objectHeight);
+        setZElevationInput(initialData.zElevation.toString());
+        setObjectHeightInput(initialData.objectHeight.toString());
         setHatch(initialData.hatch);
         setBimRenderMode(initialData.bimRenderMode || 'solid');
       } else {
@@ -1133,14 +1148,13 @@ export const BIMElementDialog: React.FC<BIMElementDialogProps> = ({
         setSubFamily('');
         setName(famObj?.name || '');
         setColor(famObj?.defaultColor || '#34d399');
-        setZPlane(parseFloat(localStorage.getItem('last_bim_zPlane') || '0') || 0);
-        setZElevation(parseFloat(localStorage.getItem('last_bim_zElevation') || '0') || 0);
-        setObjectHeight(parseFloat(localStorage.getItem('last_bim_height') || '270') || 270);
+        setZElevationInput(localStorage.getItem('last_bim_zElevation') || '0');
+        setObjectHeightInput(localStorage.getItem('last_bim_height') || '270');
         setHatch('SOLID');
         setBimRenderMode('solid');
       }
     }
-  }, [isOpen, initialData]);
+  }, [isOpen, initialData, floors]);
 
   const handleFamilyChange = (id: string) => {
     setFamilyId(id);
@@ -1156,18 +1170,24 @@ export const BIMElementDialog: React.FC<BIMElementDialogProps> = ({
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    localStorage.setItem('last_bim_zPlane', zPlane.toString());
-    localStorage.setItem('last_bim_zElevation', zElevation.toString());
-    localStorage.setItem('last_bim_height', objectHeight.toString());
+    const matchedFloor = floors.find(f => f.id === selectedFloorId);
+    const actualZPlane = matchedFloor ? matchedFloor.elevation : 0;
+
+    localStorage.setItem('last_bim_zPlane', actualZPlane.toString());
+    localStorage.setItem('last_bim_zElevation', zElevationInput);
+    localStorage.setItem('last_bim_height', objectHeightInput);
     
+    const parsedZElevation = parseFloat(zElevationInput.replace(',', '.')) || 0;
+    const parsedObjectHeight = parseFloat(objectHeightInput.replace(',', '.')) || 270;
+
     onConfirm({ 
       familyId: customFamilyMode ? 'custom' : familyId,
       subFamily: customFamilyMode ? customFamilyName : subFamily,
       name: name || (customFamilyMode ? customFamilyName : (currentFamily?.name || '')), 
       color, 
-      zPlane: typeof zPlane === 'string' ? parseFloat(zPlane) || 0 : zPlane,
-      zElevation: typeof zElevation === 'string' ? parseFloat(zElevation) || 0 : zElevation,
-      objectHeight: parseFloat(objectHeight.toString()), 
+      zPlane: actualZPlane,
+      zElevation: parsedZElevation,
+      objectHeight: Math.max(0.1, parsedObjectHeight), 
       hatch,
       bimRenderMode
     });
@@ -1175,7 +1195,7 @@ export const BIMElementDialog: React.FC<BIMElementDialogProps> = ({
 
   return (
     <div 
-      className="fixed z-[200] bg-slate-950 border-2 border-indigo-500/50 p-5 rounded-2xl shadow-[0_20px_50px_rgba(0,0,0,0.6)] max-w-sm w-full text-white backdrop-blur-2xl max-h-[85vh] flex flex-col"
+      className="fixed z-[200] bg-slate-950 border-2 border-indigo-500/50 p-6 rounded-2xl shadow-[0_20px_50px_rgba(0,0,0,0.6)] w-[420px] max-w-full text-white backdrop-blur-2xl max-h-[85vh] flex flex-col"
       style={{ left: `${position.x}px`, top: `${position.y}px` }}
       onClick={(e) => e.stopPropagation()}
     >
@@ -1186,27 +1206,27 @@ export const BIMElementDialog: React.FC<BIMElementDialogProps> = ({
         onPointerUp={handlePointerUp}
       >
         <div className="flex flex-col text-left text-ellipsis overflow-hidden">
-          <h3 className="text-[12px] font-black uppercase text-indigo-400 tracking-widest font-mono flex items-center gap-2">
-            <Building size={14} className="animate-pulse" />
+          <h3 className="text-base font-black uppercase text-indigo-400 tracking-widest font-mono flex items-center gap-2">
+            <Building size={16} className="animate-pulse" />
             <span>{initialData ? 'MODIFICA ELEMENTO BIM' : 'RILEVAMENTO ELEMENTO BIM'}</span>
           </h3>
-          <span className="text-[9px] text-slate-500 font-bold font-mono uppercase tracking-tighter">Standard Internazionale BIM</span>
+          <span className="text-[11px] text-slate-500 font-bold font-mono uppercase tracking-tighter">Standard Internazionale BIM</span>
         </div>
-        <button type="button" onClick={onClose} className="bg-white/5 border border-white/10 text-slate-400 hover:text-white rounded-lg p-1.5 transition-colors">
-          <X size={16} />
+        <button type="button" onClick={onClose} className="bg-white/5 border border-white/10 text-slate-400 hover:text-white rounded-lg p-2 transition-colors">
+          <X size={18} />
         </button>
       </div>
 
-      <form onSubmit={handleSubmit} className="space-y-3 overflow-y-auto pr-2 pb-2 scrollbar-none">
+      <form onSubmit={handleSubmit} className="space-y-4 overflow-y-auto pr-2 pb-2 scrollbar-none">
         
         {/* FAMILY SELECTION */}
         <div>
           <div className="flex justify-between items-center mb-1.5">
-            <label className="block text-[9px] text-slate-400 font-black uppercase tracking-widest font-mono italic">Famiglia di Appartenenza</label>
+            <label className="block text-xs text-slate-400 font-black uppercase tracking-widest font-mono italic">Famiglia di Appartenenza</label>
             <button 
               type="button" 
               onClick={() => setCustomFamilyMode(!customFamilyMode)}
-              className="text-[8px] px-1.5 py-0.5 rounded border border-indigo-500/30 text-indigo-400 hover:bg-indigo-500/20 transition-all font-bold"
+              className="text-[10px] px-2 py-0.5 rounded border border-indigo-500/30 text-indigo-400 hover:bg-indigo-500/20 transition-all font-bold"
             >
               {customFamilyMode ? '- ANNULLA' : '+ PERSONALIZZATA'}
             </button>
@@ -1219,14 +1239,14 @@ export const BIMElementDialog: React.FC<BIMElementDialogProps> = ({
               value={customFamilyName}
               onChange={(e) => setCustomFamilyName(e.target.value)}
               autoFocus
-              className="w-full bg-indigo-500/10 border border-indigo-500/30 text-white rounded-lg p-2.5 text-xs font-bold focus:outline-none focus:border-indigo-400 transition-colors"
+              className="w-full bg-indigo-500/10 border border-indigo-500/30 text-white rounded-lg p-3 text-sm font-bold focus:outline-none focus:border-indigo-400 transition-colors"
             />
           ) : (
             <div className="relative">
               <select
                 value={familyId}
                 onChange={(e) => handleFamilyChange(e.target.value)}
-                className="w-full bg-slate-900 border border-white/10 text-white rounded-lg p-2.5 text-xs font-bold focus:outline-none focus:border-indigo-500 transition-colors appearance-none"
+                className="w-full bg-slate-900 border border-white/10 text-white rounded-lg p-3 text-sm font-bold focus:outline-none focus:border-indigo-500 transition-colors appearance-none"
               >
                 {BIM_FAMILIES.map(fam => (
                   <option key={fam.id} value={fam.id} className="bg-slate-900 text-slate-200">
@@ -1234,36 +1254,36 @@ export const BIMElementDialog: React.FC<BIMElementDialogProps> = ({
                   </option>
                 ))}
               </select>
-              <div className="absolute right-3 top-3 pointer-events-none opacity-50">
-                <ChevronDown size={14} />
+              <div className="absolute right-3 top-3.5 pointer-events-none opacity-50">
+                <ChevronDown size={16} />
               </div>
             </div>
           )}
           {currentFamily && !customFamilyMode && (
-            <p className="text-[8px] text-slate-500 mt-1 font-medium font-mono uppercase tracking-tight overflow-hidden text-ellipsis whitespace-nowrap">
+            <p className="text-[10px] text-slate-500 mt-1 font-medium font-mono uppercase tracking-tight overflow-hidden text-ellipsis whitespace-nowrap">
               📂 {currentFamily.category} - {currentFamily.description}
             </p>
           )}
         </div>
 
-        <div className="grid grid-cols-2 gap-3">
+        <div className="grid grid-cols-2 gap-4">
           <div className="col-span-2">
-            <label className="block text-[9px] text-slate-400 font-black uppercase tracking-widest mb-1.5 font-mono italic">Identificativo / Mark</label>
+            <label className="block text-xs text-slate-400 font-black uppercase tracking-widest mb-1.5 font-mono italic">Identificativo / Mark</label>
             <input
               type="text"
               value={name}
               onChange={(e) => setName(e.target.value)}
-              className="w-full bg-white/5 border border-white/10 text-white rounded-lg p-2.5 text-xs font-bold focus:outline-none focus:border-indigo-500 transition-colors"
+              className="w-full bg-white/5 border border-white/10 text-white rounded-lg p-3 text-sm font-bold focus:outline-none focus:border-indigo-500 transition-colors"
               placeholder="Es. Muro M1, Pilastro P2..."
             />
           </div>
 
           <div>
-            <label className="block text-[9px] text-slate-400 font-black uppercase tracking-widest mb-1.5 font-mono italic">Retino (Hatch)</label>
+            <label className="block text-xs text-slate-400 font-black uppercase tracking-widest mb-1.5 font-mono italic">Retino (Hatch)</label>
             <select
               value={hatch}
               onChange={(e) => setHatch(e.target.value as any)}
-              className="w-full bg-slate-900 border border-white/10 text-white rounded-lg p-2.5 text-[10px] font-bold focus:outline-none focus:border-indigo-500"
+              className="w-full bg-slate-900 border border-white/10 text-white rounded-lg p-3 text-xs font-bold focus:outline-none focus:border-indigo-500"
             >
               <option value="SOLID" className="bg-slate-900">Colore Pieno</option>
               <option value="ANSI31" className="bg-slate-900">Tratteggio (ANSI31)</option>
@@ -1273,73 +1293,85 @@ export const BIMElementDialog: React.FC<BIMElementDialogProps> = ({
           </div>
 
           <div>
-             <label className="block text-[9px] text-slate-400 font-black uppercase tracking-widest mb-1.5 font-mono italic">Colore Rappresent.</label>
-             <div className="flex items-center gap-2 h-10 bg-white/5 border border-white/10 rounded-lg px-2 overflow-hidden">
+             <label className="block text-xs text-slate-400 font-black uppercase tracking-widest mb-1.5 font-mono italic">Colore Rappresent.</label>
+             <div className="flex items-center gap-2 h-11 bg-white/5 border border-white/10 rounded-lg px-2 overflow-hidden">
                 <input
                  type="color"
                  value={color.startsWith('rgba') ? '#6366f1' : color}
                  onChange={(e) => setColor(e.target.value)}
-                 className="w-full h-8 bg-transparent border-0 cursor-pointer p-0"
+                 className="w-full h-9 bg-transparent border-0 cursor-pointer p-0"
                />
              </div>
           </div>
 
-          <div className="col-span-2 grid grid-cols-3 gap-2 bg-indigo-500/5 p-3 rounded-xl border border-indigo-500/10">
-            <div>
-              <label className="block text-[8px] text-slate-500 font-black uppercase tracking-widest mb-1 font-mono">Quota Z Base (cm)</label>
-              <input
-                type="text"
-                inputMode="numeric"
-                value={zPlane}
-                onChange={(e) => {
-                  const val = e.target.value;
-                  setZPlane(val === '' ? '' : (parseFloat(val) || 0));
-                }}
-                className="w-full bg-white/5 border border-white/10 text-white rounded p-2 text-xs font-mono font-bold focus:outline-none focus:border-indigo-500 transition-all [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
-              />
+          {/* Piano di Riferimento (finestra a tendina) */}
+          <div className="col-span-2">
+            <label className="block text-xs text-slate-400 font-black uppercase tracking-widest mb-1.5 font-mono italic">
+              Piano di Riferimento (1° Dato)
+            </label>
+            <div className="relative">
+              <select
+                value={selectedFloorId}
+                onChange={(e) => setSelectedFloorId(e.target.value)}
+                className="w-full bg-slate-900 border border-white/10 text-white rounded-lg p-3 text-sm font-bold focus:outline-none focus:border-indigo-500 appearance-none"
+              >
+                {[...floors].sort((a,b) => b.elevation - a.elevation).map(floor => (
+                  <option key={floor.id} value={floor.id}>
+                    {floor.name} (Quota: {floor.elevation} cm)
+                  </option>
+                ))}
+              </select>
+              <div className="absolute right-3 top-3.5 pointer-events-none opacity-50">
+                <ChevronDown size={16} />
+              </div>
             </div>
+          </div>
+
+          {/* Quota di Partenza (2° Dato) & Altezza dell'oggetto */}
+          <div className="col-span-2 grid grid-cols-2 gap-4 bg-indigo-500/5 p-4 rounded-xl border border-indigo-500/10">
             <div>
-              <label className="block text-[8px] text-slate-500 font-black uppercase tracking-widest mb-1 font-mono">Soffitto/Top (cm)</label>
+              <label className="block text-[10px] text-slate-400 font-black uppercase tracking-widest mb-1 font-mono">
+                Quota di Partenza (2° Dato) (cm)
+              </label>
               <input
                 type="text"
-                inputMode="numeric"
-                value={zElevation}
-                onChange={(e) => {
-                  const val = e.target.value;
-                  setZElevation(val === '' ? '' : (parseFloat(val) || 0));
-                }}
-                className="w-full bg-white/5 border border-white/10 text-white rounded p-2 text-xs font-mono font-bold focus:outline-none focus:border-indigo-500 transition-all [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                value={zElevationInput}
+                onChange={(e) => setZElevationInput(e.target.value)}
+                className="w-full bg-slate-900 border border-white/10 text-cyan-400 rounded p-2.5 text-sm font-mono font-bold focus:outline-none focus:border-indigo-500"
+                placeholder="Es. -6 o +10"
               />
+              <span className="text-[9px] text-slate-500 italic mt-1 block">Può essere negativo (es. massetto -6)</span>
             </div>
+
             <div>
-              <label className="block text-[8px] text-slate-500 font-black uppercase tracking-widest mb-1 font-mono">Altezza (cm)</label>
+              <label className="block text-[10px] text-slate-400 font-black uppercase tracking-widest mb-1 font-mono">
+                Altezza Oggetto (cm)
+              </label>
               <input
                 type="text"
-                inputMode="numeric"
-                value={objectHeight}
-                onChange={(e) => {
-                  const val = e.target.value;
-                  setObjectHeight(val === '' ? '' : (parseFloat(val) || 0));
-                }}
-                className="w-full bg-white/5 border border-white/10 text-white rounded p-2 text-xs font-mono font-bold focus:outline-none focus:border-indigo-500 transition-all [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                value={objectHeightInput}
+                onChange={(e) => setObjectHeightInput(e.target.value)}
+                className="w-full bg-slate-900 border border-white/10 text-white rounded p-2.5 text-sm font-mono font-bold focus:outline-none focus:border-indigo-500"
+                placeholder="Sempre positiva"
               />
+              <span className="text-[9px] text-slate-500 italic mt-1 block">Sempre positiva</span>
             </div>
           </div>
           <div className="col-span-2 pt-4 border-t border-white/5">
-            <label className="block text-[10px] text-slate-400 font-black uppercase tracking-widest mb-2 font-mono italic">Rendering 3D</label>
+            <label className="block text-[11px] text-slate-400 font-black uppercase tracking-widest mb-2 font-mono italic">Rendering 3D</label>
             <div className="flex gap-2">
-              <button type="button" onClick={() => setBimRenderMode('solid')} className={`flex-1 py-3 text-[10px] rounded-lg border font-bold ${bimRenderMode === 'solid' ? 'bg-cyan-600/20 border-cyan-500 text-white' : 'bg-slate-900 border-slate-700 text-slate-400'}`}>Solido (Pieno)</button>
-              <button type="button" onClick={() => setBimRenderMode('transparent')} className={`flex-1 py-3 text-[10px] rounded-lg border font-bold ${bimRenderMode === 'transparent' ? 'bg-cyan-600/20 border-cyan-500 text-white' : 'bg-slate-900 border-slate-700 text-slate-400'}`}>Trasparente (Parete)</button>
+              <button type="button" onClick={() => setBimRenderMode('solid')} className={`flex-1 py-3 text-xs rounded-lg border font-bold cursor-pointer ${bimRenderMode === 'solid' ? 'bg-cyan-600/20 border-cyan-500 text-white' : 'bg-slate-900 border-slate-700 text-slate-400'}`}>Solido (Pieno)</button>
+              <button type="button" onClick={() => setBimRenderMode('transparent')} className={`flex-1 py-3 text-xs rounded-lg border font-bold cursor-pointer ${bimRenderMode === 'transparent' ? 'bg-cyan-600/20 border-cyan-500 text-white' : 'bg-slate-900 border-slate-700 text-slate-400'}`}>Trasparente (Parete)</button>
             </div>
           </div>
         </div>
 
-        <div className="p-3 bg-indigo-500/10 border border-indigo-500/20 rounded-xl flex items-center justify-between gap-3">
-          <p className="text-[9px] text-indigo-400 font-medium leading-relaxed italic">
+        <div className="p-3.5 bg-indigo-500/10 border border-indigo-500/20 rounded-xl flex items-center justify-between gap-3">
+          <p className="text-[11px] text-indigo-400 font-medium leading-relaxed italic">
             💡 La selezione verrà mantenuta per i prossimi caricamenti veloci degli elementi.
           </p>
-          <div className="w-8 h-8 rounded-full bg-indigo-500/20 flex items-center justify-center border border-indigo-500/40">
-            <Sparkles size={14} className="text-indigo-400" />
+          <div className="w-9 h-9 rounded-full bg-indigo-500/20 flex items-center justify-center border border-indigo-500/40">
+            <Sparkles size={16} className="text-indigo-400" />
           </div>
         </div>
 
@@ -1348,20 +1380,226 @@ export const BIMElementDialog: React.FC<BIMElementDialogProps> = ({
             <button
               type="button"
               onClick={onDelete}
-              className="bg-red-600/10 hover:bg-red-600/20 text-red-500 font-black px-4 py-3.5 rounded-xl text-xs tracking-widest transition-all cursor-pointer flex items-center justify-center border border-red-500/20 active:scale-95"
+              className="bg-red-600/10 hover:bg-red-600/20 text-red-500 font-black px-4.5 py-4 rounded-xl text-xs tracking-widest transition-all cursor-pointer flex items-center justify-center border border-red-500/20 active:scale-95"
               title="Cancella Elemento"
             >
-              <Trash2 size={16} />
+              <Trash2 size={18} />
             </button>
           )}
           <button
             type="submit"
-            className="flex-1 bg-indigo-600 hover:bg-indigo-500 text-white font-black py-3.5 rounded-xl text-xs tracking-widest transition-all shadow-[0_10px_20px_rgba(79,70,229,0.3)] cursor-pointer uppercase active:scale-[0.98] border border-indigo-400/30"
+            className="flex-1 bg-indigo-600 hover:bg-indigo-500 text-white font-black py-4 rounded-xl text-xs tracking-widest transition-all shadow-[0_10px_20px_rgba(79,70,229,0.3)] cursor-pointer uppercase active:scale-[0.98] border border-indigo-400/30"
           >
             {initialData ? 'AGGIORNA ELEMENTO BIM' : 'CARICA ELEMENTO BIM ✅'}
           </button>
         </div>
       </form>
+    </div>
+  );
+};
+
+// 10. --- GESTIONE PIANI DIALOG (STORY MANAGER) ---
+interface FloorManagerDialogProps {
+  isOpen: boolean;
+  onClose: () => void;
+  floors: Floor[];
+  onUpdateFloors: (newFloors: Floor[]) => void;
+}
+
+export const FloorManagerDialog: React.FC<FloorManagerDialogProps> = ({
+  isOpen,
+  onClose,
+  floors,
+  onUpdateFloors,
+}) => {
+  const { position, handlePointerDown, handlePointerMove, handlePointerUp } = useDraggableDialog(isOpen, { x: 400, y: 150 });
+
+  if (!isOpen) return null;
+
+  // Sort floors descending by elevation
+  const sortedFloors = [...floors].sort((a, b) => b.elevation - a.elevation);
+
+  const handleUpdateFloorName = (id: string, newName: string) => {
+    const updated = floors.map(f => f.id === id ? { ...f, name: newName } : f);
+    onUpdateFloors(updated);
+  };
+
+  const handleUpdateFloorElevation = (id: string, valStr: string) => {
+    const parsed = parseFloat(valStr);
+    const updated = floors.map(f => f.id === id ? { ...f, elevation: isNaN(parsed) ? 0 : parsed } : f);
+    onUpdateFloors(updated);
+  };
+
+  const handleDeleteFloor = (id: string) => {
+    const updated = floors.filter(f => f.id !== id);
+    onUpdateFloors(updated);
+  };
+
+  const handleAddAboveGround = () => {
+    const aboveGroundFloors = floors.filter(f => f.type === 'fuori_terra');
+    let nextNum = 0;
+    let highestElev = 0;
+    
+    aboveGroundFloors.forEach(f => {
+      const match = f.name.match(/Piano\s+(\d+)/i);
+      if (match) {
+        const num = parseInt(match[1]);
+        if (num > nextNum) nextNum = num;
+      }
+      if (f.elevation > highestElev) highestElev = f.elevation;
+    });
+
+    const newNum = nextNum + 1;
+    const newElev = highestElev + 300; // default 3 meters per story
+    const newFloor: Floor = {
+      id: `floor_above_${Date.now()}`,
+      name: `Piano ${newNum}`,
+      elevation: newElev,
+      type: 'fuori_terra'
+    };
+    onUpdateFloors([...floors, newFloor]);
+  };
+
+  const handleAddUnderground = () => {
+    const undergroundFloors = floors.filter(f => f.type === 'interrato');
+    let lowestNum = 0;
+    let lowestElev = 0;
+
+    undergroundFloors.forEach(f => {
+      const match = f.name.match(/Piano\s+(-\d+)/i);
+      if (match) {
+        const num = parseInt(match[1]);
+        if (num < lowestNum) lowestNum = num;
+      }
+      if (f.elevation < lowestElev) lowestElev = f.elevation;
+    });
+
+    const newNum = lowestNum - 1;
+    const newElev = lowestElev - 300; // default 3 meters per story
+    const newFloor: Floor = {
+      id: `floor_under_${Date.now()}`,
+      name: `Piano ${newNum}`,
+      elevation: newElev,
+      type: 'interrato'
+    };
+    onUpdateFloors([...floors, newFloor]);
+  };
+
+  return (
+    <div 
+      className="fixed z-[250] bg-slate-950 border-2 border-indigo-500/50 p-5 rounded-2xl shadow-[0_20px_50px_rgba(0,0,0,0.6)] max-w-md w-full text-white backdrop-blur-2xl max-h-[85vh] flex flex-col"
+      style={{ left: `${position.x}px`, top: `${position.y}px` }}
+      onClick={(e) => e.stopPropagation()}
+    >
+      <div 
+        className="flex justify-between items-center border-b border-white/10 pb-3 mb-4 cursor-grab active:cursor-grabbing shrink-0"
+        onPointerDown={handlePointerDown}
+        onPointerMove={handlePointerMove}
+        onPointerUp={handlePointerUp}
+      >
+        <div className="flex flex-col text-left">
+          <h3 className="text-xs font-black uppercase text-indigo-400 tracking-widest font-mono flex items-center gap-2 pointer-events-none">
+            <Building size={14} className="text-indigo-400" />
+            <span>🏢 GESTIONE PIANI (STORY MANAGER)</span>
+          </h3>
+          <span className="text-[9px] text-slate-500 font-bold font-mono uppercase tracking-tighter pointer-events-none">Impostazione dei livelli di progetto</span>
+        </div>
+        <button type="button" onClick={onClose} className="bg-white/5 border border-white/10 text-slate-400 hover:text-white rounded-lg p-1.5 transition-colors">
+          <X size={16} />
+        </button>
+      </div>
+
+      {/* Description */}
+      <div className="p-3 bg-indigo-500/5 border border-indigo-500/10 rounded-xl mb-4 text-[10px] text-slate-400 leading-relaxed font-mono">
+        <p className="font-bold text-indigo-400 mb-1">📐 NOTA SULLE QUOTE DEI PIANI:</p>
+        I piani si considerano sempre a <span className="text-indigo-300 font-bold">filo pavimento finito</span>. 
+        Le quote Z sono espresse in <span className="text-cyan-400 font-bold">centimetri (cm)</span>. 
+        I valori negativi indicano i livelli interrati (es. Piano -1, Piano -2).
+      </div>
+
+      {/* Floor List */}
+      <div className="flex-1 overflow-y-auto pr-1 space-y-2 scrollbar-thin scrollbar-thumb-slate-800">
+        {sortedFloors.map((floor) => (
+          <div 
+            key={floor.id} 
+            className={`flex items-center gap-2 p-2 rounded-xl border ${
+              floor.elevation === 0 
+                ? 'bg-emerald-500/5 border-emerald-500/20' 
+                : floor.type === 'interrato' 
+                  ? 'bg-blue-500/5 border-blue-500/10' 
+                  : 'bg-slate-900/60 border-white/5'
+            }`}
+          >
+            {/* Type badge */}
+            <span className={`text-[8px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded ${
+              floor.type === 'interrato' ? 'bg-blue-500/15 text-blue-400' : 'bg-amber-500/15 text-amber-400'
+            }`}>
+              {floor.type === 'interrato' ? 'SOTTO' : 'FUORI'}
+            </span>
+
+            {/* Name Input */}
+            <input 
+              type="text"
+              value={floor.name}
+              onChange={(e) => handleUpdateFloorName(floor.id, e.target.value)}
+              className="flex-1 min-w-0 bg-white/5 border border-white/10 rounded-lg px-2.5 py-1.5 text-xs font-bold text-white focus:outline-none focus:border-indigo-500"
+              placeholder="Nome Piano"
+            />
+
+            {/* Elevation Input */}
+            <div className="flex items-center gap-1.5 bg-white/5 border border-white/10 rounded-lg px-2 py-1">
+              <span className="text-[10px] text-slate-500 font-bold font-mono">Z:</span>
+              <input 
+                type="number"
+                value={floor.elevation}
+                onChange={(e) => handleUpdateFloorElevation(floor.id, e.target.value)}
+                className="w-16 bg-transparent text-xs font-mono font-bold text-cyan-400 focus:outline-none text-right [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+              />
+              <span className="text-[10px] text-slate-500 font-mono font-bold">cm</span>
+            </div>
+
+            {/* Delete button */}
+            <button 
+              type="button"
+              onClick={() => handleDeleteFloor(floor.id)}
+              className="p-1.5 text-slate-500 hover:text-red-400 rounded-lg hover:bg-red-500/10 transition-colors"
+              title="Elimina Piano"
+            >
+              <Trash2 size={14} />
+            </button>
+          </div>
+        ))}
+      </div>
+
+      {/* Add buttons and Close */}
+      <div className="mt-4 pt-3 border-t border-white/10 flex flex-col gap-2 shrink-0">
+        <div className="grid grid-cols-2 gap-2">
+          <button
+            type="button"
+            onClick={handleAddAboveGround}
+            className="flex items-center justify-center gap-1.5 bg-amber-500/10 hover:bg-amber-500/20 text-amber-400 font-bold py-2 rounded-xl text-xs transition-colors border border-amber-500/20 cursor-pointer"
+          >
+            <Plus size={14} />
+            <span>+ Piano Fuori Terra</span>
+          </button>
+          <button
+            type="button"
+            onClick={handleAddUnderground}
+            className="flex items-center justify-center gap-1.5 bg-blue-500/10 hover:bg-blue-500/20 text-blue-400 font-bold py-2 rounded-xl text-xs transition-colors border border-blue-500/20 cursor-pointer"
+          >
+            <Plus size={14} />
+            <span>+ Piano Interrato</span>
+          </button>
+        </div>
+
+        <button
+          type="button"
+          onClick={onClose}
+          className="w-full bg-indigo-600 hover:bg-indigo-500 text-white font-black py-3 rounded-xl text-xs tracking-widest transition-all cursor-pointer uppercase text-center"
+        >
+          Salva e Chiudi
+        </button>
+      </div>
     </div>
   );
 };

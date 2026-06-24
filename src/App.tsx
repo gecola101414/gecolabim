@@ -16,13 +16,13 @@ import { DXFTextReaderDialog } from "./components/DXFTextReaderDialog";
 import { LineEditorDialog } from "./components/LineEditorDialog";
 import { LineEntity } from "./types";
 import { TemplatePreview } from "./components/TemplatePreview";
-import { BIMElementDialog, FinestreDialog } from "./components/BIMDialogs";
+import { BIMElementDialog, FinestreDialog, FloorManagerDialog } from "./components/BIMDialogs";
 import { BIMWorkspacePanel } from "./components/BIMWorkspacePanel";
 import { BIMTopBarControls } from "./components/BIMTopBarControls";
 import { BIM3DViewer } from "./components/BIM3DViewer";
 import { TEMPLATES } from './data/templates';
 import { GUIDE_DATABASE, GuideItem } from './data/guides';
-import { Entity, Point, Layer, Measurement, Tavola } from "./types";
+import { Entity, Point, Layer, Measurement, Tavola, Floor } from "./types";
 import { mergeAllSegments } from "./utils/entityUtils";
 import { trimEntities } from "./utils";
 import { parseScriptToEntities, updateScriptVariables } from "./utils/parametricParser";
@@ -507,6 +507,33 @@ const MASONRY_TYPES = [
     { id: "tav4", name: "Tavola n. 4", format: "A1", scale: 500, unit: "cm", position: { x: 40, y: 30 }, visible: false, datiCartiglio: { progetto: "GECOLA BIM", titolo: "Tavola n. 4", autore: "Ing. Domenico Gimondo", data: "2026" } },
     { id: "tav5", name: "Tavola n. 5", format: "A0", scale: 1000, unit: "cm", position: { x: 0, y: 0 }, visible: false, datiCartiglio: { progetto: "GECOLA BIM", titolo: "Tavola n. 5", autore: "Ing. Domenico Gimondo", data: "2026" } },
   ]);
+
+  const [floors, setFloors] = useState<Floor[]>(() => {
+    const saved = localStorage.getItem("bim_floors");
+    if (saved) {
+      try {
+        return JSON.parse(saved);
+      } catch (e) {
+        console.error("Error parsing saved floors", e);
+      }
+    }
+    return [
+      { id: 'piano_4', name: 'Piano 4', elevation: 1200, type: 'fuori_terra' },
+      { id: 'piano_3', name: 'Piano 3', elevation: 900, type: 'fuori_terra' },
+      { id: 'piano_2', name: 'Piano 2', elevation: 600, type: 'fuori_terra' },
+      { id: 'piano_1', name: 'Piano 1', elevation: 300, type: 'fuori_terra' },
+      { id: 'piano_0', name: 'Piano 0', elevation: 0, type: 'fuori_terra' },
+      { id: 'piano_-1', name: 'Piano -1', elevation: -300, type: 'interrato' },
+      { id: 'piano_-2', name: 'Piano -2', elevation: -600, type: 'interrato' },
+    ];
+  });
+
+  const [isFloorManagerOpen, setIsFloorManagerOpen] = useState(false);
+
+  useEffect(() => {
+    localStorage.setItem("bim_floors", JSON.stringify(floors));
+  }, [floors]);
+
   const [activeSidebarTab, setActiveSidebarTab] = useState<'penne' | 'tavole' | 'layers' | 'maschere' | 'testo' | 'gemini' | 'manuale' | 'bim'>(() => (localStorage.getItem('activeSidebarTab') as any) || 'penne');
   const [isBIMElementDialogOpen, setIsBIMElementDialogOpen] = useState(false);
   const [is3DViewOpen, setIs3DViewOpen] = useState(false);
@@ -1871,15 +1898,12 @@ const MASONRY_TYPES = [
           </button>
         ))}
         <button
-          onClick={() => setShowProperties(!showProperties)}
-          className="flex flex-col items-center justify-center px-4 hover:bg-neutral-200 border-l border-neutral-300"
+          onClick={() => setIsFloorManagerOpen(true)}
+          className="flex flex-col items-center justify-center px-4 hover:bg-neutral-200 border-l border-neutral-300 gap-0.5 text-neutral-700"
+          title="Gestione dei piani/livelli di progetto"
         >
-          <span className="text-[10px] text-neutral-500">
-            Mode: {defaultLineStyle.mode}
-          </span>
-          <span className="text-xs font-bold">
-            {defaultLineStyle.lineWidth}
-          </span>
+          <Building size={16} className="text-indigo-600 animate-pulse" />
+          <span className="text-[10px] font-bold">Gestione Piani</span>
         </button>
 
         <div className="flex items-center justify-center px-4 gap-3 border-l border-neutral-300 bg-neutral-50/50">
@@ -2796,6 +2820,16 @@ const MASONRY_TYPES = [
                   bimRenderMode: (e as any).bimRenderMode || 'solid'
                 };
               })() : undefined}
+              floors={floors}
+            />
+          )}
+
+          {isFloorManagerOpen && (
+            <FloorManagerDialog
+              isOpen={isFloorManagerOpen}
+              onClose={() => setIsFloorManagerOpen(false)}
+              floors={floors}
+              onUpdateFloors={setFloors}
             />
           )}
           <FinestreDialog
@@ -2890,6 +2924,7 @@ const MASONRY_TYPES = [
               entities={entities} 
               onClose={() => setIs3DViewOpen(false)} 
               setEntities={updateEntitiesWithHistory}
+              floors={floors}
             />
           )}
           

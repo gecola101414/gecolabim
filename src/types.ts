@@ -222,3 +222,10 @@ export interface Tavola {
   gridType?: 'none' | '1cm' | '10cm' | '100cm';
   gridColor?: string;
 }
+
+export interface Floor {
+  id: string;
+  name: string;
+  elevation: number; // in centimeters (Z Base)
+  type: 'fuori_terra' | 'interrato';
+}
