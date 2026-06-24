@@ -4,9 +4,10 @@ import { OrbitControls, PerspectiveCamera, OrthographicCamera, Grid, Stars, Floa
 import * as THREE from 'three';
 import { useThree } from '@react-three/fiber';
 import { Entity, Point, LineEntity, RectEntity, Floor } from '../types';
-import { X, ZoomIn, ZoomOut, RotateCw, Box, Layers, Database, Maximize, Home, Compass, Eye, EyeOff, Lightbulb, LightbulbOff, Info, Settings, MousePointer2, Move, Scissors, Play, Pause, RefreshCw, ArrowDown, ArrowUp, ArrowLeft, ArrowRight, Edit, Trash2, Wand2, Lock, Unlock, FolderTree, ChevronDown, ChevronRight, Sliders, Layers3 } from 'lucide-react';
+import { X, ZoomIn, ZoomOut, RotateCw, Box, Layers, Database, Maximize, Home, Compass, Eye, EyeOff, Lightbulb, LightbulbOff, Info, Settings, MousePointer2, Move, Scissors, Play, Pause, RefreshCw, ArrowDown, ArrowUp, ArrowLeft, ArrowRight, Edit, Trash2, Wand2, Lock, Unlock, FolderTree, ChevronDown, ChevronRight, Sliders, Layers3, Camera } from 'lucide-react';
 import { BIMElementDialog, PorteDialog, FinestreDialog } from './BIMDialogs';
 import { BIMPropertyCardDialog } from './BIMPropertyCardDialog';
+import { BIMRenderStudio } from './BIMRenderStudio';
 
 interface BIM3DViewerProps {
   entities: Entity[];
@@ -571,7 +572,7 @@ const HatchCappingShapeMesh = ({
   );
 };
 
-const Wall = ({ 
+export const Wall = ({ 
   points, 
   height, 
   width, 
@@ -806,7 +807,7 @@ const Wall = ({
   );
 };
 
-const Room = ({ 
+export const Room = ({ 
   points, 
   holes, 
   height, 
@@ -1087,7 +1088,7 @@ const Room = ({
   );
 };
 
-const BIMSymbol = ({ entity, onPointerOver, onPointerOut, clippingPlanes = [], opacity = 1 }: { entity: any, onPointerOver?: () => void, onPointerOut?: () => void, clippingPlanes?: THREE.Plane[], opacity?: number }) => {
+export const BIMSymbol = ({ entity, onPointerOver, onPointerOut, clippingPlanes = [], opacity = 1 }: { entity: any, onPointerOver?: () => void, onPointerOut?: () => void, clippingPlanes?: THREE.Plane[], opacity?: number }) => {
   const { 
     bimType, 
     bimWindowType, 
@@ -1336,7 +1337,7 @@ const HatchMaterial = ({ color, clippingPlanes }: { color: string, clippingPlane
   );
 };
 
-const CSGMeshRender = ({ 
+export const CSGMeshRender = ({ 
   entity, 
   color, 
   clippingPlanes = [], 
@@ -2063,6 +2064,7 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
   const [isSectionMode, setIsSectionMode] = useState(false);
   const [showSectionConfig, setShowSectionConfig] = useState(false);
   const [isRealistic, setIsRealistic] = useState(false);
+  const [isRenderStudioOpen, setIsRenderStudioOpen] = useState(false);
   const [globalOpacityMode, setGlobalOpacityMode] = useState<'WORK' | 'SOLID'>('WORK');
   const [globalRoomOpacityVal, setGlobalRoomOpacityVal] = useState<number>(0.25);
   const [globalWallOpacityVal, setGlobalWallOpacityVal] = useState<number>(0.50);
@@ -3128,6 +3130,16 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
           <span className="text-[10.5px] font-black uppercase tracking-wider">Albero BIM</span>
         </button>
 
+        <div className="w-px h-8 bg-slate-200 mx-1" />
+
+        <button 
+          onClick={() => setIsRenderStudioOpen(true)}
+          className="p-3 rounded-xl hover:bg-slate-50 hover:text-indigo-600 text-slate-500 border border-transparent transition-all active:scale-95 flex items-center gap-1.5 cursor-pointer"
+          title="Studio Rendering Fotorealistico PBR"
+        >
+          <Camera size={20} className="text-indigo-500" />
+          <span className="text-[10.5px] font-black uppercase tracking-wider">Rendering</span>
+        </button>
 
         <div className="w-px h-8 bg-slate-200 mx-1" />
         
@@ -5119,6 +5131,13 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
           <div className="w-1.5 h-1.5 bg-slate-300 rounded-full animate-ping" />
         </div>
       </div>
+
+      {isRenderStudioOpen && (
+        <BIMRenderStudio 
+          entities={entities} 
+          onClose={() => setIsRenderStudioOpen(false)} 
+        />
+      )}
     </div>
   );
 };

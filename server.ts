@@ -79,6 +79,73 @@ async function startServer() {
     }
   });
 
+  app.post("/api/ai-render", async (req, res) => {
+    try {
+      const { description, aspectRatio = "16:9" } = req.body;
+      if (!description) {
+        res.status(400).json({ error: "Description is required" });
+        return;
+      }
+
+      // Step 1: Expand the prompt into a detailed professional English prompt
+      const promptEnhanceRes = await ai.models.generateContent({
+        model: "gemini-3.5-flash",
+        contents: `Translate and expand this user brief description of architectural materials or structure into a highly detailed, professional English architectural rendering prompt for a photorealistic image generation model. 
+
+Keep it concise but highly descriptive, focus on lighting, materials, textures, and rendering quality. Do not include introductory text, just the final prompt.
+
+User Brief Description: "${description}"`,
+        config: {
+          systemInstruction: "You are a professional architectural photographer and render specialist. You write perfect prompts for image generators to produce stunning, realistic, highly detailed, photorealistic architectural render visualizations with soft natural light, depth of field, clear textures (wood, concrete, brick, steel, glass), and clean compositions.",
+        }
+      });
+
+      const expandedPrompt = promptEnhanceRes.text?.trim() || description;
+      console.log("Expanded rendering prompt:", expandedPrompt);
+
+      // Step 2: Generate the image using gemini-2.5-flash-image
+      const imageRes = await ai.models.generateContent({
+        model: 'gemini-2.5-flash-image',
+        contents: {
+          parts: [
+            {
+              text: expandedPrompt,
+            },
+          ],
+        },
+        config: {
+          imageConfig: {
+            aspectRatio: aspectRatio as any,
+          },
+        },
+      });
+
+      let base64Image = "";
+      if (imageRes.candidates?.[0]?.content?.parts) {
+        for (const part of imageRes.candidates[0].content.parts) {
+          if (part.inlineData) {
+            base64Image = `data:image/png;base64,${part.inlineData.data}`;
+            break;
+          }
+        }
+      }
+
+      if (!base64Image) {
+        throw new Error("No image was returned from the generative model.");
+      }
+
+      res.json({
+        success: true,
+        expandedPrompt,
+        imageUrl: base64Image
+      });
+
+    } catch (error: any) {
+      console.error("Gemini AI-render error:", error);
+      res.status(500).json({ error: error?.message || "Failed to generate realistic rendering image" });
+    }
+  });
+
   // Vite middleware for development
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({
