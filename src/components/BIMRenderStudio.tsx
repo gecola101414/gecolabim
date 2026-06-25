@@ -16,6 +16,7 @@ interface BIMRenderStudioProps {
   entities: Entity[];
   onClose: () => void;
   onSaveRender?: (dataUrl: string) => void;
+  baseImage?: string | null;
 }
 
 // Custom Lighting Component based on selected preset
@@ -105,7 +106,7 @@ const EnvironmentPresetMapping = ({ preset }: { preset: string }) => {
   }
 };
 
-export const BIMRenderStudio: React.FC<BIMRenderStudioProps> = ({ entities, onClose, onSaveRender }) => {
+export const BIMRenderStudio: React.FC<BIMRenderStudioProps> = ({ entities, onClose, onSaveRender, baseImage }) => {
   // Rendering States
   const [lightPreset, setLightPreset] = useState<string>('daylight');
   const [materialTheme, setMaterialTheme] = useState<string>('project');
@@ -171,7 +172,8 @@ export const BIMRenderStudio: React.FC<BIMRenderStudioProps> = ({ entities, onCl
         },
         body: JSON.stringify({
           description: aiDescription,
-          aspectRatio: '16:9'
+          aspectRatio: '16:9',
+          image: baseImage || undefined
         })
       });
 
@@ -199,26 +201,15 @@ export const BIMRenderStudio: React.FC<BIMRenderStudioProps> = ({ entities, onCl
   const renderEntities = useMemo(() => {
     const bimList = entities.filter(e => e.isBIM && (e as any).isVisible !== false);
     
-    // Map with material finish override properties
+    // Always use a clean white/clay architectural mockup style for the base structure.
+    // The AI will override materials based on the prompt.
     return bimList.map(ent => {
       const e = { ...ent } as any;
-      
-      if (materialTheme === 'clay') {
-        e.color = '#e2e8f0'; // Clean architectural matte clay plaster
-        e.bimRenderMode = 'solid';
-      } else if (materialTheme === 'wood') {
-        e.color = '#c2410c'; // Walnut style warm wooden architectural mockup
-        e.bimRenderMode = 'solid';
-      } else if (materialTheme === 'chrome') {
-        e.color = '#94a3b8'; // Polished metallic mockup
-        e.bimRenderMode = 'solid';
-      } else if (materialTheme === 'glass') {
-        e.color = '#bae6fd'; // Crystalline light glass look
-        e.bimRenderMode = 'solid';
-      }
+      e.color = '#e2e8f0'; // Clean architectural matte clay plaster
+      e.bimRenderMode = 'solid';
       return e;
     });
-  }, [entities, materialTheme]);
+  }, [entities]);
 
   // Stage simulation names for progress
   const renderStages = [
@@ -386,44 +377,6 @@ export const BIMRenderStudio: React.FC<BIMRenderStudioProps> = ({ entities, onCl
                         <preset.icon size={15} className={lightPreset === preset.id ? "text-white" : "text-indigo-400"} />
                         <span className="text-[11px] font-extrabold truncate">{preset.name}</span>
                         <span className="text-[8.5px] opacity-70 leading-normal line-clamp-1">{preset.desc}</span>
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
-                {/* Finitura Materiali */}
-                <div className="space-y-3">
-                  <label className="text-[10.5px] font-black uppercase tracking-wider text-indigo-400 flex items-center gap-1.5">
-                    <Palette size={13} />
-                    <span>Stile Finitura PBR</span>
-                  </label>
-                  <div className="space-y-1.5">
-                    {[
-                      { id: 'project', label: 'Colori Progetto (Originali)', desc: 'Applica i colori impostati nella tavola CAD' },
-                      { id: 'clay', label: 'Modello in Gesso (Plaster)', desc: 'Matte Clay Bianco neutro per studi volumetrici' },
-                      { id: 'wood', label: 'Legno d\'Acero (Timber)', desc: 'Modello architettonico in essenza di legno calda' },
-                      { id: 'chrome', label: 'Acciaio Cromato (Metal)', desc: 'Strutture riflettenti e finiture cromate' },
-                      { id: 'glass', label: 'Crystalline Glass (Translucent)', desc: 'Volume semitrasparente ad altissima rifrazione' }
-                    ].map(style => (
-                      <button
-                        key={style.id}
-                        onClick={() => setMaterialTheme(style.id)}
-                        className={`w-full p-2.5 rounded-xl border text-left transition-all flex items-center gap-3 cursor-pointer ${
-                          materialTheme === style.id 
-                            ? 'bg-slate-800 border-indigo-500 text-white shadow shadow-indigo-500/10' 
-                            : 'bg-slate-900/20 border-slate-800/80 text-slate-400 hover:border-slate-700 hover:text-slate-200'
-                        }`}
-                      >
-                        <div className={`w-3.5 h-3.5 rounded-full border border-white/20 shrink-0 ${
-                          style.id === 'project' ? 'bg-gradient-to-tr from-blue-400 via-rose-400 to-amber-400' :
-                          style.id === 'clay' ? 'bg-slate-100' :
-                          style.id === 'wood' ? 'bg-amber-800' :
-                          style.id === 'chrome' ? 'bg-slate-400 shadow-[inset_0_0_4px_white]' : 'bg-sky-200/40 backdrop-blur-sm'
-                        }`} />
-                        <div className="flex-1 min-w-0">
-                          <div className="text-[11px] font-bold truncate">{style.label}</div>
-                          <div className="text-[8.5px] opacity-70 truncate">{style.desc}</div>
-                        </div>
                       </button>
                     ))}
                   </div>
@@ -616,6 +569,22 @@ export const BIMRenderStudio: React.FC<BIMRenderStudioProps> = ({ entities, onCl
                     <span className="text-[10px] text-slate-400 font-extrabold">Widescreen Ultra HD (16:9)</span>
                   </div>
                 </div>
+
+                {/* Base Image Reference */}
+                {baseImage && (
+                  <div className="space-y-2.5">
+                    <div className="text-[9.5px] font-black uppercase tracking-wider text-indigo-400 flex items-center gap-1.5">
+                      <Camera size={13} />
+                      <span>Prospettiva Camera BIM</span>
+                    </div>
+                    <div className="rounded-xl border border-indigo-500/30 overflow-hidden relative group">
+                      <img src={baseImage} alt="Base perspective" className="w-full h-auto object-cover opacity-80 group-hover:opacity-100 transition-opacity" />
+                      <div className="absolute inset-0 bg-gradient-to-t from-slate-900/80 to-transparent pointer-events-none flex items-end p-2">
+                        <span className="text-[8px] text-white font-bold tracking-wider">GUIDA STRUTTURALE ATTIVA</span>
+                      </div>
+                    </div>
+                  </div>
+                )}
               </div>
             )}
 

@@ -24,7 +24,7 @@ export interface BIMObject {
   relations: string[];
 }
 
-export type EntityType = 'line' | 'circle' | 'rectangle' | 'dimension' | 'arc' | 'point' | 'text' | 'hatch' | 'image' | 'bim-csg';
+export type EntityType = 'line' | 'circle' | 'rectangle' | 'dimension' | 'arc' | 'point' | 'text' | 'hatch' | 'image' | 'bim-csg' | 'camera';
 
 export interface CADEntity {
   id: string;
@@ -78,7 +78,7 @@ export interface CADEntity {
   /** @deprecated Use bimData instead */
   bimHatchPattern?: 'SOLID' | 'ANSI31' | 'CROSS' | 'NONE'; 
   /** @deprecated Use bimData instead */
-  bimRenderMode?: 'solid' | 'transparent';
+  bimRenderMode?: 'solid' | 'transparent' | 'parete_verticale' | 'parete_orizzontale';
   /** @deprecated Use bimData instead */
   bimDescription?: string;
   /** @deprecated Use bimData instead */
@@ -155,6 +155,7 @@ export interface HatchEntity extends CADEntity {
   holes?: Point[][]; // Inner boundaries (holes)
   backgroundColor?: string;
   sfumatura?: number;
+  isLinear?: boolean;
 }
 
 export interface ImageEntity extends CADEntity {
@@ -187,7 +188,13 @@ export interface CSGMeshEntity extends CADEntity {
   };
 }
 
-export type Entity = LineEntity | CircleEntity | RectEntity | DimensionEntity | ArcEntity | PointEntity | TextEntity | HatchEntity | ImageEntity | CSGMeshEntity;
+export interface CameraEntity extends CADEntity {
+  type: 'camera';
+  point: Point;
+  angle: number;
+}
+
+export type Entity = LineEntity | CircleEntity | RectEntity | DimensionEntity | ArcEntity | PointEntity | TextEntity | HatchEntity | ImageEntity | CSGMeshEntity | CameraEntity;
 
 export interface Measurement {
   id: string;

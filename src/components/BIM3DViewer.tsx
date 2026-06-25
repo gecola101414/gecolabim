@@ -1,8 +1,58 @@
 import React, { useMemo, useRef, useEffect, useState, useCallback } from 'react';
-import { Canvas, useFrame } from '@react-three/fiber';
+import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { OrbitControls, PerspectiveCamera, OrthographicCamera, Grid, Stars, Float, Text, Html, ContactShadows, Environment, Edges, GizmoHelper, GizmoViewcube, Line } from '@react-three/drei';
+
+const AICameraManager = ({ aiCamera, triggerCapture, onCaptureDone }: { aiCamera: any, triggerCapture: boolean, onCaptureDone: (dataUrl: string) => void }) => {
+  const { camera, gl, scene } = useThree();
+  
+  useEffect(() => {
+    if (triggerCapture) {
+      if (aiCamera) {
+        const oldPos = camera.position.clone();
+        const oldRot = camera.rotation.clone();
+        
+        const x = aiCamera.point.x / 100;
+        const z = -aiCamera.point.y / 100;
+        const y = 1.6; // Eye level in meters
+        
+        const angleRad = aiCamera.angle * Math.PI / 180;
+        const dx = Math.cos(angleRad);
+        const dy = Math.sin(angleRad); 
+        
+        const targetX = x + dx;
+        const targetZ = z - dy; // Because 2D Y goes down, but in 3D -Z goes "up" the 2D canvas
+        
+        camera.position.set(x, y, z);
+        camera.lookAt(targetX, y, targetZ);
+        camera.updateMatrixWorld();
+        
+        gl.render(scene, camera);
+        
+        try {
+          const dataUrl = gl.domElement.toDataURL('image/png', 1.0);
+          onCaptureDone(dataUrl);
+        } catch (e) {
+          onCaptureDone('');
+        }
+        
+        camera.position.copy(oldPos);
+        camera.rotation.copy(oldRot);
+        camera.updateMatrixWorld();
+      } else {
+        gl.render(scene, camera);
+        try {
+          const dataUrl = gl.domElement.toDataURL('image/png', 1.0);
+          onCaptureDone(dataUrl);
+        } catch (e) {
+          onCaptureDone('');
+        }
+      }
+    }
+  }, [triggerCapture, aiCamera, camera, gl, scene, onCaptureDone]);
+
+  return null;
+};
 import * as THREE from 'three';
-import { useThree } from '@react-three/fiber';
 import { Entity, Point, LineEntity, RectEntity, Floor } from '../types';
 import { X, ZoomIn, ZoomOut, RotateCw, Box, Layers, Database, Maximize, Home, Compass, Eye, EyeOff, Lightbulb, LightbulbOff, Info, Settings, MousePointer2, Move, Scissors, Play, Pause, RefreshCw, ArrowDown, ArrowUp, ArrowLeft, ArrowRight, Edit, Trash2, Wand2, Lock, Unlock, FolderTree, ChevronDown, ChevronRight, Sliders, Layers3, Camera } from 'lucide-react';
 import { BIMElementDialog, PorteDialog, FinestreDialog } from './BIMDialogs';
@@ -128,6 +178,15 @@ const CADCubeIcon = ({
     </div>
   );
 };
+
+const CameraViewIcon = ({ size = 20, className = "" }: { size?: number, className?: string }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
+    <path d="M15 2H9L7 5H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-3l-2-3z" />
+    <circle cx="12" cy="11" r="3" />
+    <line x1="12" y1="14" x2="4" y2="22" />
+    <line x1="12" y1="14" x2="20" y2="22" />
+  </svg>
+);
 
 
 const SmartCappingWrapper = ({
@@ -816,6 +875,7 @@ export const Room = ({
   areaType, 
   baseZ, 
   renderMode,
+  isLinear,
   clippingPlanes = [], 
   opacity = 1,
   globalOpacityMode = 'WORK',
@@ -843,7 +903,8 @@ export const Room = ({
   name?: string, 
   areaType?: string, 
   baseZ: number, 
-  renderMode?: 'solid' | 'transparent', 
+  renderMode?: 'solid' | 'transparent' | 'parete_verticale' | 'parete_orizzontale',
+  isLinear?: boolean,
   clippingPlanes?: THREE.Plane[], 
   opacity?: number,
   globalOpacityMode?: 'WORK' | 'SOLID',
@@ -864,7 +925,7 @@ export const Room = ({
   parentPivot?: [number, number, number],
   parentRotation?: [number, number, number]
 }) => {
-  const h = height / 100; // Convert to meters
+  const h = renderMode === 'parete_orizzontale' ? 0.03 : height / 100; // Convert to meters: 3cm symbolic thickness for horizontal walls
   const zBase = baseZ / 100;
   const shape = useMemo(() => {
     if (!points || points.length < 3) return null;
@@ -912,7 +973,7 @@ export const Room = ({
     return [sx / (points.length * 100), zBase + h + 0.05, -sy / (points.length * 100)] as [number, number, number];
   }, [points, h, zBase]);
 
-  const isWall = areaType === 'muro';
+  const isWall = areaType === 'muro' || renderMode === 'parete_verticale';
   
   let finalOpacity;
   let finalFloorOpacity;
@@ -967,6 +1028,86 @@ export const Room = ({
       roomShowCapTop = tY > minY && tY < maxY;
       roomShowCapBottom = bY > minY && bY < maxY;
     }
+  }
+
+  const verticalWallSegments = useMemo(() => {
+    if (renderMode !== 'parete_verticale' || !points || points.length < 2) return [];
+    const result = [];
+    const h = height / 100;
+    const zBase = baseZ / 100;
+    const symbolicThickness = 0.04; // 4 cm symbolic thickness for vertical walls
+    
+    // Close the loop for perimeter walls only if not linear
+    const len = points.length;
+    const loopLimit = isLinear ? len - 1 : len;
+    for (let i = 0; i < loopLimit; i++) {
+      const p1 = points[i];
+      const p2 = points[(i + 1) % len];
+      
+      const dx = p2.x - p1.x;
+      const dy = p2.y - p1.y;
+      const length = Math.sqrt(dx * dx + dy * dy);
+      if (length < 0.01) continue; // Skip identical points
+      
+      const angle = Math.atan2(dy, dx);
+      const centerX = (p1.x + p2.x) / 2;
+      const centerY = (p1.y + p2.y) / 2;
+      
+      result.push({
+        position: [centerX / 100, zBase + h / 2, -centerY / 100] as [number, number, number],
+        rotation: [0, -angle, 0] as [number, number, number],
+        args: [length / 100, h, symbolicThickness] as [number, number, number],
+      });
+    }
+    return result;
+  }, [points, height, baseZ, renderMode, isLinear]);
+
+  if (renderMode === 'parete_verticale') {
+    return (
+      <group>
+        {verticalWallSegments.map((seg, idx) => (
+          <group key={idx}>
+            {/* Solid Clipped part */}
+            <mesh position={seg.position} rotation={seg.rotation} castShadow receiveShadow>
+              <boxGeometry args={seg.args} />
+              <meshStandardMaterial 
+                color={color} 
+                transparent={finalOpacity < 1} 
+                opacity={finalOpacity} 
+                metalness={0.25}
+                roughness={0.4}
+                envMapIntensity={1.2}
+                clippingPlanes={clippingPlanes}
+                clipShadows={true}
+                side={THREE.DoubleSide}
+              />
+            </mesh>
+
+            {/* Wireframe Reference - Unclipped */}
+            <mesh position={seg.position} rotation={seg.rotation}>
+              <boxGeometry args={seg.args} />
+              <meshBasicMaterial transparent opacity={0} depthWrite={false} />
+              <Edges color="#e2e8f0" threshold={5} transparent opacity={globalOpacityMode === 'SOLID' ? 0.9 : 0.4} />
+            </mesh>
+          </group>
+        ))}
+
+        {name && (
+          <Text
+            position={center as [number, number, number]}
+            fontSize={0.16}
+            color="white"
+            anchorX="center"
+            anchorY="middle"
+            outlineWidth={0.02}
+            outlineColor="#0f172a"
+            visible={clippingPlanes.length === 0 || clippingPlanes.every(p => p.distanceToPoint(new THREE.Vector3(...(center as [number, number, number]))) >= 0)}
+          >
+            {name}
+          </Text>
+        )}
+      </group>
+    );
   }
 
   return (
@@ -2065,7 +2206,19 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
   const [showSectionConfig, setShowSectionConfig] = useState(false);
   const [isRealistic, setIsRealistic] = useState(false);
   const [isRenderStudioOpen, setIsRenderStudioOpen] = useState(false);
+  const [renderBaseImage, setRenderBaseImage] = useState<string | null>(null);
+  const [triggerAICapture, setTriggerAICapture] = useState(false);
   const [globalOpacityMode, setGlobalOpacityMode] = useState<'WORK' | 'SOLID'>('WORK');
+
+  const handleSetRenderView = () => {
+    setTriggerAICapture(true);
+  };
+  
+  const onAICaptureDone = useCallback((dataUrl: string) => {
+    setTriggerAICapture(false);
+    if (dataUrl) setRenderBaseImage(dataUrl);
+    setIsRenderStudioOpen(true);
+  }, []);
   const [globalRoomOpacityVal, setGlobalRoomOpacityVal] = useState<number>(0.25);
   const [globalWallOpacityVal, setGlobalWallOpacityVal] = useState<number>(0.50);
   const [transparentEntities, setTransparentEntities] = useState<Set<string>>(new Set());
@@ -3128,6 +3281,17 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
         >
           <FolderTree size={20} className={isBimTreeOpen ? "animate-pulse" : ""} />
           <span className="text-[10.5px] font-black uppercase tracking-wider">Albero BIM</span>
+        </button>
+
+        <div className="w-px h-8 bg-slate-200 mx-1" />
+
+        <button 
+          onClick={handleSetRenderView}
+          className="p-3 rounded-xl bg-gradient-to-br from-indigo-500 to-purple-600 text-white shadow-lg shadow-indigo-500/20 transition-all active:scale-95 flex items-center gap-1.5 cursor-pointer"
+          title="Imposta Vista per Rendering AI"
+        >
+          <CameraViewIcon size={20} className="animate-pulse" />
+          <span className="text-[10.5px] font-black uppercase tracking-wider">Vista Rendering</span>
         </button>
 
         <div className="w-px h-8 bg-slate-200 mx-1" />
@@ -4738,7 +4902,8 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
 
       {/* 3D SCENE CANVAS */}
       <div className={`flex-1 cursor-crosshair transition-colors duration-1000 ${isRealistic ? 'bg-gradient-to-b from-sky-100 to-white' : 'bg-[#fdfdfd]'}`}>
-        <Canvas shadows dpr={[1, 2]} gl={{ antialias: true, alpha: true, localClippingEnabled: true }}>
+        <Canvas shadows dpr={[1, 2]} gl={{ preserveDrawingBuffer: true, antialias: true, alpha: true, localClippingEnabled: true }}>
+          <AICameraManager aiCamera={entities.find(e => e.type === 'camera')} triggerCapture={triggerAICapture} onCaptureDone={onAICaptureDone} />
           {isRealistic ? (
              <Environment preset="apartment" background blur={0.8} />
           ) : (
@@ -4945,9 +5110,10 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
                             />
                           );
                         } else if (isMuro) {
-                          return points.length >= 3 && (entity as any).type === 'hatch' ? (
+                          return (points.length >= 3 || e.isLinear) && e.type === 'hatch' ? (
                             <Room 
                               renderMode={e.bimRenderMode}
+                              isLinear={e.isLinear}
                               points={points} 
                               holes={e.holes} 
                               height={heightValue} 
@@ -5002,10 +5168,11 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
                               parentRotation={[rx, ry, rz]}
                             />
                           );
-                        } else if (entity.bimType === 'room' || entity.bimType === 'element') {
+                        } else if (e.bimType === 'room' || e.bimType === 'element') {
                           return (
                             <Room 
                               renderMode={e.bimRenderMode}
+                              isLinear={e.isLinear}
                               points={points} 
                               holes={e.holes}
                               height={heightValue} 
@@ -5136,6 +5303,7 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
         <BIMRenderStudio 
           entities={entities} 
           onClose={() => setIsRenderStudioOpen(false)} 
+          baseImage={renderBaseImage}
         />
       )}
     </div>

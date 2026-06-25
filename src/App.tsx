@@ -81,7 +81,8 @@ import {
   Settings2,
   Maximize,
   RefreshCw,
-  Sliders
+  Sliders,
+  Monitor
 } from "lucide-react";
 
 const RotateScaleIcon = ({ size = 16 }: { size?: number }) => (
@@ -555,7 +556,7 @@ const MASONRY_TYPES = [
   const [activeSidebarTab, setActiveSidebarTab] = useState<'penne' | 'tavole' | 'layers' | 'maschere' | 'testo' | 'gemini' | 'manuale' | 'bim'>(() => (localStorage.getItem('activeSidebarTab') as any) || 'penne');
   const [isBIMElementDialogOpen, setIsBIMElementDialogOpen] = useState(false);
   const [is3DViewOpen, setIs3DViewOpen] = useState(false);
-  const [detectedAreaPoints, setDetectedAreaPoints] = useState<Point[] | { points: Point[], holes?: Point[][] } | null>(null);
+  const [detectedAreaPoints, setDetectedAreaPoints] = useState<Point[] | { points: Point[], holes?: Point[][], isLinear?: boolean } | null>(null);
   const [editingEntityId, setEditingEntityId] = useState<string | null>(null);
   const [hoveredGuide, setHoveredGuide] = useState<GuideItem | null>(null);
   const [guideLockedBy, setGuideLockedBy] = useState<string | null>(null);
@@ -776,7 +777,7 @@ const MASONRY_TYPES = [
     }
   };
 
-  const handleBIMElementDetected = (result: { points: Point[], holes?: Point[][] }) => {
+  const handleBIMElementDetected = (result: { points: Point[], holes?: Point[][], isLinear?: boolean }) => {
     setDetectedAreaPoints(result);
     setEditingEntityId(null);
     setIsBIMElementDialogOpen(true);
@@ -794,7 +795,8 @@ const MASONRY_TYPES = [
     } else {
       setDetectedAreaPoints({
         points: (ent as any).bimPoints || (ent as any).points || [],
-        holes: (ent as any).holes
+        holes: (ent as any).holes,
+        isLinear: (ent as any).isLinear
       });
       setEditingEntityId(id);
       setIsBIMElementDialogOpen(true);
@@ -810,7 +812,7 @@ const MASONRY_TYPES = [
     zElevation: number; 
     objectHeight: number; 
     hatch: 'SOLID' | 'ANSI31' | 'CROSS' | 'NONE';
-    bimRenderMode?: 'solid' | 'transparent';
+    bimRenderMode?: 'solid' | 'transparent' | 'parete_verticale' | 'parete_orizzontale';
   }) => {
     if (!detectedAreaPoints) return;
 
@@ -840,12 +842,14 @@ const MASONRY_TYPES = [
       // CREATE NEW
       const pts = Array.isArray(detectedAreaPoints) ? detectedAreaPoints : detectedAreaPoints.points;
       const hls = Array.isArray(detectedAreaPoints) ? undefined : detectedAreaPoints.holes;
+      const isLinearArea = Array.isArray(detectedAreaPoints) ? false : !!detectedAreaPoints.isLinear;
 
       const newElement: Entity = {
         id: `bim-elem-${Date.now()}`,
         type: 'hatch', 
         points: pts,
         holes: hls,
+        isLinear: isLinearArea,
         color: data.color || 'rgba(0,0,0,0.5)',
         strokeWidth: 1,
         layer: 'BIM_Elementi',
@@ -1579,8 +1583,9 @@ const MASONRY_TYPES = [
         { name: "Eraser", icon: Eraser },
         { name: "Parallel", icon: ParallelIcon },
         { name: "RotateScale", icon: RotateScaleIcon },
-        { name: "CopiaVideo", icon: Camera },
+        { name: "CopiaVideo", icon: Monitor },
         { name: "Join", icon: Link },
+        { name: "Camera", icon: Camera },
         { name: "Raccordo", icon: RaccordoIcon },
         { name: "Move", icon: Move },
         { name: "Copy", icon: Copy },

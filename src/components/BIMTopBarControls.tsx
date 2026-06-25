@@ -35,6 +35,26 @@ import {
   Square,
   FolderOpen
 } from 'lucide-react';
+
+const PolylineIcon = ({ size = 13, className }: { size?: number; className?: string }) => (
+  <svg 
+    width={size} 
+    height={size} 
+    viewBox="0 0 24 24" 
+    fill="none" 
+    stroke="currentColor" 
+    strokeWidth="2.2" 
+    strokeLinecap="round" 
+    strokeLinejoin="round"
+    className={className}
+  >
+    <polyline points="3,17 9,7 16,13 21,5" />
+    <circle cx="3" cy="17" r="2" fill="currentColor" stroke="none" />
+    <circle cx="9" cy="7" r="2" fill="currentColor" stroke="none" />
+    <circle cx="16" cy="13" r="2" fill="currentColor" stroke="none" />
+    <circle cx="21" cy="5" r="2" fill="currentColor" stroke="none" />
+  </svg>
+);
 import { TEMPLATES, Template } from '../data/templates';
 import { Entity } from '../types';
 import { exportEntitiesToIFC } from '../utils/ifcExport';
@@ -246,7 +266,7 @@ export const BIMTopBarControls: React.FC<BIMTopBarControlsProps> = ({
             setSelectedTool('BIM_RilevaStanza');
           }}
           className={`px-2 py-0.5 rounded-l flex items-center gap-1 text-xs border border-r-0 transition ${
-            selectedTool === 'BIM_RilevaStanza' || selectedTool === 'BIM_DisegnaStanza'
+            selectedTool === 'BIM_RilevaStanza' || selectedTool === 'BIM_DisegnaStanza' || selectedTool === 'BIM_DisegnaLineare'
               ? 'bg-cyan-100 text-cyan-950 font-bold border-cyan-300 shadow-sm' 
               : 'hover:bg-neutral-100 border-neutral-300 bg-white'
           }`}
@@ -254,7 +274,11 @@ export const BIMTopBarControls: React.FC<BIMTopBarControlsProps> = ({
         >
           <span className="text-cyan-600 font-bold text-[10px]">🏗️</span>
           <span>
-            {selectedTool === 'BIM_DisegnaStanza' ? 'Traccia Elemento' : 'Rileva Elemento'}
+            {selectedTool === 'BIM_DisegnaStanza' 
+              ? 'Traccia Elemento' 
+              : selectedTool === 'BIM_DisegnaLineare' 
+                ? 'Rilievo Lineare' 
+                : 'Rileva Elemento'}
           </span>
         </button>
         <button
@@ -300,6 +324,22 @@ export const BIMTopBarControls: React.FC<BIMTopBarControlsProps> = ({
               <div className="flex flex-col text-left">
                 <span>Traccia punti esterni</span>
                 <span className="text-[9px] text-neutral-400 font-normal">Disegno manuale vertici</span>
+              </div>
+            </button>
+
+            <button
+              onClick={() => {
+                setSelectedTool('BIM_DisegnaLineare');
+                setActiveDropdown(null);
+              }}
+              className={`w-full text-left px-2 py-1.5 hover:bg-neutral-50 transition rounded text-[11px] font-medium flex items-center gap-2 ${
+                selectedTool === 'BIM_DisegnaLineare' ? 'bg-emerald-50 text-emerald-800 font-bold' : 'text-neutral-700'
+              }`}
+            >
+              <PolylineIcon size={13} className="text-emerald-600" />
+              <div className="flex flex-col text-left">
+                <span>Tracciato Lineare</span>
+                <span className="text-[9px] text-neutral-400 font-normal">Pareti verticali per polilinea</span>
               </div>
             </button>
           </div>

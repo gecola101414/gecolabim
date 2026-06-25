@@ -1,5 +1,5 @@
 import React, { useRef, useEffect, useState, forwardRef, useImperativeHandle, useMemo } from 'react';
-import { Entity, Point, Layer, LineEntity, CircleEntity, ArcEntity, RectEntity, InkPoint, Tavola, DimensionEntity, PointEntity, ImageEntity } from '../types';
+import { Entity, Point, Layer, LineEntity, CircleEntity, ArcEntity, RectEntity, InkPoint, Tavola, DimensionEntity, PointEntity, ImageEntity, CameraEntity } from '../types';
 import { ManualInputOverlay } from './ManualInputOverlay';
 import { TEMPLATES, Template } from '../data/templates';
 import { PdfRenderer } from './PdfRenderer';
@@ -80,6 +80,7 @@ export interface CADCanvasAPI {
 }
 
 export type DrawingState = {
+  type?: string;
   start: Point;
   current?: Point;
   arcStartPoint?: Point;
@@ -2582,7 +2583,7 @@ interface CADCanvasProps {
     angle: number;
     color: string;
   };
-  onAreaDetected?: (result: { points: Point[], holes?: Point[][] }) => void;
+  onAreaDetected?: (result: { points: Point[], holes?: Point[][], isLinear?: boolean }) => void;
   onSelectionComplete?: (ids: string[], point: Point) => void;
   initialSelectedIds?: string[];
   selectedEntityIds?: string[];
@@ -3946,7 +3947,7 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
         }
     }
 
-    const isDrawingTool = ['Line', 'Circle', 'Arc', 'Rectangle', 'Hatch', 'Dimension', 'Muro', 'BIM_Muro', 'BIM_Porta', 'BIM_Finestra', 'BIM_Symbol', 'BIM_DisegnaStanza'].includes(activeTool);
+    const isDrawingTool = ['Line', 'Circle', 'Arc', 'Rectangle', 'Hatch', 'Dimension', 'Muro', 'BIM_Muro', 'BIM_Porta', 'BIM_Finestra', 'BIM_Symbol', 'BIM_DisegnaStanza', 'BIM_DisegnaLineare'].includes(activeTool);
     if (isDrawingTool && (drawing ? true : isShiftPressedRef.current)) {
         const threshold = 12 / view.zoom;
         const uniqueKeyPoints: Point[] = [];
@@ -5470,6 +5471,29 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
           const height = entity.p2.y - entity.p1.y;
           ctx.rect(entity.p1.x, entity.p1.y, width, height);
           ctx.stroke();
+        } else if (entity.type === 'camera') {
+          // Draw Camera Icon
+          ctx.save();
+          ctx.translate(entity.point.x, entity.point.y);
+          ctx.rotate(entity.angle * Math.PI / 180);
+          
+          ctx.beginPath();
+          // Camera body
+          ctx.rect(-10 / view.zoom, -8 / view.zoom, 20 / view.zoom, 16 / view.zoom);
+          // Camera lens
+          ctx.moveTo(10 / view.zoom, -4 / view.zoom);
+          ctx.lineTo(18 / view.zoom, -8 / view.zoom);
+          ctx.lineTo(18 / view.zoom, 8 / view.zoom);
+          ctx.lineTo(10 / view.zoom, 4 / view.zoom);
+          
+          ctx.strokeStyle = '#4f46e5'; // Indigo color
+          ctx.lineWidth = 2 / view.zoom;
+          ctx.stroke();
+          
+          ctx.fillStyle = 'rgba(79, 70, 229, 0.2)';
+          ctx.fill();
+          
+          ctx.restore();
         } else if (entity.type === 'text') {
           ctx.font = `${entity.fontWeight || 'normal'} ${entity.fontSize / view.zoom}px ${entity.fontFamily || 'sans-serif'}`;
           let textColor = entity.color || '#000000';
@@ -5498,14 +5522,41 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
             ctx.strokeRect(entity.point.x + offsetX - 4/view.zoom, entity.point.y - 4/view.zoom, maxW + 8/view.zoom, h + 8/view.zoom);
           }
         } else if (entity.type === 'hatch') {
-          drawHatchPattern(ctx, entity, view.zoom);
-          ctx.beginPath();
-          if ((selectedEntityId === entity.id || isFlashing) && entity.points && entity.points.length >= 3) {
+          if (entity.bimRenderMode !== 'parete_verticale' && entity.bimRenderMode !== 'parete_orizzontale' && !entity.isLinear) {
+            drawHatchPattern(ctx, entity, view.zoom);
+          }
+          
+          if (entity.points && entity.points.length >= 2) {
+            ctx.save();
+            ctx.beginPath();
             ctx.moveTo(entity.points[0].x, entity.points[0].y);
             for (let i = 1; i < entity.points.length; i++) {
               ctx.lineTo(entity.points[i].x, entity.points[i].y);
             }
-            ctx.closePath();
+            if (entity.points.length > 2 && !entity.isLinear && entity.bimRenderMode !== 'parete_verticale' && entity.bimRenderMode !== 'parete_orizzontale') {
+               ctx.closePath();
+            }
+            
+            const isDefaultColor = !entity.color || entity.color === '#000000' || entity.color === 'rgba(0,0,0,0.5)' || entity.color === 'rgba(0, 0, 0, 0.5)';
+            
+            if (entity.bimRenderMode === 'parete_verticale') {
+              ctx.strokeStyle = selectedEntityId === entity.id || isFlashing ? '#06b6d4' : (isDefaultColor ? '#059669' : entity.color);
+              ctx.lineWidth = (selectedEntityId === entity.id || isFlashing ? 5.0 : 4.0) / view.zoom;
+              ctx.setLineDash([8 / view.zoom, 4 / view.zoom]);
+            } else if (entity.bimRenderMode === 'parete_orizzontale') {
+              ctx.strokeStyle = selectedEntityId === entity.id || isFlashing ? '#06b6d4' : (isDefaultColor ? '#0284c7' : entity.color);
+              ctx.lineWidth = (selectedEntityId === entity.id || isFlashing ? 5.0 : 4.0) / view.zoom;
+              ctx.setLineDash([4 / view.zoom, 4 / view.zoom]);
+            } else if (entity.isLinear) {
+              ctx.strokeStyle = selectedEntityId === entity.id || isFlashing ? '#06b6d4' : (isDefaultColor ? '#059669' : entity.color);
+              ctx.lineWidth = (selectedEntityId === entity.id || isFlashing ? 5.0 : 4.0) / view.zoom;
+              ctx.setLineDash([]);
+            } else {
+              ctx.strokeStyle = selectedEntityId === entity.id || isFlashing ? '#06b6d4' : (isDefaultColor ? '#475569' : entity.color);
+              ctx.lineWidth = (selectedEntityId === entity.id || isFlashing ? 3.0 : 2.0) / view.zoom;
+            }
+            ctx.stroke();
+            ctx.restore();
           }
         } else if (entity.type === 'image') {
           const img = entity as any;
@@ -5949,11 +6000,11 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
       // Removed Redundant Tecnigrafo measurement label block here
 
       // --- BIM LIVE PREVIEWS (STARTS) ---
-      if (activeTool === 'BIM_DisegnaStanza' && manualRoomPoints.length > 0) {
+      if ((activeTool === 'BIM_DisegnaStanza' || activeTool === 'BIM_DisegnaLineare') && manualRoomPoints.length > 0) {
         ctx.save();
-        ctx.strokeStyle = '#10b981';
-        ctx.lineWidth = 1.5 / view.zoom;
-        ctx.fillStyle = 'rgba(16, 185, 129, 0.08)';
+        ctx.strokeStyle = activeTool === 'BIM_DisegnaLineare' ? '#10b981' : '#10b981';
+        ctx.lineWidth = activeTool === 'BIM_DisegnaLineare' ? 4.0 / view.zoom : 1.5 / view.zoom;
+        ctx.fillStyle = activeTool === 'BIM_DisegnaLineare' ? 'rgba(16, 185, 129, 0.04)' : 'rgba(16, 185, 129, 0.08)';
         ctx.beginPath();
         ctx.moveTo(manualRoomPoints[0].x, manualRoomPoints[0].y);
         for (let i = 1; i < manualRoomPoints.length; i++) {
@@ -5962,7 +6013,9 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
         // Draw to current mouse pos
         ctx.lineTo(actualMousePosRef.current.x, actualMousePosRef.current.y);
         ctx.stroke();
-        ctx.fill();
+        if (activeTool === 'BIM_DisegnaStanza') {
+            ctx.fill();
+        }
 
         // Draw circles at corners
         manualRoomPoints.forEach(p => {
@@ -6099,7 +6152,7 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
       // --- BIM LIVE PREVIEWS (ENDS) ---
 
       // Draw current drawing preview
-      if (drawing && (activeTool === 'Line' || activeTool === 'Circle' || activeTool === 'Rectangle' || activeTool === 'Arc' || activeTool === 'Dimension')) {
+      if (drawing && (activeTool === 'Line' || activeTool === 'Circle' || activeTool === 'Rectangle' || activeTool === 'Arc' || activeTool === 'Dimension' || activeTool === 'Camera')) {
         let isKnownAngle = false;
         let matchedAngle = 0;
         if (activeTool === 'Line') {
@@ -6209,6 +6262,24 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
                 const width = drawing.current.x - drawing.start.x;
                 const height = drawing.current.y - drawing.start.y;
                 ctx.rect(drawing.start.x, drawing.start.y, width, height);
+            } else if (activeTool === 'Camera') {
+                const dx = drawing.current.x - drawing.start.x;
+                const dy = drawing.current.y - drawing.start.y;
+                let angle = Math.atan2(dy, dx);
+                if (dx === 0 && dy === 0) angle = 0;
+                
+                ctx.save();
+                ctx.translate(drawing.start.x, drawing.start.y);
+                ctx.rotate(angle);
+                
+                // Camera body
+                ctx.rect(-10 / view.zoom, -8 / view.zoom, 20 / view.zoom, 16 / view.zoom);
+                // Camera lens
+                ctx.moveTo(10 / view.zoom, -4 / view.zoom);
+                ctx.lineTo(18 / view.zoom, -8 / view.zoom);
+                ctx.lineTo(18 / view.zoom, 8 / view.zoom);
+                ctx.lineTo(10 / view.zoom, 4 / view.zoom);
+                ctx.restore();
             } else if (activeTool === 'Arc') {
                 if (!drawing.arcStartPoint) {
                     // Previewing radius line
@@ -7557,7 +7628,10 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
                   for (let i = 1; i < hPoints.length; i++) {
                       ctx.lineTo(hPoints[i].x, hPoints[i].y);
                   }
-                  ctx.closePath();
+                  const isLinearH = !Array.isArray(highlightedPoints) && (highlightedPoints as any).isLinear;
+                  if (!isLinearH) {
+                      ctx.closePath();
+                  }
                   
                   if (hHoles) {
                       hHoles.forEach((hole: Point[]) => {
@@ -7583,8 +7657,10 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
               ctx.stroke();
 
               // Subtle fill for confirmation
-              ctx.fillStyle = `rgba(52, 211, 153, 0.1)`;
-              ctx.fill('evenodd');
+              if (!(!Array.isArray(highlightedPoints) && (highlightedPoints as any).isLinear)) {
+                  ctx.fillStyle = `rgba(52, 211, 153, 0.1)`;
+                  ctx.fill('evenodd');
+              }
 
               ctx.restore();
           }
@@ -9752,6 +9828,51 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
                 return;
             }
             
+            if (activeTool === 'BIM_DisegnaLineare' || activeTool === 'BIM_DisegnaStanza') {
+                if (manualRoomPoints.length >= 2) {
+                    const snap = getSnappedPoint(rawPoint, entities, activeTool, null);
+                    const finalPt = snap.snapped ? snap.point : rawPoint;
+                    const pts = [...manualRoomPoints];
+                    const lastPt = pts[pts.length - 1];
+                    if (Math.hypot(finalPt.x - lastPt.x, finalPt.y - lastPt.y) > 10 / view.zoom) {
+                        pts.push(finalPt);
+                    }
+                    if (onAreaDetected) {
+                        onAreaDetected({ points: pts, isLinear: activeTool === 'BIM_DisegnaLineare' });
+                        setManualRoomPoints([]);
+                        setActiveTool?.('Select');
+                    } else {
+                        const isLinear = activeTool === 'BIM_DisegnaLineare';
+                        const nextIdx = entities.filter(e => e.isBIM && e.bimType === 'room').length + 1;
+                        const newRoom: Entity = {
+                            id: Date.now().toString(),
+                            type: 'hatch',
+                            isBIM: true,
+                            bimType: 'room',
+                            bimName: isLinear ? 'Parete Lineare ' + nextIdx : 'Stanza ' + nextIdx,
+                            bimHeight: 2.70,
+                            color: isLinear ? 'rgba(16, 185, 129, 0.15)' : 'rgba(52, 211, 153, 0.15)',
+                            points: pts,
+                            pattern: 'SOLID',
+                            scale: 1,
+                            angle: 0,
+                            lineWidth: 1,
+                            mode: 'pencil',
+                            layer: activeLayerId,
+                            bimRenderMode: isLinear ? 'parete_verticale' : 'solid'
+                        };
+                        setEntities(prev => {
+                            const next = [...prev, newRoom];
+                            return next;
+                        });
+                        onSelect(newRoom.id);
+                        setManualRoomPoints([]);
+                        setActiveTool?.('Select');
+                    }
+                }
+                return;
+            }
+            
         }
     }
     lastClickTimeRef.current = now;
@@ -10428,32 +10549,35 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
                 "3. Controlla che le porte o finestre non interrompano completamente la continuità dei muri."
             );
         }
-    } else if (activeTool === 'BIM_DisegnaStanza') {
+    } else if (activeTool === 'BIM_DisegnaStanza' || activeTool === 'BIM_DisegnaLineare') {
         const clickedPoint = snapped.point;
         if (manualRoomPoints.length > 2) {
             const firstPt = manualRoomPoints[0];
             const distToStart = Math.sqrt((clickedPoint.x - firstPt.x)**2 + (clickedPoint.y - firstPt.y)**2);
             if (distToStart < 15 / view.zoom) {
                 if (onAreaDetected) {
-                    onAreaDetected({ points: [...manualRoomPoints] });
+                    onAreaDetected({ points: [...manualRoomPoints], isLinear: activeTool === 'BIM_DisegnaLineare' });
                     setManualRoomPoints([]);
+                    setActiveTool?.('Select');
                 } else {
+                    const isLinear = activeTool === 'BIM_DisegnaLineare';
                     const nextIdx = entities.filter(e => e.isBIM && e.bimType === 'room').length + 1;
                     const newRoom: Entity = {
                         id: Date.now().toString(),
                         type: 'hatch',
                         isBIM: true,
                         bimType: 'room',
-                        bimName: 'Stanza ' + nextIdx,
+                        bimName: isLinear ? 'Parete Lineare ' + nextIdx : 'Stanza ' + nextIdx,
                         bimHeight: 2.70,
-                        color: 'rgba(52, 211, 153, 0.15)',
+                        color: isLinear ? 'rgba(16, 185, 129, 0.15)' : 'rgba(52, 211, 153, 0.15)',
                         points: [...manualRoomPoints],
                         pattern: 'SOLID',
                         scale: 1,
                         angle: 0,
                         lineWidth: 1,
                         mode: 'pencil',
-                        layer: activeLayerId
+                        layer: activeLayerId,
+                        bimRenderMode: isLinear ? 'parete_verticale' : 'solid'
                     };
                     setEntities(prev => {
                         const next = [...prev, newRoom];
@@ -10461,6 +10585,7 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
                     });
                     onSelect(newRoom.id);
                     setManualRoomPoints([]);
+                    setActiveTool?.('Select');
                 }
                 return;
             }
@@ -10621,11 +10746,11 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
                 });
             }
         }
-    } else if (activeTool === 'Line' || activeTool === 'Circle' || activeTool === 'Rectangle' || activeTool === 'Point' || activeTool === 'Arc' || activeTool === 'Testo') {
+    } else if (activeTool === 'Line' || activeTool === 'Circle' || activeTool === 'Rectangle' || activeTool === 'Point' || activeTool === 'Arc' || activeTool === 'Testo' || activeTool === 'Camera') {
       const wasLocked = isLocked;
       setIsLocked(false);
       
-      if (drawing && (activeTool === 'Line' || activeTool === 'Circle' || activeTool === 'Rectangle' || activeTool === 'Arc')) {
+      if (drawing && (activeTool === 'Line' || activeTool === 'Circle' || activeTool === 'Rectangle' || activeTool === 'Arc' || activeTool === 'Camera')) {
           let snappedResult;
 
           if (drawing.wheelLength !== undefined) {
@@ -10962,6 +11087,9 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
           color: defaultLineStyle.color || '#000000',
         });
         setDrawing(null);
+        return;
+      } else if (activeTool === 'Camera') {
+        setDrawing({ type: 'camera', start: snapped.point, current: snapped.point });
         return;
       }
     } else if (activeTool === 'Move') {
@@ -12187,7 +12315,8 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
         (activeTool as string) === 'BIM_Porta' ||
         activeTool === 'BIM_Finestra' ||
         activeTool === 'BIM_Symbol' ||
-        activeTool === 'BIM_DisegnaStanza'
+        activeTool === 'BIM_DisegnaStanza' ||
+        activeTool === 'BIM_DisegnaLineare'
     )) {
         const snapped = getSnappedPoint(rawPoint, entities, activeTool, null);
         if (snapped.snapped) {
@@ -12310,6 +12439,26 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
         dragEntityIdRef.current = null;
         setActiveMoveSnapPoint(null);
         setEntities(prev => prev);
+        return;
+    }
+
+    if (activeTool === 'Camera' && drawing && drawing.type === 'camera') {
+        const dx = drawing.current!.x - drawing.start.x;
+        const dy = drawing.current!.y - drawing.start.y;
+        let angle = Math.atan2(dy, dx) * (180 / Math.PI);
+        if (dx === 0 && dy === 0) angle = 0; // Default angle if just clicked
+        const newEntity: CameraEntity = {
+            id: `camera-${Date.now()}`,
+            type: 'camera',
+            point: drawing.start,
+            angle: angle,
+            color: defaultLineStyle.color,
+            lineWidth: defaultLineStyle.lineWidth,
+            layer: activeLayerId
+        };
+        setEntities(prev => [...prev, newEntity]);
+        setDrawing(null);
+        if (!isContinuousMode) setActiveTool?.('Select');
         return;
     }
 

@@ -1070,7 +1070,7 @@ interface BIMElementDialogProps {
     zElevation: number;
     objectHeight: number;
     hatch: 'SOLID' | 'ANSI31' | 'CROSS' | 'NONE';
-    bimRenderMode?: 'solid' | 'transparent';
+    bimRenderMode?: 'solid' | 'transparent' | 'parete_verticale' | 'parete_orizzontale';
   }) => void;
   points?: Point[] | { points: Point[], holes?: Point[][] };
   initialData?: {
@@ -1082,7 +1082,7 @@ interface BIMElementDialogProps {
     zElevation: number;
     objectHeight: number;
     hatch: 'SOLID' | 'ANSI31' | 'CROSS' | 'NONE';
-    bimRenderMode?: 'solid' | 'transparent';
+    bimRenderMode?: 'solid' | 'transparent' | 'parete_verticale' | 'parete_orizzontale';
   };
   onDelete?: () => void;
   floors: Floor[];
@@ -1108,7 +1108,7 @@ export const BIMElementDialog: React.FC<BIMElementDialogProps> = ({
   const [zElevationInput, setZElevationInput] = useState<string>('0');
   const [objectHeightInput, setObjectHeightInput] = useState<string>('270');
   const [hatch, setHatch] = useState<'SOLID' | 'ANSI31' | 'CROSS' | 'NONE'>('SOLID');
-  const [bimRenderMode, setBimRenderMode] = useState<'solid' | 'transparent'>('solid');
+  const [bimRenderMode, setBimRenderMode] = useState<'solid' | 'transparent' | 'parete_verticale' | 'parete_orizzontale'>('solid');
   
   const [customFamilyMode, setCustomFamilyMode] = useState(false);
   const [customFamilyName, setCustomFamilyName] = useState('');
@@ -1151,7 +1151,9 @@ export const BIMElementDialog: React.FC<BIMElementDialogProps> = ({
         setZElevationInput(localStorage.getItem('last_bim_zElevation') || '0');
         setObjectHeightInput(localStorage.getItem('last_bim_height') || '270');
         setHatch('SOLID');
-        setBimRenderMode('solid');
+        
+        const isLinear = points && !Array.isArray(points) && (points as any).isLinear;
+        setBimRenderMode(isLinear ? 'parete_verticale' : 'solid');
       }
     }
   }, [isOpen, initialData, floors]);
@@ -1358,11 +1360,51 @@ export const BIMElementDialog: React.FC<BIMElementDialogProps> = ({
             </div>
           </div>
           <div className="col-span-2 pt-4 border-t border-white/5">
-            <label className="block text-[11px] text-slate-400 font-black uppercase tracking-widest mb-2 font-mono italic">Rendering 3D</label>
-            <div className="flex gap-2">
-              <button type="button" onClick={() => setBimRenderMode('solid')} className={`flex-1 py-3 text-xs rounded-lg border font-bold cursor-pointer ${bimRenderMode === 'solid' ? 'bg-cyan-600/20 border-cyan-500 text-white' : 'bg-slate-900 border-slate-700 text-slate-400'}`}>Solido (Pieno)</button>
-              <button type="button" onClick={() => setBimRenderMode('transparent')} className={`flex-1 py-3 text-xs rounded-lg border font-bold cursor-pointer ${bimRenderMode === 'transparent' ? 'bg-cyan-600/20 border-cyan-500 text-white' : 'bg-slate-900 border-slate-700 text-slate-400'}`}>Trasparente (Parete)</button>
+            <label className="block text-[11px] text-slate-400 font-black uppercase tracking-widest mb-2 font-mono italic">Rendering 3D / Tipo Elemento</label>
+            <div className="grid grid-cols-3 gap-1.5">
+              <button 
+                type="button" 
+                onClick={() => setBimRenderMode('solid')} 
+                className={`py-2 px-1 text-[10px] rounded-lg border font-bold cursor-pointer transition-all ${
+                  bimRenderMode === 'solid' 
+                    ? 'bg-cyan-600/20 border-cyan-500 text-white' 
+                    : 'bg-slate-900 border-slate-700 text-slate-400 hover:bg-slate-800'
+                }`}
+                title="Rappresentazione volumetrica piena estruesa in 3D"
+              >
+                Solido (Pieno)
+              </button>
+              <button 
+                type="button" 
+                onClick={() => setBimRenderMode('parete_verticale')} 
+                className={`py-2 px-1 text-[10px] rounded-lg border font-bold cursor-pointer transition-all ${
+                  bimRenderMode === 'parete_verticale' 
+                    ? 'bg-indigo-600/20 border-indigo-500 text-white' 
+                    : 'bg-slate-900 border-slate-700 text-slate-400 hover:bg-slate-800'
+                }`}
+                title="Genera solo le pareti verticali sul perimetro (spessore simbolico)"
+              >
+                Parete Verticale
+              </button>
+              <button 
+                type="button" 
+                onClick={() => setBimRenderMode('parete_orizzontale')} 
+                className={`py-2 px-1 text-[10px] rounded-lg border font-bold cursor-pointer transition-all ${
+                  bimRenderMode === 'parete_orizzontale' 
+                    ? 'bg-emerald-600/20 border-emerald-500 text-white' 
+                    : 'bg-slate-900 border-slate-700 text-slate-400 hover:bg-slate-800'
+                }`}
+                title="Genera lastre orizzontali (pavimenti o soffitti, spessore simbolico)"
+              >
+                Parete Orizzontale
+              </button>
             </div>
+            {/* Explanatory subtitle helper */}
+            <p className="text-[9px] text-slate-500 mt-1.5 italic font-medium leading-normal">
+              {bimRenderMode === 'solid' && "🧱 Volume pieno solido con riempimento 3D completo."}
+              {bimRenderMode === 'parete_verticale' && "🧱 Parete Verticale: prende solo il perimetro e l'altezza, spessore simbolico."}
+              {bimRenderMode === 'parete_orizzontale' && "🥞 Parete Orizzontale: crea solai/soffitti con perimetro e area, spessore simbolico."}
+            </p>
           </div>
         </div>
 

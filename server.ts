@@ -9,7 +9,8 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const app = express();
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: "50mb" }));
+app.use(express.urlencoded({ limit: "50mb", extended: true }));
 
 const ai = new GoogleGenAI({
   apiKey: process.env.GEMINI_API_KEY!,
@@ -78,7 +79,7 @@ const ai = new GoogleGenAI({
 
   app.post("/api/ai-render", async (req, res) => {
     try {
-      const { description, aspectRatio = "16:9" } = req.body;
+      const { description, aspectRatio = "16:9", image } = req.body;
       if (!description) {
         res.status(400).json({ error: "Description is required" });
         return;
@@ -89,11 +90,13 @@ const ai = new GoogleGenAI({
         model: "gemini-3.5-flash",
         contents: `Translate and expand this user brief description of architectural materials or structure into a highly detailed, professional English architectural rendering prompt for a photorealistic image generation model. 
 
+IMPORTANT: The prompt MUST explicitly state that the reference image is STRICTLY for structural layout, camera perspective, and geometry. The final rendering must METICULOUSLY preserve the exact viewing angle, camera position, orientation, and zoom of the reference image without adding unrequested background structures or altering the viewpoint. The original colors and line drawings must be completely ignored and replaced ONLY with the materials, textures, lighting, and colors described in this prompt.
+
 Keep it concise but highly descriptive, focus on lighting, materials, textures, and rendering quality. Do not include introductory text, just the final prompt.
 
 User Brief Description: "${description}"`,
         config: {
-          systemInstruction: "You are a professional architectural photographer and render specialist. You write perfect prompts for image generators to produce stunning, realistic, highly detailed, photorealistic architectural render visualizations with soft natural light, depth of field, clear textures (wood, concrete, brick, steel, glass), and clean compositions.",
+          systemInstruction: "You are a professional architectural photographer and render specialist. You write perfect prompts for image generators to produce stunning, realistic, highly detailed, photorealistic architectural render visualizations. Ensure your prompts enforce that the reference image's layout and perspective are strictly preserved while applying the prompted materials and lighting.",
         }
       });
 
@@ -101,14 +104,25 @@ User Brief Description: "${description}"`,
       console.log("Expanded rendering prompt:", expandedPrompt);
 
       // Step 2: Generate the image using gemini-2.5-flash-image
+      const parts: any[] = [];
+      if (image) {
+        // Extract base64 and mime type if it's a data URI
+        const matches = image.match(/^data:(image\/[a-zA-Z]*);base64,([^"]*)$/);
+        if (matches && matches.length === 3) {
+          parts.push({
+            inlineData: {
+              mimeType: matches[1],
+              data: matches[2]
+            }
+          });
+        }
+      }
+      parts.push({ text: expandedPrompt });
+
       const imageRes = await ai.models.generateContent({
         model: 'gemini-2.5-flash-image',
         contents: {
-          parts: [
-            {
-              text: expandedPrompt,
-            },
-          ],
+          parts: parts,
         },
         config: {
           imageConfig: {
