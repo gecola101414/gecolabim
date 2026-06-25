@@ -135,11 +135,39 @@ export const BIMRenderStudio: React.FC<BIMRenderStudioProps> = ({ entities, onCl
   const [aiProgress, setAiProgress] = useState(0);
   const [aiStage, setAiStage] = useState('');
   const [aiError, setAiError] = useState<string | null>(null);
+  const [aiRendersLeft, setAiRendersLeft] = useState<number>(10);
+
+  // Load and check the daily 10 free AI rendering quota on mount
+  useEffect(() => {
+    const checkQuota = () => {
+      try {
+        const todayStr = new Date().toLocaleDateString('it-IT');
+        const stored = localStorage.getItem('gecola_bim_ai_renders');
+        if (stored) {
+          const parsed = JSON.parse(stored);
+          if (parsed.date === todayStr) {
+            setAiRendersLeft(Math.max(0, 10 - (parsed.count || 0)));
+            return;
+          }
+        }
+      } catch (e) {
+        console.error('Error reading localStorage quota:', e);
+      }
+      setAiRendersLeft(10);
+    };
+
+    checkQuota();
+  }, []);
 
   const canvasRef = useRef<HTMLDivElement>(null);
   const orbitalRef = useRef<any>(null);
 
   const handleStartAiRender = async () => {
+    if (aiRendersLeft <= 0) {
+      setAiError("Hai raggiunto il limite massimo di 10 rendering gratuiti per oggi. Torna domani per altri test!");
+      return;
+    }
+
     setIsAiLoading(true);
     setAiError(null);
     setAiProgress(5);
@@ -181,6 +209,9 @@ export const BIMRenderStudio: React.FC<BIMRenderStudioProps> = ({ entities, onCl
       clearInterval(progressInterval);
 
       if (!res.ok || !data.success) {
+        if (res.status === 429) {
+          setAiRendersLeft(0);
+        }
         throw new Error(data.error || 'Errore imprevisto durante la generazione dell\'immagine.');
       }
 
@@ -188,6 +219,24 @@ export const BIMRenderStudio: React.FC<BIMRenderStudioProps> = ({ entities, onCl
       setAiStage('Rendering completato con successo!');
       setAiRenderedImage(data.imageUrl);
       setAiExpandedPrompt(data.expandedPrompt);
+
+      // Record daily usage on success
+      try {
+        const todayStr = new Date().toLocaleDateString('it-IT');
+        const stored = localStorage.getItem('gecola_bim_ai_renders');
+        let count = 0;
+        if (stored) {
+          const parsed = JSON.parse(stored);
+          if (parsed.date === todayStr) {
+            count = parsed.count || 0;
+          }
+        }
+        const newCount = count + 1;
+        localStorage.setItem('gecola_bim_ai_renders', JSON.stringify({ date: todayStr, count: newCount }));
+        setAiRendersLeft(Math.max(0, 10 - newCount));
+      } catch (e) {
+        console.error('Error saving quota:', e);
+      }
     } catch (err: any) {
       clearInterval(progressInterval);
       setAiError(err.message || 'Errore di connessione o nel calcolo generativo.');
@@ -511,9 +560,20 @@ export const BIMRenderStudio: React.FC<BIMRenderStudioProps> = ({ entities, onCl
               <div className="space-y-6">
                 {/* AI Description Input */}
                 <div className="space-y-3">
-                  <label className="text-[10.5px] font-black uppercase tracking-wider text-indigo-400 flex items-center gap-1.5">
-                    <Sparkles size={13} className="text-pink-400 animate-pulse" />
-                    <span>Descrizione Struttura</span>
+                  <label className="text-[10.5px] font-black uppercase tracking-wider text-indigo-400 flex items-center justify-between">
+                    <span className="flex items-center gap-1.5">
+                      <Sparkles size={13} className="text-pink-400 animate-pulse" />
+                      <span>Descrizione Struttura</span>
+                    </span>
+                    <span className={`text-[9px] px-2 py-0.5 rounded-full font-bold border transition-colors ${
+                      aiRendersLeft > 3 
+                        ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' 
+                        : aiRendersLeft > 0 
+                          ? 'bg-amber-500/10 text-amber-400 border-amber-500/20' 
+                          : 'bg-rose-500/10 text-rose-400 border-rose-500/20 animate-pulse'
+                    }`}>
+                      {aiRendersLeft} RIMANENTI OGGI
+                    </span>
                   </label>
                   <div className="text-[9.5px] text-slate-400 font-medium leading-relaxed mb-1">
                     Fornisci una descrizione in italiano degli elementi portanti e dei materiali per far generare all'AI un rendering fotorealistico.
@@ -602,17 +662,32 @@ export const BIMRenderStudio: React.FC<BIMRenderStudioProps> = ({ entities, onCl
               ) : (
                 <button
                   onClick={handleStartAiRender}
-                  disabled={isAiLoading || !aiDescription}
-                  className="w-full py-4 bg-gradient-to-r from-pink-500 via-purple-600 to-indigo-500 text-white rounded-2xl font-black text-xs uppercase tracking-wider shadow-lg shadow-purple-500/25 cursor-pointer active:scale-95 disabled:opacity-50 hover:brightness-110 flex items-center justify-center gap-2 transition-all"
+                  disabled={isAiLoading || !aiDescription || aiRendersLeft <= 0}
+                  className={`w-full py-4 text-white rounded-2xl font-black text-xs uppercase tracking-wider shadow-lg cursor-pointer active:scale-95 disabled:opacity-50 hover:brightness-110 flex items-center justify-center gap-2 transition-all ${
+                    aiRendersLeft <= 0 
+                      ? 'bg-rose-950/50 border border-rose-500/30 text-rose-400 cursor-not-allowed shadow-none'
+                      : 'bg-gradient-to-r from-pink-500 via-purple-600 to-indigo-500 shadow-purple-500/25'
+                  }`}
                 >
-                  <Sparkles size={16} className="animate-pulse text-pink-200" />
-                  <span>Genera Rendering AI</span>
+                  {aiRendersLeft <= 0 ? (
+                    <>
+                      <X size={16} />
+                      <span>Limite Giornaliero Raggiunto</span>
+                    </>
+                  ) : (
+                    <>
+                      <Sparkles size={16} className="animate-pulse text-pink-200" />
+                      <span>Genera Rendering AI</span>
+                    </>
+                  )}
                 </button>
               )}
               <div className="text-center text-[8.5px] text-slate-500 font-bold uppercase mt-2.5 tracking-wider leading-relaxed">
                 {activeTab === 'cad' 
                   ? '🛠️ Esegue calcolo fisico e denoise localmente sul dispositivo' 
-                  : '✨ Genera texture e geometrie fotorealistiche tramite Gemini 2.5'}
+                  : aiRendersLeft <= 0 
+                    ? '⚠️ Hai terminato i 10 rendering gratuiti per oggi' 
+                    : `✨ Quota giornaliera gratuita: ${aiRendersLeft} su 10 rimanenti`}
               </div>
             </div>
           </aside>

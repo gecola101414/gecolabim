@@ -77,8 +77,40 @@ const ai = new GoogleGenAI({
     }
   });
 
+// IP rate limiting for AI renders (10 per day per IP)
+const aiRenderIpLimits = new Map<string, { date: string; count: number }>();
+
+const getClientIp = (req: any): string => {
+  const forwarded = req.headers["x-forwarded-for"];
+  if (forwarded) {
+    if (typeof forwarded === "string") {
+      return forwarded.split(",")[0].trim();
+    } else if (Array.isArray(forwarded)) {
+      return forwarded[0].trim();
+    }
+  }
+  return req.socket.remoteAddress || "unknown_ip";
+};
+
   app.post("/api/ai-render", async (req, res) => {
     try {
+      const ip = getClientIp(req);
+      const todayStr = new Date().toLocaleDateString("it-IT");
+
+      const limitObj = aiRenderIpLimits.get(ip);
+      if (limitObj && limitObj.date === todayStr) {
+        if (limitObj.count >= 10) {
+          res.status(429).json({
+            success: false,
+            error: "Hai raggiunto il limite massimo di 10 rendering gratuiti per oggi. Torna domani per altri test!"
+          });
+          return;
+        }
+        limitObj.count += 1;
+      } else {
+        aiRenderIpLimits.set(ip, { date: todayStr, count: 1 });
+      }
+
       const { description, aspectRatio = "16:9", image } = req.body;
       if (!description) {
         res.status(400).json({ error: "Description is required" });
