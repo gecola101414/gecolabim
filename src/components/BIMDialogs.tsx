@@ -1087,6 +1087,8 @@ interface BIMElementDialogProps {
   };
   onDelete?: () => void;
   floors: Floor[];
+  isMultiAreaMode?: boolean;
+  onToggleMultiAreaMode?: (checked: boolean) => void;
 }
 
 export const BIMElementDialog: React.FC<BIMElementDialogProps> = ({
@@ -1096,7 +1098,9 @@ export const BIMElementDialog: React.FC<BIMElementDialogProps> = ({
   points,
   initialData,
   onDelete,
-  floors
+  floors,
+  isMultiAreaMode,
+  onToggleMultiAreaMode
 }) => {
   const { position, handlePointerDown, handlePointerMove, handlePointerUp } = useDraggableDialog(isOpen, { x: 300, y: 130 });
   
@@ -1421,8 +1425,26 @@ export const BIMElementDialog: React.FC<BIMElementDialogProps> = ({
           </div>
         </div>
 
+        {onToggleMultiAreaMode && (
+          <div className="bg-slate-900 border border-emerald-500/30 p-3.5 rounded-xl flex items-start gap-3 mt-4">
+            <input
+              id="bim-multiarea-checkbox"
+              type="checkbox"
+              checked={isMultiAreaMode}
+              onChange={(e) => onToggleMultiAreaMode(e.target.checked)}
+              className="w-4 h-4 rounded border-slate-700 text-emerald-600 focus:ring-emerald-500 bg-slate-950 accent-emerald-500 cursor-pointer mt-0.5"
+            />
+            <label htmlFor="bim-multiarea-checkbox" className="text-xs text-emerald-400 font-black uppercase tracking-wider cursor-pointer flex-1 select-none">
+              <span>Aggiungi Altre Figure ➕</span>
+              <span className="block text-[10px] text-slate-400 font-medium normal-case tracking-normal mt-0.5 leading-relaxed">
+                Continua a cliccare su altre aree nel disegno per unirle a questa figura prima di salvare.
+              </span>
+            </label>
+          </div>
+        )}
+
         {initialData && (
-          <div className="bg-slate-900 border border-amber-500/30 p-3.5 rounded-xl flex items-start gap-3">
+          <div className="bg-slate-900 border border-amber-500/30 p-3.5 rounded-xl flex items-start gap-3 mt-4">
             <input
               id="bim-duplicate-checkbox"
               type="checkbox"

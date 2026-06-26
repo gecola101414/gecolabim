@@ -54,7 +54,7 @@ const AICameraManager = ({ aiCamera, triggerCapture, onCaptureDone }: { aiCamera
 };
 import * as THREE from 'three';
 import { Entity, Point, LineEntity, RectEntity, Floor } from '../types';
-import { X, ZoomIn, ZoomOut, RotateCw, Box, Layers, Database, Maximize, Home, Compass, Eye, EyeOff, Lightbulb, LightbulbOff, Info, Settings, MousePointer2, Move, Scissors, Play, Pause, RefreshCw, ArrowDown, ArrowUp, ArrowLeft, ArrowRight, Edit, Trash2, Wand2, Lock, Unlock, FolderTree, ChevronDown, ChevronRight, Sliders, Layers3, Camera } from 'lucide-react';
+import { X, ZoomIn, ZoomOut, RotateCw, Box, Layers, Database, Maximize, Home, Compass, Eye, EyeOff, Lightbulb, LightbulbOff, Info, Settings, MousePointer2, Move, Scissors, Play, Pause, RefreshCw, ArrowDown, ArrowUp, ArrowLeft, ArrowRight, Edit, Trash2, Wand2, Lock, Unlock, FolderTree, ChevronDown, ChevronRight, Sliders, Layers3, Camera, Sparkles } from 'lucide-react';
 import { BIMElementDialog, PorteDialog, FinestreDialog } from './BIMDialogs';
 import { BIMPropertyCardDialog } from './BIMPropertyCardDialog';
 import { BIMRenderStudio } from './BIMRenderStudio';
@@ -2208,9 +2208,11 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
   const [isRenderStudioOpen, setIsRenderStudioOpen] = useState(false);
   const [renderBaseImage, setRenderBaseImage] = useState<string | null>(null);
   const [triggerAICapture, setTriggerAICapture] = useState(false);
+  const [renderTargetTab, setRenderTargetTab] = useState<'cad' | 'ai'>('cad');
   const [globalOpacityMode, setGlobalOpacityMode] = useState<'WORK' | 'SOLID'>('WORK');
 
-  const handleSetRenderView = () => {
+  const handleSetRenderView = (tab: 'cad' | 'ai') => {
+    setRenderTargetTab(tab);
     setTriggerAICapture(true);
   };
   
@@ -3321,23 +3323,23 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
         <div className="w-px h-8 bg-slate-200 mx-1" />
 
         <button 
-          onClick={handleSetRenderView}
-          className="p-3 rounded-xl bg-gradient-to-br from-indigo-500 to-purple-600 text-white shadow-lg shadow-indigo-500/20 transition-all active:scale-95 flex items-center gap-1.5 cursor-pointer"
-          title="Imposta Vista per Rendering AI"
+          onClick={() => handleSetRenderView('cad')}
+          className="p-3 rounded-xl hover:bg-slate-50 hover:text-indigo-600 text-slate-500 border border-transparent transition-all active:scale-95 flex items-center gap-1.5 cursor-pointer"
+          title="Studio Rendering Fotorealistico PBR"
         >
-          <CameraViewIcon size={20} className="animate-pulse" />
-          <span className="text-[10.5px] font-black uppercase tracking-wider">Vista Rendering</span>
+          <Camera size={20} className="text-indigo-500" />
+          <span className="text-[10.5px] font-black uppercase tracking-wider">Rendering Classico</span>
         </button>
 
         <div className="w-px h-8 bg-slate-200 mx-1" />
 
         <button 
-          onClick={() => setIsRenderStudioOpen(true)}
-          className="p-3 rounded-xl hover:bg-slate-50 hover:text-indigo-600 text-slate-500 border border-transparent transition-all active:scale-95 flex items-center gap-1.5 cursor-pointer"
-          title="Studio Rendering Fotorealistico PBR"
+          onClick={() => handleSetRenderView('ai')}
+          className="p-3 rounded-xl bg-gradient-to-br from-indigo-500 to-purple-600 text-white shadow-lg shadow-indigo-500/20 transition-all active:scale-95 flex items-center gap-1.5 cursor-pointer"
+          title="Imposta Vista per Rendering AI"
         >
-          <Camera size={20} className="text-indigo-500" />
-          <span className="text-[10.5px] font-black uppercase tracking-wider">Rendering</span>
+          <Sparkles size={20} className="animate-pulse" />
+          <span className="text-[10.5px] font-black uppercase tracking-wider">Rendering AI</span>
         </button>
 
         <div className="w-px h-8 bg-slate-200 mx-1" />
@@ -5340,6 +5342,7 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
           entities={entities} 
           onClose={() => setIsRenderStudioOpen(false)} 
           baseImage={renderBaseImage}
+          initialTab={renderTargetTab}
         />
       )}
     </div>

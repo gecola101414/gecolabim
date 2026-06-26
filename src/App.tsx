@@ -28,6 +28,7 @@ import { trimEntities } from "./utils";
 import { parseScriptToEntities, updateScriptVariables } from "./utils/parametricParser";
 import { contours } from "d3-contour";
 import { simplifyPoints } from "./utils/simplify";
+import polygonClipping from "polygon-clipping";
 import {
   Minus,
   Circle,
@@ -587,8 +588,9 @@ const MASONRY_TYPES = [
 
   const [activeSidebarTab, setActiveSidebarTab] = useState<'penne' | 'tavole' | 'layers' | 'maschere' | 'testo' | 'gemini' | 'manuale' | 'bim'>(() => (localStorage.getItem('activeSidebarTab') as any) || 'penne');
   const [isBIMElementDialogOpen, setIsBIMElementDialogOpen] = useState(false);
+  const [isMultiAreaMode, setIsMultiAreaMode] = useState(false);
   const [is3DViewOpen, setIs3DViewOpen] = useState(false);
-  const [detectedAreaPoints, setDetectedAreaPoints] = useState<Point[] | { points: Point[], holes?: Point[][], isLinear?: boolean } | null>(null);
+  const [detectedAreaPoints, setDetectedAreaPoints] = useState<any>(null);
   const [editingEntityId, setEditingEntityId] = useState<string | null>(null);
   const [hoveredGuide, setHoveredGuide] = useState<GuideItem | null>(null);
   const [guideLockedBy, setGuideLockedBy] = useState<string | null>(null);
@@ -815,10 +817,53 @@ const MASONRY_TYPES = [
     }
   };
 
-  const handleBIMElementDetected = (result: { points: Point[], holes?: Point[][], isLinear?: boolean }) => {
-    setDetectedAreaPoints(result);
-    setEditingEntityId(null);
-    setIsBIMElementDialogOpen(true);
+  const handleBIMElementDetected = (result: { points: Point[], holes?: Point[][], isLinear?: boolean, isJollyActive?: boolean }) => {
+    if ((result.isJollyActive || isMultiAreaMode) && detectedAreaPoints) {
+      let currentArr = [];
+      if (Array.isArray(detectedAreaPoints)) {
+          if (detectedAreaPoints.length > 0 && !('points' in detectedAreaPoints[0])) {
+             // It's a Point[] (from legacy or single area)
+             currentArr = [{ points: detectedAreaPoints }];
+          } else {
+             currentArr = [...detectedAreaPoints];
+          }
+      } else {
+          currentArr = [detectedAreaPoints];
+      }
+      
+      const getCenter = (pts: Point[]) => {
+          if (!pts || pts.length === 0) return { x: 0, y: 0 };
+          let cx = 0, cy = 0;
+          pts.forEach(p => { cx += p.x; cy += p.y; });
+          return { x: cx / pts.length, y: cy / pts.length };
+      };
+      const resCenter = getCenter(result.points);
+      
+      const existingIdx = currentArr.findIndex(a => {
+         const ac = getCenter(a.points);
+         return Math.sqrt((ac.x - resCenter.x)**2 + (ac.y - resCenter.y)**2) < 20;
+      });
+      
+      if (existingIdx >= 0) {
+          // Toggle off
+          currentArr.splice(existingIdx, 1);
+          setDetectedAreaPoints(currentArr.length > 0 ? currentArr : null);
+          if (currentArr.length === 0) {
+              setIsBIMElementDialogOpen(false);
+          }
+          setShortcutToast("Area rimossa dalla selezione! ➖");
+      } else {
+          // Toggle on
+          currentArr.push(result);
+          setDetectedAreaPoints(currentArr);
+          setShortcutToast("Area aggiunta alla selezione! ➕");
+      }
+      setTimeout(() => setShortcutToast(null), 2000);
+    } else {
+      setDetectedAreaPoints([result]);
+      setEditingEntityId(null);
+      setIsBIMElementDialogOpen(true);
+    }
   };
 
   const handleEditBIMElement = (id: string) => {
@@ -907,16 +952,23 @@ const MASONRY_TYPES = [
       setShortcutToast(`Elemento ${data.name} duplicato (Piano: ${data.zPlane} cm) ✅`);
     } else {
       // CREATE NEW
-      const pts = Array.isArray(detectedAreaPoints) ? detectedAreaPoints : detectedAreaPoints.points;
-      const hls = Array.isArray(detectedAreaPoints) ? undefined : detectedAreaPoints.holes;
-      const isLinearArea = Array.isArray(detectedAreaPoints) ? false : !!detectedAreaPoints.isLinear;
+      let polys: any[] = [];
+      if (Array.isArray(detectedAreaPoints)) {
+          if (detectedAreaPoints.length > 0 && !('points' in detectedAreaPoints[0])) {
+              polys = [{ points: detectedAreaPoints }];
+          } else {
+              polys = detectedAreaPoints;
+          }
+      } else {
+          polys = [detectedAreaPoints];
+      }
 
-      const newElement: Entity = {
-        id: `bim-elem-${Date.now()}`,
+      const newElements = polys.map((poly, idx) => ({
+        id: `bim-elem-${Date.now()}-${idx}`,
         type: 'hatch', 
-        points: pts,
-        holes: hls,
-        isLinear: isLinearArea,
+        points: poly.points,
+        holes: poly.holes,
+        isLinear: !!poly.isLinear,
         color: data.color || 'rgba(0,0,0,0.5)',
         strokeWidth: 1,
         layer: 'BIM_Elementi',
@@ -924,7 +976,7 @@ const MASONRY_TYPES = [
         bimType: 'element',
         bimFamily: data.subFamily || data.familyId,
         bimAreaType: data.familyId,
-        bimName: data.name,
+        bimName: polys.length > 1 ? `${data.name} ${idx + 1}` : data.name,
         backgroundColor: data.color,
         bimHatchPattern: data.hatch as any,
         pattern: data.hatch === 'NONE' ? 'SOLID' : data.hatch as any,
@@ -936,10 +988,10 @@ const MASONRY_TYPES = [
         timestamp: Date.now(),
         isVisible: true,
         isFrozen: false
-      } as any;
+      })) as any[];
 
-      updateEntitiesWithHistory(prev => [...prev, newElement]);
-      setShortcutToast(`Rilevato ${data.name} (${data.familyId}) ✅`);
+      updateEntitiesWithHistory(prev => [...prev, ...newElements]);
+      setShortcutToast(polys.length > 1 ? `${polys.length} Aree rilevate! ✅` : `Rilevato ${data.name} (${data.familyId}) ✅`);
     }
     
     setTimeout(() => setShortcutToast(null), 4000);
@@ -2909,6 +2961,7 @@ const MASONRY_TYPES = [
                 setIsBIMElementDialogOpen(false);
                 setDetectedAreaPoints(null);
                 setEditingEntityId(null);
+                setIsMultiAreaMode(false); // Reset this on close
               }}
               onConfirm={handleConfirmBIMElement}
               points={detectedAreaPoints || undefined}
@@ -2928,6 +2981,8 @@ const MASONRY_TYPES = [
                 };
               })() : undefined}
               floors={floors}
+              isMultiAreaMode={isMultiAreaMode}
+              onToggleMultiAreaMode={setIsMultiAreaMode}
             />
           )}
 

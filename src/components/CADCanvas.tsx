@@ -1475,15 +1475,9 @@ const findBoundaryPolygon = (
       }
 
       if (ent.type === 'line') {
-        if (ent.inkPoints && ent.inkPoints.length > 0) {
-          oCtx.moveTo(ent.inkPoints[0].x, ent.inkPoints[0].y);
-          for (let i = 1; i < ent.inkPoints.length; i++) {
-            oCtx.lineTo(ent.inkPoints[i].x, ent.inkPoints[i].y);
-          }
-        } else {
-          oCtx.moveTo(ent.start.x, ent.start.y);
-          oCtx.lineTo(ent.end.x, ent.end.y);
-        }
+        // ALWAYS use theoretical start/end for boundary detection, ignoring irregular ink strokes
+        oCtx.moveTo(ent.start.x, ent.start.y);
+        oCtx.lineTo(ent.end.x, ent.end.y);
       } else if (ent.type === 'circle') {
         oCtx.arc(ent.center.x, ent.center.y, ent.radius, 0, Math.PI * 2);
       } else if (ent.type === 'arc') {
@@ -1727,14 +1721,9 @@ function snapPolygonToGeometry(polyPoints: Point[], entities: Entity[], layers: 
 
   physicalEntities.forEach(ent => {
     if (ent.type === 'line') {
-      if (ent.inkPoints && ent.inkPoints.length > 0) {
-        // High density landmarks for freehand/pencil line tracing
-        ent.inkPoints.forEach(pt => landmarks.push(pt));
-      } else {
-        landmarks.push(ent.start);
-        landmarks.push(ent.end);
-        landmarks.push({ x: (ent.start.x + ent.end.x) / 2, y: (ent.start.y + ent.end.y) / 2 });
-      }
+      landmarks.push(ent.start);
+      landmarks.push(ent.end);
+      landmarks.push({ x: (ent.start.x + ent.end.x) / 2, y: (ent.start.y + ent.end.y) / 2 });
     } else if (ent.type === 'rectangle') {
       const p1 = ent.p1;
       const p2 = ent.p2;
@@ -1764,7 +1753,7 @@ function snapPolygonToGeometry(polyPoints: Point[], entities: Entity[], layers: 
     for (let j = i + 1; j < physicalEntities.length; j++) {
       const ent1 = physicalEntities[i];
       const ent2 = physicalEntities[j];
-      if (ent1.type === 'line' && ent2.type === 'line' && (!ent1.inkPoints || ent1.inkPoints.length === 0) && (!ent2.inkPoints || ent2.inkPoints.length === 0)) {
+      if (ent1.type === 'line' && ent2.type === 'line') {
         const sect = getIntersection(ent1.start, ent1.end, ent2.start, ent2.end);
         if (sect) {
           landmarks.push(sect);
@@ -2584,7 +2573,7 @@ interface CADCanvasProps {
     angle: number;
     color: string;
   };
-  onAreaDetected?: (result: { points: Point[], holes?: Point[][], isLinear?: boolean }) => void;
+  onAreaDetected?: (result: { points: Point[], holes?: Point[][], isLinear?: boolean, isJollyActive?: boolean }) => void;
   onSelectionComplete?: (ids: string[], point: Point) => void;
   initialSelectedIds?: string[];
   selectedEntityIds?: string[];
@@ -7929,24 +7918,35 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
       }
       // Highlight Area Funzionale being classified (Pulsing Green Border)
       if (highlightedPoints) {
-          const hPoints = Array.isArray(highlightedPoints) ? highlightedPoints : (highlightedPoints as any).points;
-          const hHoles = Array.isArray(highlightedPoints) ? undefined : (highlightedPoints as any).holes;
+          let polysToDraw = [];
+          if (Array.isArray(highlightedPoints)) {
+              if (highlightedPoints.length > 0 && !('points' in highlightedPoints[0])) {
+                  polysToDraw = [{ points: highlightedPoints, holes: undefined, isLinear: false }];
+              } else {
+                  polysToDraw = highlightedPoints;
+              }
+          } else {
+              polysToDraw = [highlightedPoints];
+          }
 
-          if (hPoints && hPoints.length > 2) {
-              ctx.save();
-              ctx.translate(view.pan.x, view.pan.y);
-              ctx.scale(view.zoom, view.zoom);
-              
-              const buildPath = () => {
+          ctx.save();
+          ctx.translate(view.pan.x, view.pan.y);
+          ctx.scale(view.zoom, view.zoom);
+          
+          const opacity = 0.3 + 0.7 * Math.abs(Math.sin(Date.now() / 250));
+          
+          for (const poly of polysToDraw) {
+              const hPoints = poly.points;
+              const hHoles = poly.holes;
+              const isLinearH = !!poly.isLinear;
+
+              if (hPoints && hPoints.length > 2) {
                   ctx.beginPath();
                   ctx.moveTo(hPoints[0].x, hPoints[0].y);
                   for (let i = 1; i < hPoints.length; i++) {
                       ctx.lineTo(hPoints[i].x, hPoints[i].y);
                   }
-                  const isLinearH = !Array.isArray(highlightedPoints) && (highlightedPoints as any).isLinear;
-                  if (!isLinearH) {
-                      ctx.closePath();
-                  }
+                  if (!isLinearH) ctx.closePath();
                   
                   if (hHoles) {
                       hHoles.forEach((hole: Point[]) => {
@@ -7956,29 +7956,26 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
                           ctx.closePath();
                       });
                   }
-              };
 
-              buildPath();
-              // Outer Glow / Flash - Pulsing based on Date.now()
-              const opacity = 0.3 + 0.7 * Math.abs(Math.sin(Date.now() / 250));
-              ctx.strokeStyle = `rgba(16, 185, 129, ${opacity})`;
-              ctx.lineWidth = 4 / view.zoom;
-              ctx.stroke();
+                  // Outer Glow / Flash
+                  ctx.strokeStyle = `rgba(16, 185, 129, ${opacity})`;
+                  ctx.lineWidth = 4 / view.zoom;
+                  ctx.stroke();
 
-              // Inner sharp border
-              ctx.strokeStyle = '#34d399';
-              ctx.lineWidth = 1.5 / view.zoom;
-              ctx.setLineDash([5 / view.zoom, 3 / view.zoom]);
-              ctx.stroke();
+                  // Inner sharp border
+                  ctx.strokeStyle = '#34d399';
+                  ctx.lineWidth = 1.5 / view.zoom;
+                  ctx.setLineDash([5 / view.zoom, 3 / view.zoom]);
+                  ctx.stroke();
 
-              // Subtle fill for confirmation
-              if (!(!Array.isArray(highlightedPoints) && (highlightedPoints as any).isLinear)) {
-                  ctx.fillStyle = `rgba(52, 211, 153, 0.1)`;
-                  ctx.fill('evenodd');
+                  // Subtle fill
+                  if (!isLinearH) {
+                      ctx.fillStyle = `rgba(52, 211, 153, 0.1)`;
+                      ctx.fill('evenodd');
+                  }
               }
-
-              ctx.restore();
           }
+          ctx.restore();
       }
 
       // Draw yellow reference distance indicator on physical drawing space
@@ -10153,7 +10150,7 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
                         pts.push(finalPt);
                     }
                     if (onAreaDetected) {
-                        onAreaDetected({ points: pts, isLinear: activeTool === 'BIM_DisegnaLineare' });
+                        onAreaDetected({ points: pts, isLinear: activeTool === 'BIM_DisegnaLineare', isJollyActive });
                         setManualRoomPoints([]);
                         setActiveTool?.('Select');
                     } else {
@@ -10825,7 +10822,7 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
         const poly = findBoundaryPolygon(screenPos, entities, view, rect.width, rect.height, screenToCanvas, layers);
         if (poly && poly.points.length > 2) {
             if (onAreaDetected) {
-                onAreaDetected(poly);
+                onAreaDetected({ ...poly, isJollyActive });
             } else {
                 const nextIdx = entities.filter(e => e.isBIM && e.bimType === 'room').length + 1;
                 const newRoom: Entity = {
@@ -10871,7 +10868,7 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
             const distToStart = Math.sqrt((clickedPoint.x - firstPt.x)**2 + (clickedPoint.y - firstPt.y)**2);
             if (distToStart < 15 / view.zoom) {
                 if (onAreaDetected) {
-                    onAreaDetected({ points: [...manualRoomPoints], isLinear: activeTool === 'BIM_DisegnaLineare' });
+                    onAreaDetected({ points: [...manualRoomPoints], isLinear: activeTool === 'BIM_DisegnaLineare', isJollyActive });
                     setManualRoomPoints([]);
                     setActiveTool?.('Select');
                 } else {

@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useRef, useEffect } from 'react';
+import React, { useState, useMemo, useRef, useEffect, useCallback } from 'react';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { OrbitControls, PerspectiveCamera, Environment, ContactShadows, Grid, Html } from '@react-three/drei';
 import { motion, AnimatePresence } from 'motion/react';
@@ -7,7 +7,7 @@ import {
   X, Camera, Sparkles, Sliders, Settings2, Download, Save, 
   RefreshCw, Sun, Moon, Eye, Box, SlidersHorizontal, Image, 
   Flame, Trash2, Check, ArrowRight, Play, Maximize, CircleHelp,
-  Compass, Info, Palette
+  Compass, Info, Palette, ArrowLeft
 } from 'lucide-react';
 import { Entity, Point, LineEntity, RectEntity } from '../types';
 import { Wall, Room, BIMSymbol, CSGMeshRender } from './BIM3DViewer';
@@ -17,6 +17,7 @@ interface BIMRenderStudioProps {
   onClose: () => void;
   onSaveRender?: (dataUrl: string) => void;
   baseImage?: string | null;
+  initialTab?: 'cad' | 'ai';
 }
 
 // Custom Lighting Component based on selected preset
@@ -106,7 +107,7 @@ const EnvironmentPresetMapping = ({ preset }: { preset: string }) => {
   }
 };
 
-export const BIMRenderStudio: React.FC<BIMRenderStudioProps> = ({ entities, onClose, onSaveRender, baseImage }) => {
+export const BIMRenderStudio: React.FC<BIMRenderStudioProps> = ({ entities, onClose, onSaveRender, baseImage, initialTab = 'cad' }) => {
   // Rendering States
   const [lightPreset, setLightPreset] = useState<string>('daylight');
   const [materialTheme, setMaterialTheme] = useState<string>('project');
@@ -117,6 +118,7 @@ export const BIMRenderStudio: React.FC<BIMRenderStudioProps> = ({ entities, onCl
   const [renderedImage, setRenderedImage] = useState<string | null>(null);
   const [showComparison, setShowComparison] = useState(false);
   const [comparisonValue, setComparisonValue] = useState(50);
+  const [keepPerspective, setKeepPerspective] = useState<boolean>(true);
   
   // Camera & Post-processing States
   const [focalLength, setFocalLength] = useState<number>(35);
@@ -127,7 +129,7 @@ export const BIMRenderStudio: React.FC<BIMRenderStudioProps> = ({ entities, onCl
   const [contrastVal, setContrastVal] = useState<number>(1.0);
 
   // AI Description Render States
-  const [activeTab, setActiveTab] = useState<'cad' | 'ai'>('cad');
+  const [activeTab, setActiveTab] = useState<'cad' | 'ai'>(initialTab);
   
   // 5 Prompt Variable Dialog Windows
   const [aiMaterials, setAiMaterials] = useState('Pilastri a vista in cemento armato, pareti esterne in mattone svizzero rosso con fughe chiare');
@@ -176,6 +178,31 @@ export const BIMRenderStudio: React.FC<BIMRenderStudioProps> = ({ entities, onCl
     checkQuota();
   }, []);
 
+  const prevRenderedImageRef = useRef<string | null>(null);
+
+  const triggerRevealAnimation = useCallback(() => {
+    setComparisonValue(0);
+    let start: number | null = null;
+    const duration = 2200; // 2.2 seconds sweep
+    const animate = (timestamp: number) => {
+      if (!start) start = timestamp;
+      const progress = timestamp - start;
+      const percentage = Math.min((progress / duration) * 100, 100);
+      setComparisonValue(percentage);
+      if (progress < duration) {
+        requestAnimationFrame(animate);
+      }
+    };
+    requestAnimationFrame(animate);
+  }, []);
+
+  useEffect(() => {
+    if (aiRenderedImage && aiRenderedImage !== prevRenderedImageRef.current) {
+      triggerRevealAnimation();
+    }
+    prevRenderedImageRef.current = aiRenderedImage;
+  }, [aiRenderedImage, triggerRevealAnimation]);
+
   const canvasRef = useRef<HTMLDivElement>(null);
   const orbitalRef = useRef<any>(null);
 
@@ -218,7 +245,7 @@ export const BIMRenderStudio: React.FC<BIMRenderStudioProps> = ({ entities, onCl
         body: JSON.stringify({
           description: combinedAiDescription,
           aspectRatio: '16:9',
-          image: baseImage || undefined
+          image: (keepPerspective && baseImage) ? baseImage : undefined
         })
       });
 
@@ -667,15 +694,26 @@ export const BIMRenderStudio: React.FC<BIMRenderStudioProps> = ({ entities, onCl
                   />
                 </div>
 
-                {/* Base Image Reference (kept minimal and clean, without extra notes) */}
+                {/* Base Image Reference with Perspective Option */}
                 {baseImage && (
                   <div className="pt-2 border-t border-slate-800/50 space-y-2">
-                    <div className="rounded-xl border border-indigo-500/20 overflow-hidden relative">
-                      <img src={baseImage} alt="Base perspective" className="w-full h-16 object-cover opacity-60" />
-                      <div className="absolute inset-0 bg-slate-900/60 flex items-center justify-center p-1">
-                        <span className="text-[8px] text-indigo-300 font-extrabold tracking-wider uppercase">Prospettiva Camera Attiva</span>
+                    <label className="flex items-center gap-2.5 cursor-pointer p-2.5 rounded-xl bg-slate-800/30 border border-slate-700/50 hover:bg-slate-800/50 transition-colors">
+                      <input 
+                        type="checkbox" 
+                        checked={keepPerspective}
+                        onChange={(e) => setKeepPerspective(e.target.checked)}
+                        className="rounded accent-indigo-500 w-4 h-4 bg-slate-900 border-slate-600 cursor-pointer"
+                      />
+                      <span className="text-[10.5px] font-black uppercase tracking-wider text-slate-200">Mantieni Prospettiva Modello 3D</span>
+                    </label>
+                    {keepPerspective && (
+                      <div className="rounded-xl border border-indigo-500/20 overflow-hidden relative shadow-inner">
+                        <img src={baseImage} alt="Base perspective" className="w-full h-20 object-cover opacity-60" />
+                        <div className="absolute inset-0 bg-slate-900/60 flex items-center justify-center p-1">
+                          <span className="text-[9px] text-indigo-300 font-extrabold tracking-wider uppercase">Prospettiva Camera Attiva</span>
+                        </div>
                       </div>
-                    </div>
+                    )}
                   </div>
                 )}
               </div>
@@ -1193,58 +1231,96 @@ export const BIMRenderStudio: React.FC<BIMRenderStudioProps> = ({ entities, onCl
           <div className="w-full h-full flex flex-col items-center justify-center p-6 relative">
             <AnimatePresence mode="wait">
               {isAiLoading ? (
-                /* AI Loading Card with beautiful glowing rings */
+                /* AI Loading Viewport showing the CAD model being scanned and transformed */
                 <motion.div 
                   key="ai-loading"
-                  initial={{ scale: 0.95, opacity: 0 }}
-                  animate={{ scale: 1, opacity: 1 }}
-                  exit={{ scale: 0.95, opacity: 0 }}
-                  className="max-w-md w-full bg-slate-900/90 border border-slate-800 p-8 rounded-3xl shadow-2xl relative overflow-hidden space-y-6"
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  exit={{ opacity: 0 }}
+                  className="w-full h-full flex flex-col md:flex-row gap-6 p-4 items-center justify-center overflow-auto"
                 >
-                  <div className="absolute top-0 left-1/2 -translate-x-1/2 w-64 h-64 bg-pink-500/10 blur-3xl rounded-full -z-10" />
+                  {/* Left side info block (Loading status) */}
+                  <div className="w-full md:w-80 shrink-0 space-y-5 flex flex-col justify-between self-stretch bg-slate-900/60 p-5 rounded-2xl border border-slate-800/50">
+                    <div className="space-y-4">
+                      <div className="space-y-1">
+                        <div className="flex items-center gap-2 text-pink-400">
+                          <Sparkles size={18} className="animate-pulse" />
+                          <span className="text-[10px] font-black uppercase tracking-[0.2em]">SISTEMA NEURALE ATTIVO</span>
+                        </div>
+                        <h3 className="text-base font-black text-white leading-tight uppercase font-sans">Elaborazione PBR AI...</h3>
+                        <p className="text-[10px] text-slate-400">Generazione di textures ad alta fedeltà mantenendo la prospettiva del modello CAD.</p>
+                      </div>
 
-                  <div className="flex flex-col items-center">
-                    <div className="w-16 h-16 bg-gradient-to-br from-pink-500 via-purple-600 to-indigo-500 rounded-2xl flex items-center justify-center text-white shadow-xl shadow-purple-500/20 mb-4 animate-spin-slow">
-                      <Sparkles size={26} className="animate-pulse" />
+                      {/* Real-time Stage/Progress indicator */}
+                      <div className="space-y-2">
+                        <div className="flex justify-between text-[11px] font-extrabold text-slate-400 font-mono">
+                          <span className="truncate max-w-[80%]">{aiStage}</span>
+                          <span className="text-pink-400 font-bold">{Math.round(aiProgress)}%</span>
+                        </div>
+                        
+                        <div className="h-2 bg-slate-950 rounded-full overflow-hidden flex p-0.5 border border-slate-800">
+                          <motion.div 
+                            initial={{ width: 0 }}
+                            animate={{ width: `${aiProgress}%` }}
+                            transition={{ ease: "easeOut" }}
+                            className="h-full bg-gradient-to-r from-pink-500 via-purple-600 to-indigo-500 rounded-full"
+                          />
+                        </div>
+                      </div>
+
+                      {/* Technical specs of the neural model */}
+                      <div className="bg-slate-950/80 rounded-2xl p-4 border border-slate-800/50 space-y-2 text-left text-[9.5px]">
+                        <div className="flex justify-between py-1 border-b border-slate-800/30">
+                          <span className="text-slate-500 font-bold">Modello Generativo:</span>
+                          <span className="text-pink-400 font-bold font-mono">Gemini 2.5 Image Studio</span>
+                        </div>
+                        <div className="flex justify-between py-1 border-b border-slate-800/30">
+                          <span className="text-slate-500 font-bold">Finitura:</span>
+                          <span className="text-slate-300 font-mono font-bold">Texture PBR ad alta fedeltà</span>
+                        </div>
+                        <div className="flex justify-between py-1">
+                          <span className="text-slate-500 font-bold">Accuratezza prospettica:</span>
+                          <span className="text-emerald-400 font-mono font-bold">Tassativa (1:1 Prospettica)</span>
+                        </div>
+                      </div>
                     </div>
-                    <span className="text-[10px] font-black uppercase tracking-[0.2em] text-pink-400">Gemini Neural Image Generator</span>
-                    <h3 className="text-md font-extrabold mt-1 uppercase text-white font-sans">Elaborazione PBR AI...</h3>
+
+                    <p className="text-[9px] text-slate-500 italic text-center leading-relaxed">
+                      *L'AI sta scansionando i vettori e le luci del modello 3D per generare ombre fisiche, riflessi reali e materiali autentici.*
+                    </p>
                   </div>
 
-                  <div className="space-y-2">
-                    <div className="flex justify-between text-[11px] font-extrabold text-slate-400 font-mono">
-                      <span className="truncate max-w-[80%]">{aiStage}</span>
-                      <span className="text-pink-400">{Math.round(aiProgress)}%</span>
-                    </div>
-                    
-                    <div className="h-2 bg-slate-800 rounded-full overflow-hidden flex p-0.5">
-                      <motion.div 
-                        initial={{ width: 0 }}
-                        animate={{ width: `${aiProgress}%` }}
-                        transition={{ ease: "easeOut" }}
-                        className="h-full bg-gradient-to-r from-pink-500 via-purple-600 to-indigo-500 rounded-full"
-                      />
-                    </div>
+                  {/* Right side Image frame with base image and a moving scanning laser beam! */}
+                  <div className="flex-1 relative bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow-2xl flex items-center justify-center self-stretch max-h-[75vh]">
+                    {baseImage ? (
+                      <div className="relative w-full h-full flex items-center justify-center overflow-hidden">
+                        <img 
+                          src={baseImage} 
+                          alt="Base perspective scanning" 
+                          className="w-full h-full object-contain opacity-40 blur-[0.5px] select-none scale-[1.01]"
+                          referrerPolicy="no-referrer"
+                        />
+                        {/* Futuristic glowing scanning laser line */}
+                        <motion.div 
+                          initial={{ top: '0%' }}
+                          animate={{ top: '100%' }}
+                          transition={{ repeat: Infinity, duration: 2.2, ease: "linear" }}
+                          className="absolute left-0 right-0 h-[3px] bg-gradient-to-r from-transparent via-pink-500 to-transparent shadow-[0_0_15px_rgba(236,72,153,0.9)] z-10"
+                        />
+                        <div className="absolute inset-0 bg-gradient-to-t from-pink-500/5 via-transparent to-indigo-500/5 pointer-events-none" />
+                        <div className="absolute inset-x-0 top-1/2 -translate-y-1/2 text-center pointer-events-none z-20">
+                          <span className="bg-slate-950/90 border border-pink-500/30 text-pink-400 font-sans font-black text-[10px] tracking-[0.3em] uppercase px-4 py-2 rounded-xl shadow-lg shadow-pink-500/10 animate-pulse">
+                            ANALISI VETTORI PROSPETTICI IN CORSO...
+                          </span>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="flex flex-col items-center justify-center p-8 text-center space-y-4">
+                        <RefreshCw size={36} className="animate-spin text-pink-400" />
+                        <span className="text-xs font-bold text-slate-400 uppercase tracking-widest">Generazione della prospettiva in corso...</span>
+                      </div>
+                    )}
                   </div>
-
-                  <div className="bg-slate-950/80 rounded-2xl p-4 border border-slate-800/50 space-y-2 text-left text-[9.5px]">
-                    <div className="flex justify-between py-1 border-b border-slate-800/30">
-                      <span className="text-slate-500 font-bold">Rete neurale:</span>
-                      <span className="text-pink-400 font-bold font-mono">Gemini 2.5 Flash Image</span>
-                    </div>
-                    <div className="flex justify-between py-1 border-b border-slate-800/30">
-                      <span className="text-slate-500 font-bold">Finitura:</span>
-                      <span className="text-slate-300 font-mono font-bold">Texture ad alta fedeltà</span>
-                    </div>
-                    <div className="flex justify-between py-1">
-                      <span className="text-slate-500 font-bold">Dettagli:</span>
-                      <span className="text-slate-300 font-mono font-bold">Mattoni, Cemento, Vetro</span>
-                    </div>
-                  </div>
-
-                  <p className="text-[9px] text-slate-500 italic text-center">
-                    *L'AI sta traducendo la descrizione testuale, arricchendo i dettagli architettonici di ombreggiatura e illuminazione globale fisica.*
-                  </p>
                 </motion.div>
               ) : aiRenderedImage ? (
                 /* AI Render Image Lightbox presentation */
@@ -1296,6 +1372,16 @@ export const BIMRenderStudio: React.FC<BIMRenderStudioProps> = ({ entities, onCl
 
                     {/* Actions */}
                     <div className="space-y-2.5 pt-4 border-t border-slate-800/80">
+                      {keepPerspective && baseImage && (
+                        <button
+                          onClick={triggerRevealAnimation}
+                          className="w-full py-3 bg-gradient-to-r from-pink-500 via-purple-600 to-indigo-500 hover:brightness-110 text-white rounded-xl font-black text-xs uppercase tracking-wider shadow-lg shadow-purple-500/20 cursor-pointer flex items-center justify-center gap-2 transition-all active:scale-95"
+                        >
+                          <Sparkles size={14} className="animate-pulse text-pink-200" />
+                          <span>Rigioca Trasformazione ✨</span>
+                        </button>
+                      )}
+
                       <button
                         onClick={() => {
                           const link = document.createElement('a');
@@ -1332,12 +1418,58 @@ export const BIMRenderStudio: React.FC<BIMRenderStudioProps> = ({ entities, onCl
 
                   {/* Right side Image frame */}
                   <div className="flex-1 relative bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow-2xl flex items-center justify-center self-stretch max-h-[75vh]">
-                    <img 
-                      src={aiRenderedImage} 
-                      alt="BIM AI Generated Render" 
-                      className="max-w-full max-h-full object-contain rounded-xl animate-fade-in"
-                      referrerPolicy="no-referrer"
-                    />
+                    {keepPerspective && baseImage ? (
+                      <div 
+                        className="relative w-full h-full cursor-ew-resize select-none overflow-hidden"
+                        onMouseMove={(e) => {
+                          const rect = e.currentTarget.getBoundingClientRect();
+                          const x = Math.max(0, Math.min(e.clientX - rect.left, rect.width));
+                          setComparisonValue((x / rect.width) * 100);
+                        }}
+                        onTouchMove={(e) => {
+                          const rect = e.currentTarget.getBoundingClientRect();
+                          const x = Math.max(0, Math.min(e.touches[0].clientX - rect.left, rect.width));
+                          setComparisonValue((x / rect.width) * 100);
+                        }}
+                      >
+                        <img 
+                          src={baseImage} 
+                          alt="Base CAD" 
+                          className="absolute inset-0 w-full h-full object-contain select-none"
+                          referrerPolicy="no-referrer"
+                        />
+                        <img 
+                          src={aiRenderedImage} 
+                          alt="AI Render" 
+                          className="absolute inset-0 w-full h-full object-contain select-none"
+                          style={{ clipPath: `inset(0 ${100 - comparisonValue}% 0 0)` }}
+                          referrerPolicy="no-referrer"
+                        />
+                        {/* Slider Handle */}
+                        <div 
+                          className="absolute top-0 bottom-0 w-1 bg-indigo-500 shadow-[0_0_15px_rgba(99,102,241,1)] z-10 cursor-ew-resize"
+                          style={{ left: `calc(${comparisonValue}% - 2px)` }}
+                        >
+                          <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-8 h-8 bg-indigo-600 rounded-full border-2 border-white shadow-[0_0_20px_rgba(99,102,241,0.6)] flex items-center justify-center transition-transform hover:scale-110 active:scale-95 animate-pulse">
+                            <ArrowLeft size={12} className="text-white absolute left-1" />
+                            <ArrowRight size={12} className="text-white absolute right-1" />
+                          </div>
+                        </div>
+                        <div className="absolute bottom-4 right-4 bg-slate-900/80 px-3 py-1.5 rounded-lg border border-slate-700/50 text-[10px] text-white font-bold tracking-wider backdrop-blur-sm z-20">
+                          AI RENDER
+                        </div>
+                        <div className="absolute bottom-4 left-4 bg-slate-900/80 px-3 py-1.5 rounded-lg border border-slate-700/50 text-[10px] text-slate-300 font-bold tracking-wider backdrop-blur-sm z-20">
+                          BASE CAD
+                        </div>
+                      </div>
+                    ) : (
+                      <img 
+                        src={aiRenderedImage} 
+                        alt="BIM AI Generated Render" 
+                        className="max-w-full max-h-full object-contain rounded-xl animate-fade-in"
+                        referrerPolicy="no-referrer"
+                      />
+                    )}
                   </div>
                 </motion.div>
               ) : (

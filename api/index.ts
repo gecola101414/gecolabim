@@ -154,7 +154,14 @@ User Brief Description: "${description}"`,
         });
       }
     }
-    parts.push({ text: expandedPrompt });
+    
+    // Explicitly prepend a strong directive to the final prompt 
+    // to force the model to respect the input image geometry.
+    const finalPromptForImage = image 
+      ? `[CRITICAL: You MUST keep the EXACT same 3D geometry, perspective, camera angle, and structural layout as the provided reference image. Do not invent new rooms, buildings, or alter the shape. ONLY apply the following materials, textures, and lighting:] ${expandedPrompt}`
+      : expandedPrompt;
+
+    parts.push({ text: finalPromptForImage });
 
     const imageRes = await getAi().models.generateContent({
       model: 'gemini-2.5-flash-image',
