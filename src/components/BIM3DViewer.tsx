@@ -2821,13 +2821,21 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
     zElevation: number;
     objectHeight: number;
     hatch: 'SOLID' | 'ANSI31' | 'CROSS' | 'NONE';
+    bimRenderMode?: 'solid' | 'transparent' | 'parete_verticale' | 'parete_orizzontale';
+    duplicate?: boolean;
   }) => {
     if (!editingEntityId) return;
-    setEntities(prev => prev.map(e => {
-      if (e.id === editingEntityId) {
-        return {
-          ...e,
-          bimFamily: data.subFamily || data.familyId, // subFamily is used for custom or sub-type
+
+    if (data.duplicate) {
+      // DUPLICATE EXISTING
+      setEntities((prev: Entity[]) => {
+        const original = prev.find(e => e.id === editingEntityId);
+        if (!original) return prev;
+        const newElement: Entity = {
+          ...original,
+          id: `bim-elem-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+          bimFamily: data.subFamily || data.familyId,
+          bimAreaType: data.familyId,
           bimName: data.name,
           backgroundColor: data.color,
           color: data.color,
@@ -2836,25 +2844,52 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
           bimHeight: data.objectHeight,
           height: data.objectHeight,
           bimZPlane: data.zPlane,
-          bimZElevation: data.zElevation
-        };
-      }
-      return e;
-    }));
+          bimZElevation: data.zElevation,
+          bimRenderMode: data.bimRenderMode || 'solid',
+          timestamp: Date.now()
+        } as any;
+        return [...prev, newElement];
+      });
+      setSelectedEntity(null);
+    } else {
+      // UPDATE EXISTING
+      setEntities((prev: Entity[]) => prev.map(e => {
+        if (e.id === editingEntityId) {
+          return {
+            ...e,
+            bimFamily: data.subFamily || data.familyId,
+            bimAreaType: data.familyId,
+            bimName: data.name,
+            backgroundColor: data.color,
+            color: data.color,
+            bimHatchPattern: data.hatch as any,
+            pattern: data.hatch === 'NONE' ? 'SOLID' : data.hatch as any,
+            bimHeight: data.objectHeight,
+            height: data.objectHeight,
+            bimZPlane: data.zPlane,
+            bimZElevation: data.zElevation,
+            bimRenderMode: data.bimRenderMode || 'solid'
+          };
+        }
+        return e;
+      }));
 
-    setSelectedEntity(prev => prev && prev.id === editingEntityId ? {
-      ...prev,
-      bimFamily: data.subFamily || data.familyId,
-      bimName: data.name,
-      backgroundColor: data.color,
-      color: data.color,
-      bimHatchPattern: data.hatch as any,
-      pattern: data.hatch === 'NONE' ? 'SOLID' : data.hatch as any,
-      bimHeight: data.objectHeight,
-      height: data.objectHeight,
-      bimZPlane: data.zPlane,
-      bimZElevation: data.zElevation
-    } as any : prev);
+      setSelectedEntity(prev => prev && prev.id === editingEntityId ? {
+        ...prev,
+        bimFamily: data.subFamily || data.familyId,
+        bimAreaType: data.familyId,
+        bimName: data.name,
+        backgroundColor: data.color,
+        color: data.color,
+        bimHatchPattern: data.hatch as any,
+        pattern: data.hatch === 'NONE' ? 'SOLID' : data.hatch as any,
+        bimHeight: data.objectHeight,
+        height: data.objectHeight,
+        bimZPlane: data.zPlane,
+        bimZElevation: data.zElevation,
+        bimRenderMode: data.bimRenderMode || 'solid'
+      } as any : prev);
+    }
 
     setIsAreaEditOpen(false);
     setEditingEntityId(null);
@@ -5232,7 +5267,8 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
             zPlane: (selectedEntity as any).bimZPlane || 0,
             zElevation: (selectedEntity as any).bimZElevation || 0,
             objectHeight: (selectedEntity as any).bimHeight || (selectedEntity as any).height || 270,
-            hatch: (selectedEntity as any).bimHatchPattern || 'SOLID'
+            hatch: (selectedEntity as any).bimHatchPattern || 'SOLID',
+            bimRenderMode: (selectedEntity as any).bimRenderMode || 'solid'
           }}
           onDelete={() => handleDeleteEntity(selectedEntity.id)}
           floors={floors}

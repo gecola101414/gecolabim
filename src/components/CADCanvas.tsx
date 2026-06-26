@@ -2543,8 +2543,9 @@ interface CADCanvasProps {
   onContextMenu?: (e: React.MouseEvent) => void;
   activeLayerId: string;
   layers: Layer[];
-  defaultLineStyle: { color: string, lineWidth: number, dashed: boolean, mode: 'ink' | 'pencil' | 'CAD' };
-  setDefaultLineStyle: React.Dispatch<React.SetStateAction<{ color: string, lineWidth: number, dashed: boolean, mode: 'ink' | 'pencil' | 'CAD' }>>;
+  defaultLineStyle: { color: string, lineWidth: number, dashed: boolean, mode: 'ink' | 'pencil' | 'CAD', lineType?: 'continuous' | 'dashed' | 'dotted' | 'dashdot' | 'dashdash' };
+  setDefaultLineStyle: React.Dispatch<React.SetStateAction<{ color: string, lineWidth: number, dashed: boolean, mode: 'ink' | 'pencil' | 'CAD', lineType?: 'continuous' | 'dashed' | 'dotted' | 'dashdot' | 'dashdash' }>>;
+  defaultFiloColor?: string;
   eraserRadius: number;
   setEraserRadius: React.Dispatch<React.SetStateAction<number>>;
   eraserType?: 'pencil' | 'all' | 'lametta';
@@ -2605,7 +2606,7 @@ interface CADCanvasProps {
   isLavagna?: boolean;
 }
 
-export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entities, activeTool, setActiveTool, setEntities, setEntitiesSilent, onCommitHistory, onSelect, onContextMenu, activeLayerId, layers, defaultLineStyle, setDefaultLineStyle, defaultHatchStyle, defaultTextStyle = { fontFamily: 'sans-serif', fontSize: 14, fontWeight: 'normal', textAlign: 'left' }, eraserRadius, setEraserRadius, eraserType = 'pencil', setEraserType, eraserIntensity = 55, setEraserIntensity, onMouseMovePosition, rulerStyle = 'tecnigrafo', orthoMode = false, setOrthoMode, isContinuousMode = false, cancelTrigger = 0, parallelTrigger = 0, tavole, onUpdateTavole, onDoubleClickTavola, selectedTemplateId, selectedEntityId, selectedBIMSymbolType, setSelectedBIMSymbolType, bimSymbolScale = 1, raccordoConfig, dimensionScale = 1, dimensionDecimals = 2, dimensionMode = 'two-points', dimensionStyle = 'linear', selectionMode = 'manual', onEditRaccordo, onDoubleClickDimension, onDoubleClickBIMElement, onActionStart, onAreaDetected, onSelectionComplete, initialSelectedIds, selectedEntityIds = [], highlightedPoints, rotationEntityId, onSelectForRotation, bimWallHeight = 270, bimDoorHeight = 210, bimWindowHeight = 140, bimWallThickness = 15, bimWallType = 'Forati (Laterizio)', bimWallRenderMode = 'solid', sketchParams = [], highlightedSketchId = null, selectedLine = null, selectedLineClickPoint = null, referenceLine = null, showFloatingManual = false, isLavagna = false }, ref) => {
+export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entities, activeTool, setActiveTool, setEntities, setEntitiesSilent, onCommitHistory, onSelect, onContextMenu, activeLayerId, layers, defaultLineStyle, setDefaultLineStyle, defaultFiloColor = '#ff5500', defaultHatchStyle, defaultTextStyle = { fontFamily: 'sans-serif', fontSize: 14, fontWeight: 'normal', textAlign: 'left' }, eraserRadius, setEraserRadius, eraserType = 'pencil', setEraserType, eraserIntensity = 55, setEraserIntensity, onMouseMovePosition, rulerStyle = 'tecnigrafo', orthoMode = false, setOrthoMode, isContinuousMode = false, cancelTrigger = 0, parallelTrigger = 0, tavole, onUpdateTavole, onDoubleClickTavola, selectedTemplateId, selectedEntityId, selectedBIMSymbolType, setSelectedBIMSymbolType, bimSymbolScale = 1, raccordoConfig, dimensionScale = 1, dimensionDecimals = 2, dimensionMode = 'two-points', dimensionStyle = 'linear', selectionMode = 'manual', onEditRaccordo, onDoubleClickDimension, onDoubleClickBIMElement, onActionStart, onAreaDetected, onSelectionComplete, initialSelectedIds, selectedEntityIds = [], highlightedPoints, rotationEntityId, onSelectForRotation, bimWallHeight = 270, bimDoorHeight = 210, bimWindowHeight = 140, bimWallThickness = 15, bimWallType = 'Forati (Laterizio)', bimWallRenderMode = 'solid', sketchParams = [], highlightedSketchId = null, selectedLine = null, selectedLineClickPoint = null, referenceLine = null, showFloatingManual = false, isLavagna = false }, ref) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const entitiesRef = useRef(entities);
   useEffect(() => {
@@ -3076,7 +3077,7 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
     };
 
     const handleArrowsLine = (e: KeyboardEvent) => {
-      if (activeTool !== 'Line' || showManualInput) return;
+      if ((activeTool !== 'Line' && (activeTool as string) !== 'Filo') || showManualInput) return;
       
       const keys = ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'];
       if (!keys.includes(e.key)) return;
@@ -4938,7 +4939,20 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
              isHighlighted = true;
         }
 
-        if (entity.dashed) {
+        const lineType = (entity as any).lineType;
+        if (lineType) {
+          if (lineType === 'dashed') {
+            ctx.setLineDash([8 / view.zoom, 4 / view.zoom]);
+          } else if (lineType === 'dotted') {
+            ctx.setLineDash([2 / view.zoom, 3 / view.zoom]);
+          } else if (lineType === 'dashdot') {
+            ctx.setLineDash([12 / view.zoom, 4 / view.zoom, 2 / view.zoom, 4 / view.zoom]);
+          } else if (lineType === 'dashdash') {
+            ctx.setLineDash([15 / view.zoom, 4 / view.zoom, 4 / view.zoom, 4 / view.zoom]);
+          } else {
+            ctx.setLineDash([]);
+          }
+        } else if (entity.dashed) {
           ctx.setLineDash([5 / view.zoom, 5 / view.zoom]);
         } else {
           ctx.setLineDash([]);
@@ -5241,7 +5255,35 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
                   ctx.stroke();
               }
           } else if ((l.mode === 'ink' || l.mode === 'pencil') && l.isFreehand) {
-              if (l.inkPoints) {
+              const entityLineType = (l as any).lineType;
+              const isStyled = entityLineType && entityLineType !== 'continuous';
+              if (isStyled) {
+                  ctx.save();
+                  if (entityLineType === 'dashed') {
+                      ctx.setLineDash([8 / view.zoom, 4 / view.zoom]);
+                  } else if (entityLineType === 'dotted') {
+                      ctx.setLineDash([2 / view.zoom, 3 / view.zoom]);
+                  } else if (entityLineType === 'dashdot') {
+                      ctx.setLineDash([12 / view.zoom, 4 / view.zoom, 2 / view.zoom, 4 / view.zoom]);
+                  } else if (entityLineType === 'dashdash') {
+                      ctx.setLineDash([15 / view.zoom, 4 / view.zoom, 4 / view.zoom, 4 / view.zoom]);
+                  }
+                  ctx.lineWidth = l.mode === 'ink'
+                      ? getEffectiveCADRenderWidth(l.lineWidth, l.mode, view.zoom)
+                      : Math.max(0.1, l.lineWidth / view.zoom);
+                  ctx.strokeStyle = isHighlighted ? highlightColor : l.color || '#000000';
+                  ctx.beginPath();
+                  ctx.moveTo(l.start.x, l.start.y);
+                  if (l.inkPoints) {
+                      for (let i = 0; i < l.inkPoints.length; i++) {
+                          ctx.lineTo(l.inkPoints[i].x, l.inkPoints[i].y);
+                      }
+                  } else {
+                      ctx.lineTo(l.end.x, l.end.y);
+                  }
+                  ctx.stroke();
+                  ctx.restore();
+              } else if (l.inkPoints) {
                   let lastX = l.start.x;
                   let lastY = l.start.y;
                   for(let i=0; i<l.inkPoints.length; i++) {
@@ -5323,6 +5365,160 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
               ctx.moveTo(l.start.x, l.start.y);
               ctx.lineTo(l.end.x, l.end.y);
               ctx.stroke();
+
+              const isFiloEntity = (l as any).isFilo || l.layer === 'Fili';
+              if (isFiloEntity) {
+                  ctx.save();
+                  // Let's compute direction and perpendicular vectors
+                  const dx = l.end.x - l.start.x;
+                  const dy = l.end.y - l.start.y;
+                  const len = Math.sqrt(dx * dx + dy * dy);
+                  if (len > 0.5) {
+                      const vx = dx / len;
+                      const vy = dy / len;
+                      const px = -vy;
+                      const py = vx;
+
+                      // Draw at start point
+                      // 1. Wood Batter Board (traversa) - perpendicular to line
+                      ctx.strokeStyle = '#854d0e'; // Dark wood brown
+                      ctx.lineWidth = 3 / view.zoom;
+                      ctx.beginPath();
+                      ctx.moveTo(l.start.x - px * 12 / view.zoom, l.start.y - py * 12 / view.zoom);
+                      ctx.lineTo(l.start.x + px * 12 / view.zoom, l.start.y + py * 12 / view.zoom);
+                      ctx.stroke();
+
+                      // 2. Vertical stakes supporting the batter board, going backward
+                      ctx.strokeStyle = '#a16207'; // lighter brown
+                      ctx.lineWidth = 2.5 / view.zoom;
+                      ctx.beginPath();
+                      // Left stake
+                      const stake1X = l.start.x - px * 8 / view.zoom;
+                      const stake1Y = l.start.y - py * 8 / view.zoom;
+                      ctx.moveTo(stake1X, stake1Y);
+                      ctx.lineTo(stake1X - vx * 12 / view.zoom, stake1Y - vy * 12 / view.zoom);
+                      // Right stake
+                      const stake2X = l.start.x + px * 8 / view.zoom;
+                      const stake2Y = l.start.y + py * 8 / view.zoom;
+                      ctx.moveTo(stake2X, stake2Y);
+                      ctx.lineTo(stake2X - vx * 12 / view.zoom, stake2Y - vy * 12 / view.zoom);
+                      ctx.stroke();
+
+                      // 3. Central iron tie-nail with high-vis orange/red paint
+                      ctx.fillStyle = l.color || '#ff5500';
+                      ctx.beginPath();
+                      ctx.arc(l.start.x, l.start.y, 3 / view.zoom, 0, Math.PI * 2);
+                      ctx.fill();
+                      ctx.fillStyle = '#ffffff';
+                      ctx.beginPath();
+                      ctx.arc(l.start.x, l.start.y, 1 / view.zoom, 0, Math.PI * 2);
+                      ctx.fill();
+
+                      // Draw at end point
+                      // 1. Wood Batter Board (traversa)
+                      ctx.strokeStyle = '#854d0e';
+                      ctx.lineWidth = 3 / view.zoom;
+                      ctx.beginPath();
+                      ctx.moveTo(l.end.x - px * 12 / view.zoom, l.end.y - py * 12 / view.zoom);
+                      ctx.lineTo(l.end.x + px * 12 / view.zoom, l.end.y + py * 12 / view.zoom);
+                      ctx.stroke();
+
+                      // 2. Vertical stakes going forward (away from the line)
+                      ctx.strokeStyle = '#a16207';
+                      ctx.lineWidth = 2.5 / view.zoom;
+                      ctx.beginPath();
+                      // Left stake
+                      const estake1X = l.end.x - px * 8 / view.zoom;
+                      const estake1Y = l.end.y - py * 8 / view.zoom;
+                      ctx.moveTo(estake1X, estake1Y);
+                      ctx.lineTo(estake1X + vx * 12 / view.zoom, estake1Y + vy * 12 / view.zoom);
+                      // Right stake
+                      const estake2X = l.end.x + px * 8 / view.zoom;
+                      const estake2Y = l.end.y + py * 8 / view.zoom;
+                      ctx.moveTo(estake2X, estake2Y);
+                      ctx.lineTo(estake2X + vx * 12 / view.zoom, estake2Y + vy * 12 / view.zoom);
+                      ctx.stroke();
+
+                      // 3. Central iron tie-nail
+                      ctx.fillStyle = l.color || '#ff5500';
+                      ctx.beginPath();
+                      ctx.arc(l.end.x, l.end.y, 3 / view.zoom, 0, Math.PI * 2);
+                      ctx.fill();
+                      ctx.fillStyle = '#ffffff';
+                      ctx.beginPath();
+                      ctx.arc(l.end.x, l.end.y, 1 / view.zoom, 0, Math.PI * 2);
+                      ctx.fill();
+                  } else {
+                      // Fallback high-vis pins if very short
+                      ctx.fillStyle = l.color || '#ff5500';
+                      ctx.beginPath();
+                      ctx.arc(l.start.x, l.start.y, 4 / view.zoom, 0, Math.PI * 2);
+                      ctx.arc(l.end.x, l.end.y, 4 / view.zoom, 0, Math.PI * 2);
+                      ctx.fill();
+                  }
+
+                  // Progressive numbering bubble/dot in screen-space for pixel-perfect clarity at any zoom level
+                  const allFili = entities.filter(ent => ent.type === 'line' && ((ent as any).isFilo || ent.layer === 'Fili'));
+                  const filoIndex = allFili.findIndex(ent => ent.id === l.id);
+                  const filoNum = filoIndex !== -1 ? filoIndex + 1 : 1;
+                  const labelText = `F${filoNum}`;
+
+                  // Temporarily switch to screen space coordinates for text and bubbles to bypass browser font sizing limitations
+                  ctx.save();
+                  ctx.setTransform(1, 0, 0, 1, 0, 0);
+
+                  const startScreenX = l.start.x * view.zoom + view.pan.x;
+                  const startScreenY = l.start.y * view.zoom + view.pan.y;
+                  const endScreenX = l.end.x * view.zoom + view.pan.x;
+                  const endScreenY = l.end.y * view.zoom + view.pan.y;
+
+                  const radius = 10; // crisp 10px radius on screen
+
+                  // Enable subtle elegant drop shadow for the bubble to float above grid/lines
+                  ctx.shadowColor = 'rgba(0, 0, 0, 0.3)';
+                  ctx.shadowBlur = 4;
+                  ctx.shadowOffsetX = 0;
+                  ctx.shadowOffsetY = 1.5;
+
+                  // Draw start bubble
+                  ctx.beginPath();
+                  ctx.arc(startScreenX, startScreenY, radius, 0, Math.PI * 2);
+                  ctx.fillStyle = l.color || '#ff5500';
+                  ctx.fill();
+                  ctx.strokeStyle = '#ffffff';
+                  ctx.lineWidth = 1.5;
+                  ctx.stroke();
+
+                  // Draw end bubble
+                  ctx.beginPath();
+                  ctx.arc(endScreenX, endScreenY, radius, 0, Math.PI * 2);
+                  ctx.fillStyle = l.color || '#ff5500';
+                  ctx.fill();
+                  ctx.strokeStyle = '#ffffff';
+                  ctx.lineWidth = 1.5;
+                  ctx.stroke();
+
+                  // Reset shadows for text rendering
+                  ctx.shadowColor = 'transparent';
+                  ctx.shadowBlur = 0;
+                  ctx.shadowOffsetX = 0;
+                  ctx.shadowOffsetY = 0;
+
+                  // Set up typography
+                  ctx.fillStyle = '#ffffff';
+                  ctx.font = 'bold 10px system-ui, -apple-system, sans-serif';
+                  ctx.textAlign = 'center';
+                  ctx.textBaseline = 'middle';
+
+                  // Start text
+                  ctx.fillText(labelText, startScreenX, startScreenY);
+
+                  // End text
+                  ctx.fillText(labelText, endScreenX, endScreenY);
+
+                  ctx.restore(); // restores the identity transform to continue in scaled world space
+                  ctx.restore(); // restores the main render transform save
+              }
           }
         } else if (entity.type === 'dimension') {
             const { p1, p2, styleToUse } = getDimensionLinePoints(entity);
@@ -6152,10 +6348,10 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
       // --- BIM LIVE PREVIEWS (ENDS) ---
 
       // Draw current drawing preview
-      if (drawing && (activeTool === 'Line' || activeTool === 'Circle' || activeTool === 'Rectangle' || activeTool === 'Arc' || activeTool === 'Dimension' || activeTool === 'Camera')) {
+      if (drawing && (activeTool === 'Line' || (activeTool as string) === 'Filo' || activeTool === 'Circle' || activeTool === 'Rectangle' || activeTool === 'Arc' || activeTool === 'Dimension' || activeTool === 'Camera')) {
         let isKnownAngle = false;
         let matchedAngle = 0;
-        if (activeTool === 'Line') {
+        if (activeTool === 'Line' || (activeTool as string) === 'Filo') {
             const dx = drawing.current.x - drawing.start.x;
             const dy = drawing.current.y - drawing.start.y;
             const len = Math.sqrt(dx * dx + dy * dy);
@@ -6176,34 +6372,58 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
 
         if (drawing.isFreehand && drawing.freehandPoints && drawing.freehandPoints.length > 1) {
             ctx.save();
-            ctx.setLineDash([]);
-            
-            let lastX = drawing.freehandPoints[0].x;
-            let lastY = drawing.freehandPoints[0].y;
-            for (let i = 1; i < drawing.freehandPoints.length; i++) {
-                const pt = drawing.freehandPoints[i];
-                const px = pt.x;
-                const py = pt.y;
-                
-                const style = computeRealisticInkPoint(drawing.freehandPoints, i, defaultLineStyle.mode === 'ink' ? 'ink' : 'pencil', view.zoom);
-                
-                ctx.beginPath();
+            const previewLineType = defaultLineStyle.lineType;
+            const isPreviewStyled = previewLineType && previewLineType !== 'continuous';
+            if (isPreviewStyled) {
+                if (previewLineType === 'dashed') {
+                    ctx.setLineDash([8 / view.zoom, 4 / view.zoom]);
+                } else if (previewLineType === 'dotted') {
+                    ctx.setLineDash([2 / view.zoom, 3 / view.zoom]);
+                } else if (previewLineType === 'dashdot') {
+                    ctx.setLineDash([12 / view.zoom, 4 / view.zoom, 2 / view.zoom, 4 / view.zoom]);
+                } else if (previewLineType === 'dashdash') {
+                    ctx.setLineDash([15 / view.zoom, 4 / view.zoom, 4 / view.zoom, 4 / view.zoom]);
+                }
                 ctx.lineWidth = defaultLineStyle.mode === 'ink'
-                    ? (getEffectiveCADRenderWidth(defaultLineStyle.lineWidth, defaultLineStyle.mode, view.zoom) * (0.8 + style.width * 0.4))
-                    : Math.max(0.1, style.width * (defaultLineStyle.lineWidth / view.zoom));
-                
-                ctx.strokeStyle = isLavagna 
-                    ? getAlphaColor('#FAF9F6', style.alpha) 
-                    : (defaultLineStyle.mode === 'ink' 
-                        ? getAlphaColor('#000000', style.alpha) 
-                        : getAlphaColor(defaultLineStyle.color, style.alpha));
-                
-                ctx.moveTo(lastX, lastY);
-                ctx.lineTo(px, py);
+                    ? getEffectiveCADRenderWidth(defaultLineStyle.lineWidth, defaultLineStyle.mode, view.zoom)
+                    : Math.max(0.1, defaultLineStyle.lineWidth / view.zoom);
+                ctx.strokeStyle = isLavagna ? '#FAF9F6' : (defaultLineStyle.color || '#000000');
+                ctx.beginPath();
+                ctx.moveTo(drawing.freehandPoints[0].x, drawing.freehandPoints[0].y);
+                for (let i = 1; i < drawing.freehandPoints.length; i++) {
+                    ctx.lineTo(drawing.freehandPoints[i].x, drawing.freehandPoints[i].y);
+                }
                 ctx.stroke();
-                
-                lastX = px;
-                lastY = py;
+                ctx.setLineDash([]);
+            } else {
+                ctx.setLineDash([]);
+                let lastX = drawing.freehandPoints[0].x;
+                let lastY = drawing.freehandPoints[0].y;
+                for (let i = 1; i < drawing.freehandPoints.length; i++) {
+                    const pt = drawing.freehandPoints[i];
+                    const px = pt.x;
+                    const py = pt.y;
+                    
+                    const style = computeRealisticInkPoint(drawing.freehandPoints, i, defaultLineStyle.mode === 'ink' ? 'ink' : 'pencil', view.zoom);
+                    
+                    ctx.beginPath();
+                    ctx.lineWidth = defaultLineStyle.mode === 'ink'
+                        ? (getEffectiveCADRenderWidth(defaultLineStyle.lineWidth, defaultLineStyle.mode, view.zoom) * (0.8 + style.width * 0.4))
+                        : Math.max(0.1, style.width * (defaultLineStyle.lineWidth / view.zoom));
+                    
+                    ctx.strokeStyle = isLavagna 
+                        ? getAlphaColor('#FAF9F6', style.alpha) 
+                        : (defaultLineStyle.mode === 'ink' 
+                            ? getAlphaColor('#000000', style.alpha) 
+                            : getAlphaColor(defaultLineStyle.color, style.alpha));
+                    
+                    ctx.moveTo(lastX, lastY);
+                    ctx.lineTo(px, py);
+                    ctx.stroke();
+                    
+                    lastX = px;
+                    lastY = py;
+                }
             }
             ctx.restore();
         } else {
@@ -6211,15 +6431,36 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
                 ? '#9ca3af' // Gray for virtual
                 : (isKnownAngle 
                     ? '#22c55e' 
-                    : (isLavagna ? '#FAF9F6' : (defaultLineStyle.color || ((defaultLineStyle.mode === 'pencil') ? 'rgba(187, 187, 187, 0.5)' : (defaultLineStyle.mode === 'ink' ? '#000000' : 'rgba(0, 0, 0, 1.0)')))));
+                    : ((activeTool as string) === 'Filo'
+                        ? (defaultFiloColor || '#ff5500')
+                        : (isLavagna ? '#FAF9F6' : (defaultLineStyle.color || ((defaultLineStyle.mode === 'pencil') ? 'rgba(187, 187, 187, 0.5)' : (defaultLineStyle.mode === 'ink' ? '#000000' : 'rgba(0, 0, 0, 1.0)'))))));
             ctx.lineWidth = drawing.wheelLength !== undefined 
                 ? 4 / view.zoom 
-                : (defaultLineStyle.mode === 'ink' 
-                    ? getEffectiveCADRenderWidth(defaultLineStyle.lineWidth, defaultLineStyle.mode, view.zoom) 
-                    : (defaultLineStyle.mode === 'CAD' ? defaultLineStyle.lineWidth / view.zoom : 2 / view.zoom));
-            ctx.setLineDash((defaultLineStyle.mode === 'CAD') ? [] : [5, 5]);
+                : ((activeTool as string) === 'Filo'
+                    ? 1.5 / view.zoom
+                    : (defaultLineStyle.mode === 'ink' 
+                        ? getEffectiveCADRenderWidth(defaultLineStyle.lineWidth, defaultLineStyle.mode, view.zoom) 
+                        : (defaultLineStyle.mode === 'CAD' ? defaultLineStyle.lineWidth / view.zoom : 2 / view.zoom)));
+            if ((activeTool as string) === 'Filo') {
+                ctx.setLineDash([]);
+            } else if (defaultLineStyle.lineType) {
+                const lt = defaultLineStyle.lineType;
+                if (lt === 'dashed') {
+                    ctx.setLineDash([8 / view.zoom, 4 / view.zoom]);
+                } else if (lt === 'dotted') {
+                    ctx.setLineDash([2 / view.zoom, 3 / view.zoom]);
+                } else if (lt === 'dashdot') {
+                    ctx.setLineDash([12 / view.zoom, 4 / view.zoom, 2 / view.zoom, 4 / view.zoom]);
+                } else if (lt === 'dashdash') {
+                    ctx.setLineDash([15 / view.zoom, 4 / view.zoom, 4 / view.zoom, 4 / view.zoom]);
+                } else {
+                    ctx.setLineDash([]);
+                }
+            } else {
+                ctx.setLineDash((defaultLineStyle.mode === 'CAD') ? [] : [5, 5]);
+            }
             ctx.beginPath();
-            if (activeTool === 'Line' || activeTool === 'Dimension') {
+            if (activeTool === 'Line' || (activeTool as string) === 'Filo' || activeTool === 'Dimension') {
                 if (drawing.wheelLength !== undefined) {
                     const steps = 20;
                     const dx = drawing.current.x - drawing.start.x;
@@ -6311,6 +6552,80 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
                 }
             }
             ctx.stroke();
+
+            if ((activeTool as string) === 'Filo') {
+                ctx.save();
+                const dx = drawing.current.x - drawing.start.x;
+                const dy = drawing.current.y - drawing.start.y;
+                const len = Math.sqrt(dx * dx + dy * dy);
+                if (len > 0.5) {
+                    const vx = dx / len;
+                    const vy = dy / len;
+                    const px = -vy;
+                    const py = vx;
+
+                    // Draw start board
+                    ctx.strokeStyle = '#854d0e';
+                    ctx.lineWidth = 3 / view.zoom;
+                    ctx.beginPath();
+                    ctx.moveTo(drawing.start.x - px * 12 / view.zoom, drawing.start.y - py * 12 / view.zoom);
+                    ctx.lineTo(drawing.start.x + px * 12 / view.zoom, drawing.start.y + py * 12 / view.zoom);
+                    ctx.stroke();
+
+                    ctx.strokeStyle = '#a16207';
+                    ctx.lineWidth = 2.5 / view.zoom;
+                    ctx.beginPath();
+                    const stake1X = drawing.start.x - px * 8 / view.zoom;
+                    const stake1Y = drawing.start.y - py * 8 / view.zoom;
+                    ctx.moveTo(stake1X, stake1Y);
+                    ctx.lineTo(stake1X - vx * 12 / view.zoom, stake1Y - vy * 12 / view.zoom);
+                    const stake2X = drawing.start.x + px * 8 / view.zoom;
+                    const stake2Y = drawing.start.y + py * 8 / view.zoom;
+                    ctx.moveTo(stake2X, stake2Y);
+                    ctx.lineTo(stake2X - vx * 12 / view.zoom, stake2Y - vy * 12 / view.zoom);
+                    ctx.stroke();
+
+                    ctx.fillStyle = defaultFiloColor || '#ff5500';
+                    ctx.beginPath();
+                    ctx.arc(drawing.start.x, drawing.start.y, 3 / view.zoom, 0, Math.PI * 2);
+                    ctx.fill();
+                    ctx.fillStyle = '#ffffff';
+                    ctx.beginPath();
+                    ctx.arc(drawing.start.x, drawing.start.y, 1 / view.zoom, 0, Math.PI * 2);
+                    ctx.fill();
+
+                    // Draw end board
+                    ctx.strokeStyle = '#854d0e';
+                    ctx.lineWidth = 3 / view.zoom;
+                    ctx.beginPath();
+                    ctx.moveTo(drawing.current.x - px * 12 / view.zoom, drawing.current.y - py * 12 / view.zoom);
+                    ctx.lineTo(drawing.current.x + px * 12 / view.zoom, drawing.current.y + py * 12 / view.zoom);
+                    ctx.stroke();
+
+                    ctx.strokeStyle = '#a16207';
+                    ctx.lineWidth = 2.5 / view.zoom;
+                    ctx.beginPath();
+                    const estake1X = drawing.current.x - px * 8 / view.zoom;
+                    const estake1Y = drawing.current.y - py * 8 / view.zoom;
+                    ctx.moveTo(estake1X, estake1Y);
+                    ctx.lineTo(estake1X + vx * 12 / view.zoom, estake1Y + vy * 12 / view.zoom);
+                    const estake2X = drawing.current.x + px * 8 / view.zoom;
+                    const estake2Y = drawing.current.y + py * 8 / view.zoom;
+                    ctx.moveTo(estake2X, estake2Y);
+                    ctx.lineTo(estake2X + vx * 12 / view.zoom, estake2Y + vy * 12 / view.zoom);
+                    ctx.stroke();
+
+                    ctx.fillStyle = defaultFiloColor || '#ff5500';
+                    ctx.beginPath();
+                    ctx.arc(drawing.current.x, drawing.current.y, 3 / view.zoom, 0, Math.PI * 2);
+                    ctx.fill();
+                    ctx.fillStyle = '#ffffff';
+                    ctx.beginPath();
+                    ctx.arc(drawing.current.x, drawing.current.y, 1 / view.zoom, 0, Math.PI * 2);
+                    ctx.fill();
+                }
+                ctx.restore();
+            }
         }
         
         // Draw Pen indicator if wheel is active
@@ -6342,7 +6657,7 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
         };
 
         let label = '';
-        if (activeTool === 'Line' || activeTool === 'Dimension') {
+        if (activeTool === 'Line' || (activeTool as string) === 'Filo' || activeTool === 'Dimension') {
             label = `L = ${formatPrecision(tooltipLength)}`;
         } else if (activeTool === 'Circle') {
             label = `R = ${formatPrecision(tooltipLength)}`;
@@ -10746,11 +11061,11 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
                 });
             }
         }
-    } else if (activeTool === 'Line' || activeTool === 'Circle' || activeTool === 'Rectangle' || activeTool === 'Point' || activeTool === 'Arc' || activeTool === 'Testo' || activeTool === 'Camera') {
+    } else if (activeTool === 'Line' || (activeTool as string) === 'Filo' || activeTool === 'Circle' || activeTool === 'Rectangle' || activeTool === 'Point' || activeTool === 'Arc' || activeTool === 'Testo' || activeTool === 'Camera') {
       const wasLocked = isLocked;
       setIsLocked(false);
       
-      if (drawing && (activeTool === 'Line' || activeTool === 'Circle' || activeTool === 'Rectangle' || activeTool === 'Arc' || activeTool === 'Camera')) {
+      if (drawing && (activeTool === 'Line' || (activeTool as string) === 'Filo' || activeTool === 'Circle' || activeTool === 'Rectangle' || activeTool === 'Arc' || activeTool === 'Camera')) {
           let snappedResult;
 
           if (drawing.wheelLength !== undefined) {
@@ -10774,7 +11089,7 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
 
               const isBothSnappedException = false;
 
-              const isLineLikeTool = (activeTool as string) === 'Line' || (activeTool as string) === 'BIM_Porta' || (activeTool as string) === 'BIM_Finestra';
+              const isLineLikeTool = (activeTool as string) === 'Line' || (activeTool as string) === 'Filo' || (activeTool as string) === 'BIM_Porta' || (activeTool as string) === 'BIM_Finestra';
               const effectiveOrthoMode = isLineLikeTool && (orthoMode ? !isShiftPressedRef.current : isShiftPressedRef.current);
 
               const isOrthoHorizontal = isLineLikeTool && effectiveOrthoMode && 
@@ -10788,7 +11103,7 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
                       finalPoint = isOrthoHorizontal 
                         ? { x: finalPoint.x, y: drawing.start.y } 
                         : { x: drawing.start.x, y: finalPoint.y };
-                  } else if (!e.shiftKey && !isTempOrtho && (activeTool as any) === 'Line') {
+                  } else if (!e.shiftKey && !isTempOrtho && (activeTool === 'Line' || (activeTool as string) === 'Filo')) {
                       finalPoint = applyAngleSnapping(drawing.start, rawPoint);
                   }
               }
@@ -10843,7 +11158,7 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
                       uy = dy / currentLength;
                   }
 
-                  if (activeTool === 'Line') {
+                  if (activeTool === 'Line' || (activeTool as string) === 'Filo') {
                       if (effectiveOrthoMode) {
                           const isOrthoHorizontal = Math.abs(dx) >= Math.abs(dy);
                           if (isOrthoHorizontal) {
@@ -10914,19 +11229,21 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
           }
           
           let newEntity: Entity | null = null;
-          if (activeTool === 'Line') {
+          if (activeTool === 'Line' || (activeTool as string) === 'Filo') {
               newEntity = {
                 id: Date.now().toString(),
                 type: 'line',
-                color: defaultLineStyle.color,
-                lineWidth: defaultLineStyle.lineWidth,
-                dashed: defaultLineStyle.dashed,
-                mode: defaultLineStyle.mode,
+                color: (activeTool as string) === 'Filo' ? (defaultFiloColor || '#ff5500') : defaultLineStyle.color,
+                lineWidth: (activeTool as string) === 'Filo' ? 1.5 : defaultLineStyle.lineWidth,
+                dashed: (activeTool as string) === 'Filo' ? false : defaultLineStyle.dashed,
+                lineType: (activeTool as string) === 'Filo' ? 'continuous' : defaultLineStyle.lineType,
+                mode: (activeTool as string) === 'Filo' ? 'CAD' : defaultLineStyle.mode,
                 start: drawing.start,
                 end: snappedResult.point,
-                 layer: activeLayerId,
-                 isFreehand: (defaultLineStyle.mode === 'pencil' || defaultLineStyle.mode === 'ink'), // Crucial for eraser and consistent drawing
-                 inkPoints: (defaultLineStyle.mode === 'pencil' || defaultLineStyle.mode === 'ink') ? (() => {
+                layer: (activeTool as string) === 'Filo' ? 'Fili' : activeLayerId,
+                isFilo: (activeTool as string) === 'Filo',
+                isFreehand: (activeTool as string) !== 'Filo' && (defaultLineStyle.mode === 'pencil' || defaultLineStyle.mode === 'ink'), // Crucial for eraser and consistent drawing
+                inkPoints: (activeTool as string) !== 'Filo' && (defaultLineStyle.mode === 'pencil' || defaultLineStyle.mode === 'ink') ? (() => {
                    const points: InkPoint[] = [];
                    const steps = 80; // Higher density for realistic ink
                    const dx = snappedResult.point.x - drawing.start.x;
@@ -11030,8 +11347,8 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
               });
           }
           
-          if (activeTool === 'Line' && isContinuousMode) {
-              const isFreehandMode = (defaultLineStyle.mode === 'ink' || defaultLineStyle.mode === 'pencil') && !orthoMode;
+          if ((activeTool === 'Line' || (activeTool as string) === 'Filo') && isContinuousMode) {
+              const isFreehandMode = (activeTool as string) !== 'Filo' && (defaultLineStyle.mode === 'ink' || defaultLineStyle.mode === 'pencil') && !orthoMode;
               setDrawing({ 
                 start: snappedResult.point, 
                 current: snappedResult.point, 
@@ -11921,7 +12238,7 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
           // 1. Check for Snaps around raw mouse position
           let snapRes = getSnappedPoint(rawPoint, entities, activeTool, drawing as any);
           
-          const isOrthoTool = (activeTool as string) === 'Line' || (activeTool as string) === 'BIM_Porta' || (activeTool as string) === 'BIM_Finestra' || (activeTool as string) === 'BIM_Muro' || (activeTool as string) === 'Muro' || (activeTool as string) === 'Rectangle' || (activeTool as string) === 'Circle' || (activeTool as string) === 'Arc' || (activeTool as string) === 'Parallel';
+          const isOrthoTool = (activeTool as string) === 'Line' || (activeTool as string) === 'Filo' || (activeTool as string) === 'BIM_Porta' || (activeTool as string) === 'BIM_Finestra' || (activeTool as string) === 'BIM_Muro' || (activeTool as string) === 'Muro' || (activeTool as string) === 'Rectangle' || (activeTool as string) === 'Circle' || (activeTool as string) === 'Arc' || (activeTool as string) === 'Parallel';
           const effectiveOrthoMode = isOrthoTool && (orthoMode ? !isShiftPressedRef.current : isShiftPressedRef.current);
 
           // 2. If we have a standard strong snap (Endpoint, Midpoint, etc.), it WINS over Ortho
@@ -12305,6 +12622,7 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
     
     if (!drawing && !isFreehandMode && !isTempOrthoHover && (
         activeTool === 'Line' || 
+        activeTool === 'Filo' ||
         activeTool === 'Rectangle' || 
         activeTool === 'Circle' || 
         activeTool === 'Arc' || 
@@ -12358,6 +12676,7 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
             color: defaultLineStyle.color,
             lineWidth: defaultLineStyle.lineWidth,
             dashed: defaultLineStyle.dashed,
+            lineType: defaultLineStyle.lineType,
             mode: defaultLineStyle.mode === 'ink' ? 'ink' : 'pencil',
             start: pts[0],
             end: pts[pts.length - 1],
@@ -12863,7 +13182,7 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
         const isJollyNow = updateJolly(e);
         
         // Frecce per muovere il punto
-        if (activeTool === 'Line' && drawing) {
+        if ((activeTool === 'Line' || activeTool === 'Filo') && drawing) {
             const keys = ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'];
             if (keys.includes(e.key)) {
                 // Avanzamento: 0.1 se Jolly (decimali), 1 se normale (unità intere)
@@ -12972,20 +13291,22 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
         } else if (e.key === 'Enter') {
             if (activeTool === 'Join') {
                 confirmJoin();
-            } else if (activeTool === 'Line' && drawing) {
+            } else if ((activeTool === 'Line' || activeTool === 'Filo') && drawing) {
                 e.preventDefault();
                 const finalPoint = drawing.current;
                 const newEntity: Entity = {
                     id: Date.now().toString(),
                     type: 'line',
-                    color: defaultLineStyle.color,
-                    lineWidth: defaultLineStyle.lineWidth,
-                    dashed: defaultLineStyle.dashed,
-                    mode: defaultLineStyle.mode,
+                    color: activeTool === 'Filo' ? (defaultFiloColor || '#ff5500') : defaultLineStyle.color,
+                    lineWidth: activeTool === 'Filo' ? 1.5 : defaultLineStyle.lineWidth,
+                    dashed: activeTool === 'Filo' ? false : defaultLineStyle.dashed,
+                    lineType: activeTool === 'Filo' ? 'continuous' : defaultLineStyle.lineType,
+                    mode: activeTool === 'Filo' ? 'CAD' : defaultLineStyle.mode,
                     start: drawing.start,
                     end: finalPoint,
-                    layer: activeLayerId,
-                };
+                    layer: activeTool === 'Filo' ? 'Fili' : activeLayerId,
+                    isFilo: activeTool === 'Filo',
+                } as any;
                 
                 setEntities(prev => {
                     onCommitHistory?.(prev);
@@ -12993,7 +13314,7 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
                 });
                 
                 // Start next segment
-                const isFreehandMode = (defaultLineStyle.mode === 'pencil' || defaultLineStyle.mode === 'ink') && !orthoMode;
+                const isFreehandMode = activeTool !== 'Filo' && (defaultLineStyle.mode === 'pencil' || defaultLineStyle.mode === 'ink') && !orthoMode;
                 setDrawing({ 
                     start: finalPoint, 
                     current: finalPoint, 
@@ -13005,7 +13326,7 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
                 });
             }
         } else if (!showManualInput && /^[0-9\.\-]$/.test(e.key)) {
-            if ((drawing && !drawing.isFreehand && (activeTool === 'Line' || activeTool === 'Circle' || activeTool === 'Rectangle' || activeTool === 'BIM_Porta' || activeTool === 'BIM_Finestra' || activeTool === 'BIM_Muro' || activeTool === 'Muro'))) {
+            if ((drawing && !drawing.isFreehand && (activeTool === 'Line' || activeTool === 'Filo' || activeTool === 'Circle' || activeTool === 'Rectangle' || activeTool === 'BIM_Porta' || activeTool === 'BIM_Finestra' || activeTool === 'BIM_Muro' || activeTool === 'Muro'))) {
                 setShowManualInput(true);
             }
         }

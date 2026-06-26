@@ -557,7 +557,20 @@ export const CanvasPDFPreview: React.FC<CanvasPDFPreviewProps> = ({ entities, ta
       // Convert typical screen unit thickness to proper paper millimeters scale representation
       ctx.lineWidth = isBIMSymbol ? (0.08 / cadToMm) : (Math.max(0.1, baseLw * 0.2) / cadToMm);
 
-      if (ent.dashed) {
+      const lineType = (ent as any).lineType;
+      if (lineType) {
+        if (lineType === 'dashed') {
+          ctx.setLineDash([8 / cadToMm, 4 / cadToMm]);
+        } else if (lineType === 'dotted') {
+          ctx.setLineDash([2 / cadToMm, 3 / cadToMm]);
+        } else if (lineType === 'dashdot') {
+          ctx.setLineDash([12 / cadToMm, 4 / cadToMm, 2 / cadToMm, 4 / cadToMm]);
+        } else if (lineType === 'dashdash') {
+          ctx.setLineDash([15 / cadToMm, 4 / cadToMm, 4 / cadToMm, 4 / cadToMm]);
+        } else {
+          ctx.setLineDash([]);
+        }
+      } else if (ent.dashed) {
         ctx.setLineDash([5 / cadToMm, 5 / cadToMm]);
       } else {
         ctx.setLineDash([]);
@@ -586,6 +599,30 @@ export const CanvasPDFPreview: React.FC<CanvasPDFPreviewProps> = ({ entities, ta
           ctx.moveTo(ent.start.x, ent.start.y);
           ctx.lineTo(ent.end.x, ent.end.y);
           ctx.stroke();
+
+          if ((ent as any).isFilo) {
+            ctx.save();
+            ctx.fillStyle = ent.color || '#ff5500';
+            ctx.beginPath();
+            ctx.arc(ent.start.x, ent.start.y, 4 / cadToMm, 0, Math.PI * 2);
+            ctx.arc(ent.end.x, ent.end.y, 4 / cadToMm, 0, Math.PI * 2);
+            ctx.fill();
+
+            ctx.strokeStyle = '#ffffff';
+            ctx.lineWidth = 1 / cadToMm;
+            ctx.beginPath();
+            ctx.moveTo(ent.start.x - 3 / cadToMm, ent.start.y);
+            ctx.lineTo(ent.start.x + 3 / cadToMm, ent.start.y);
+            ctx.moveTo(ent.start.x, ent.start.y - 3 / cadToMm);
+            ctx.lineTo(ent.start.x, ent.start.y + 3 / cadToMm);
+
+            ctx.moveTo(ent.end.x - 3 / cadToMm, ent.end.y);
+            ctx.lineTo(ent.end.x + 3 / cadToMm, ent.end.y);
+            ctx.moveTo(ent.end.x, ent.end.y - 3 / cadToMm);
+            ctx.lineTo(ent.end.x, ent.end.y + 3 / cadToMm);
+            ctx.stroke();
+            ctx.restore();
+          }
         }
       } else if (ent.type === 'circle') {
         ctx.beginPath();

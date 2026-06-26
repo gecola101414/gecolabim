@@ -1071,6 +1071,7 @@ interface BIMElementDialogProps {
     objectHeight: number;
     hatch: 'SOLID' | 'ANSI31' | 'CROSS' | 'NONE';
     bimRenderMode?: 'solid' | 'transparent' | 'parete_verticale' | 'parete_orizzontale';
+    duplicate?: boolean;
   }) => void;
   points?: Point[] | { points: Point[], holes?: Point[][] };
   initialData?: {
@@ -1112,11 +1113,18 @@ export const BIMElementDialog: React.FC<BIMElementDialogProps> = ({
   
   const [customFamilyMode, setCustomFamilyMode] = useState(false);
   const [customFamilyName, setCustomFamilyName] = useState('');
+  const [shouldDuplicate, setShouldDuplicate] = useState(false);
 
   const currentFamily = useMemo(() => BIM_FAMILIES.find(f => f.id === familyId), [familyId]);
+  const hasInitializedRef = useRef(false);
 
   useEffect(() => {
     if (isOpen) {
+      if (hasInitializedRef.current) {
+        return; // Skip if already initialized for this open session
+      }
+      hasInitializedRef.current = true;
+
       // Find the best matching floor for initialData or saved last_bim_zPlane
       const targetZPlane = initialData ? initialData.zPlane : parseFloat(localStorage.getItem('last_bim_zPlane') || '0') || 0;
       let bestFloor = floors.find(f => f.elevation === targetZPlane);
@@ -1130,6 +1138,8 @@ export const BIMElementDialog: React.FC<BIMElementDialogProps> = ({
       } else if (floors.length > 0) {
         setSelectedFloorId(floors[0].id);
       }
+
+      setShouldDuplicate(false);
 
       if (initialData) {
         setFamilyId(initialData.familyId);
@@ -1155,6 +1165,8 @@ export const BIMElementDialog: React.FC<BIMElementDialogProps> = ({
         const isLinear = points && !Array.isArray(points) && (points as any).isLinear;
         setBimRenderMode(isLinear ? 'parete_verticale' : 'solid');
       }
+    } else {
+      hasInitializedRef.current = false;
     }
   }, [isOpen, initialData, floors]);
 
@@ -1191,7 +1203,8 @@ export const BIMElementDialog: React.FC<BIMElementDialogProps> = ({
       zElevation: parsedZElevation,
       objectHeight: Math.max(0.1, parsedObjectHeight), 
       hatch,
-      bimRenderMode
+      bimRenderMode,
+      duplicate: shouldDuplicate
     });
   };
 
@@ -1408,6 +1421,24 @@ export const BIMElementDialog: React.FC<BIMElementDialogProps> = ({
           </div>
         </div>
 
+        {initialData && (
+          <div className="bg-slate-900 border border-amber-500/30 p-3.5 rounded-xl flex items-start gap-3">
+            <input
+              id="bim-duplicate-checkbox"
+              type="checkbox"
+              checked={shouldDuplicate}
+              onChange={(e) => setShouldDuplicate(e.target.checked)}
+              className="w-4 h-4 rounded border-slate-700 text-indigo-600 focus:ring-indigo-500 bg-slate-950 accent-indigo-500 cursor-pointer mt-0.5"
+            />
+            <label htmlFor="bim-duplicate-checkbox" className="text-xs text-amber-400 font-black uppercase tracking-wider cursor-pointer flex-1 select-none">
+              <span>Duplica Elemento ⎘</span>
+              <span className="block text-[10px] text-slate-400 font-medium normal-case tracking-normal mt-0.5 leading-relaxed">
+                Genera un nuovo oggetto pari a quello evidenziato con i parametri modificati invece di aggiornarlo. Molto utile per alzare/copiare elementi identici sui vari piani.
+              </span>
+            </label>
+          </div>
+        )}
+
         <div className="p-3.5 bg-indigo-500/10 border border-indigo-500/20 rounded-xl flex items-center justify-between gap-3">
           <p className="text-[11px] text-indigo-400 font-medium leading-relaxed italic">
             💡 La selezione verrà mantenuta per i prossimi caricamenti veloci degli elementi.
@@ -1432,7 +1463,7 @@ export const BIMElementDialog: React.FC<BIMElementDialogProps> = ({
             type="submit"
             className="flex-1 bg-indigo-600 hover:bg-indigo-500 text-white font-black py-4 rounded-xl text-xs tracking-widest transition-all shadow-[0_10px_20px_rgba(79,70,229,0.3)] cursor-pointer uppercase active:scale-[0.98] border border-indigo-400/30"
           >
-            {initialData ? 'AGGIORNA ELEMENTO BIM' : 'CARICA ELEMENTO BIM ✅'}
+            {initialData ? (shouldDuplicate ? 'DUPLICA ELEMENTO BIM ⎘' : 'AGGIORNA ELEMENTO BIM') : 'CARICA ELEMENTO BIM ✅'}
           </button>
         </div>
       </form>

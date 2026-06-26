@@ -125,6 +125,23 @@ const MirrorIcon = ({ size = 16 }: { size?: number }) => (
   </svg>
 );
 
+const FiloIcon = ({ size = 16 }: { size?: number }) => (
+  <svg 
+    width={size} 
+    height={size} 
+    viewBox="0 0 24 24" 
+    fill="none" 
+    stroke="currentColor" 
+    strokeWidth="2" 
+    strokeLinecap="round" 
+    strokeLinejoin="round"
+  >
+    <line x1="3" y1="12" x2="21" y2="12" />
+    <circle cx="3" cy="12" r="3" fill="currentColor" />
+    <circle cx="21" cy="12" r="3" fill="currentColor" />
+  </svg>
+);
+
 const RaccordoIcon = ({ size = 16 }: { size?: number }) => (
   <svg 
     width={size} 
@@ -397,14 +414,29 @@ export default function App() {
     ];
   });
   const [activeLayerId, setActiveLayerId] = useState<string>(() => localStorage.getItem('activeLayerId') || "0");
-  const [defaultLineStyle, setDefaultLineStyle] = useState(() => {
+  const [defaultLineStyle, setDefaultLineStyle] = useState<{
+    color: string;
+    lineWidth: number;
+    dashed: boolean;
+    lineType?: 'continuous' | 'dashed' | 'dotted' | 'dashdot' | 'dashdash';
+    mode: 'ink' | 'pencil' | 'CAD';
+  }>(() => {
     const saved = localStorage.getItem('defaultLineStyle');
-    return saved ? JSON.parse(saved) : {
-      color: "#444444",
-      lineWidth: 2,
-      dashed: false,
-      mode: "HB" as "2H" | "HB" | "CAD",
+    const parsed = saved ? JSON.parse(saved) : {};
+    const initialMode = (parsed.mode === 'ink' || parsed.mode === 'pencil' || parsed.mode === 'CAD') 
+      ? parsed.mode 
+      : 'pencil';
+    return {
+      color: parsed.color || "#444444",
+      lineWidth: parsed.lineWidth || 2,
+      dashed: parsed.dashed || false,
+      lineType: parsed.lineType || "continuous",
+      mode: initialMode,
     };
+  });
+
+  const [defaultFiloColor, setDefaultFiloColor] = useState<string>(() => {
+    return localStorage.getItem('defaultFiloColor') || '#ff5500';
   });
   const [defaultHatchStyle, setDefaultHatchStyle] = useState(() => {
     const saved = localStorage.getItem('defaultHatchStyle');
@@ -648,6 +680,10 @@ const MASONRY_TYPES = [
   }, [defaultLineStyle]);
 
   useEffect(() => {
+    localStorage.setItem('defaultFiloColor', defaultFiloColor);
+  }, [defaultFiloColor]);
+
+  useEffect(() => {
     localStorage.setItem('defaultHatchStyle', JSON.stringify(defaultHatchStyle));
   }, [defaultHatchStyle]);
 
@@ -676,7 +712,7 @@ const MASONRY_TYPES = [
   }, [activeSidebarTab]);
 
   useEffect(() => {
-    if (selectedTool === 'Line' || selectedTool === 'Circle') {
+    if (selectedTool === 'Line' || selectedTool === 'Circle' || selectedTool === 'Filo') {
       setActiveSidebarTab('penne');
       setShowProperties(true);
     }
@@ -685,9 +721,11 @@ const MASONRY_TYPES = [
   useEffect(() => {
     const requiredLayers = [
       { id: "0", name: "0", visible: true, frozen: false },
+      { id: "Matita", name: "Matita / Disegni a matita", visible: true, frozen: false },
       { id: "p1", name: "p1", visible: true, frozen: false },
       { id: "p2", name: "p2", visible: true, frozen: false },
       { id: "p4", name: "p4", visible: true, frozen: false },
+      { id: "Fili", name: "Fili di Riferimento / Lenza", visible: true, frozen: false },
       { id: "Maschere", name: "Maschere", visible: true, frozen: false },
       { id: "Misure", name: "Misure", visible: true, frozen: false },
       { id: "Spessori", name: "Spessori", visible: true, frozen: false },
@@ -813,16 +851,18 @@ const MASONRY_TYPES = [
     objectHeight: number; 
     hatch: 'SOLID' | 'ANSI31' | 'CROSS' | 'NONE';
     bimRenderMode?: 'solid' | 'transparent' | 'parete_verticale' | 'parete_orizzontale';
+    duplicate?: boolean;
   }) => {
     if (!detectedAreaPoints) return;
 
-    if (editingEntityId) {
+    if (editingEntityId && !data.duplicate) {
       // UPDATE EXISTING
       updateEntitiesWithHistory(prev => prev.map(e => {
         if (e.id === editingEntityId) {
           return {
             ...e,
             bimFamily: data.subFamily || data.familyId,
+            bimAreaType: data.familyId,
             bimName: data.name,
             backgroundColor: data.color,
             color: data.color,
@@ -838,6 +878,33 @@ const MASONRY_TYPES = [
         return e;
       }));
       setShortcutToast(`Elemento ${data.name} aggiornato ✅`);
+    } else if (editingEntityId && data.duplicate) {
+      // DUPLICATE EXISTING
+      updateEntitiesWithHistory(prev => {
+        const original = prev.find(e => e.id === editingEntityId);
+        if (!original) return prev;
+        
+        const newElement: Entity = {
+          ...original,
+          id: `bim-elem-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+          bimFamily: data.subFamily || data.familyId,
+          bimAreaType: data.familyId,
+          bimName: data.name,
+          backgroundColor: data.color,
+          color: data.color,
+          bimHatchPattern: data.hatch as any,
+          pattern: data.hatch === 'NONE' ? 'SOLID' : data.hatch as any,
+          bimHeight: data.objectHeight,
+          height: data.objectHeight,
+          bimZPlane: data.zPlane,
+          bimZElevation: data.zElevation,
+          bimRenderMode: data.bimRenderMode || 'solid',
+          timestamp: Date.now()
+        } as any;
+        return [...prev, newElement];
+      });
+      setSelectedId(null); // Clear selected entity to avoid editing the original by mistake
+      setShortcutToast(`Elemento ${data.name} duplicato (Piano: ${data.zPlane} cm) ✅`);
     } else {
       // CREATE NEW
       const pts = Array.isArray(detectedAreaPoints) ? detectedAreaPoints : detectedAreaPoints.points;
@@ -856,6 +923,7 @@ const MASONRY_TYPES = [
         isBIM: true,
         bimType: 'element',
         bimFamily: data.subFamily || data.familyId,
+        bimAreaType: data.familyId,
         bimName: data.name,
         backgroundColor: data.color,
         bimHatchPattern: data.hatch as any,
@@ -1101,12 +1169,12 @@ const MASONRY_TYPES = [
   const cadCanvasRef = useRef<any>(null);
 
   // Automatic Layer Selection based on style/pen
-  // Matita 2H -> Layer 0
-  // HB, CAD -> p1, p2, p4
+  // Pencil -> Matita layer
+  // Ink, CAD -> p1, p2, p4
   useEffect(() => {
     let targetLayer: string | null = null;
-    if (defaultLineStyle.mode === 'pencil' && defaultLineStyle.color === '#bbbbbb') {
-      targetLayer = "0"; // Schizzo / Costruzione
+    if (defaultLineStyle.mode === 'pencil') {
+      targetLayer = "Matita";
     } else if (defaultLineStyle.mode === 'ink' || defaultLineStyle.mode === 'CAD') {
       if (defaultLineStyle.lineWidth === 0.25) targetLayer = "p1";
       else if (defaultLineStyle.lineWidth === 0.35) targetLayer = "p2";
@@ -1131,6 +1199,25 @@ const MASONRY_TYPES = [
       });
     }
   }, [defaultLineStyle.mode, defaultLineStyle.lineWidth, defaultLineStyle.color]);
+
+  // Automatic "Fili" Layer activation when Filo tool is chosen
+  useEffect(() => {
+    if (selectedTool === 'Filo') {
+      setActiveLayerId("Fili");
+      setLayers(prev => {
+        const idx = prev.findIndex(l => l.id === "Fili");
+        if (idx !== -1) {
+          const l = prev[idx];
+          if (!l.visible || l.frozen) {
+            const updated = [...prev];
+            updated[idx] = { ...l, visible: true, frozen: false };
+            return updated;
+          }
+        }
+        return prev;
+      });
+    }
+  }, [selectedTool]);
 
   // Gestione Appunti (Copy & Paste) per oggetti CAD, immagini e testi (Gecolacad 7.1)
   useEffect(() => {
@@ -1572,6 +1659,7 @@ const MASONRY_TYPES = [
       icon: DraftingCompass,
       tools: [
         { name: "Line", icon: Minus },
+        { name: "Filo", icon: FiloIcon },
         { name: "Muro", icon: Building },
         { name: "Circle", icon: Circle },
         { name: "Arc", icon: History },
@@ -2600,6 +2688,7 @@ const MASONRY_TYPES = [
             layers={layers}
             defaultLineStyle={defaultLineStyle}
             setDefaultLineStyle={setDefaultLineStyle}
+            defaultFiloColor={defaultFiloColor}
             eraserRadius={eraserRadius}
             setEraserRadius={setEraserRadius}
             dimensionScale={dimensionScale}
@@ -2628,13 +2717,7 @@ const MASONRY_TYPES = [
             onDoubleClickBIMElement={(entity) => {
               setSelectedId(entity.id);
               setShowProperties(true);
-              if (entity.bimType === 'door') {
-                setIsBIMPorteOpen(true);
-              } else if (entity.bimType === 'window') {
-                setIsBIMFinestreOpen(true);
-              } else if (entity.bimAreaType || (entity as any).bimFamily) {
-                setIsBIMElementDialogOpen(true);
-              }
+              handleEditBIMElement(entity.id);
             }}
             eraserType={eraserType}
             setEraserType={setEraserType}
@@ -5247,6 +5330,88 @@ const MASONRY_TYPES = [
                               ))}
                             </div>
                           </div>
+
+                          {/* 5 Line Style Choices */}
+                          <div className="space-y-2 mt-4 pt-4 border-t border-neutral-700">
+                            <label className="text-[10px] font-black uppercase text-neutral-400 tracking-widest flex items-center gap-2">
+                               <Sliders size={10} /> Tratto Linea (5 Tipi)
+                            </label>
+                            <div className="grid grid-cols-1 gap-2">
+                              {[
+                                { type: 'continuous', label: 'Continuo (Solid)', borderClass: 'border-solid' },
+                                { type: 'dashed', label: 'Tratteggiato (Dashed)', borderClass: 'border-dashed' },
+                                { type: 'dotted', label: 'Puntinato (Dotted)', borderClass: 'border-dotted' },
+                                { type: 'dashdot', label: 'Tratto-Punto (Dash-Dot)', borderClass: 'border-dashed' },
+                                { type: 'dashdash', label: 'Tratto-Tratto (Dash-Dash)', borderClass: 'border-dashed' }
+                              ].map(lt => {
+                                const isSelected = defaultLineStyle.lineType === lt.type;
+                                return (
+                                  <button
+                                    key={lt.type}
+                                    onClick={() => {
+                                      setDefaultLineStyle(prev => ({ 
+                                        ...prev, 
+                                        lineType: lt.type as any,
+                                        dashed: lt.type !== 'continuous'
+                                      }));
+                                    }}
+                                    className={`px-3 py-2 rounded-lg border transition-all flex items-center justify-between gap-2 ${isSelected ? "bg-indigo-50 border-indigo-300 ring-2 ring-indigo-200" : "bg-neutral-50 border-neutral-200 hover:bg-white text-neutral-800"}`}
+                                  >
+                                    <span className={`text-[10px] font-bold ${isSelected ? "text-indigo-800" : "text-neutral-600"}`}>
+                                      {lt.label}
+                                    </span>
+                                    <div className="w-20 flex items-center">
+                                      <div className={`w-full border-b-2 border-neutral-800 ${lt.borderClass}`} style={{
+                                        borderStyle: lt.type === 'dashdot' ? 'dashed' : (lt.type === 'dotted' ? 'dotted' : (lt.type === 'continuous' ? 'solid' : 'dashed'))
+                                      }} />
+                                    </div>
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          </div>
+
+                          {/* Strumento Filo & Lenza Panel */}
+                          <div className="space-y-2 mt-4 pt-4 border-t border-neutral-700">
+                            <label className="text-[10px] font-black uppercase text-neutral-400 tracking-widest flex items-center gap-2">
+                               <Droplet size={10} /> Strumento Filo & Lenza
+                            </label>
+                            <div className="bg-orange-50 text-orange-950 p-2.5 rounded-lg border border-orange-200 text-[10px] space-y-1">
+                              <p className="font-bold flex items-center gap-1 text-orange-800">
+                                <Sparkles size={11} /> Filo di Allineamento (Lenza)
+                              </p>
+                              <p className="opacity-90 leading-tight">
+                                Simula il classico filo teso da cantiere. Si ancora con due picchetti a croce ad alta visibilità e si posiziona automaticamente nel layer dedicato <strong className="underline">"Fili"</strong>.
+                              </p>
+                            </div>
+                            
+                            <div className="grid grid-cols-2 gap-2">
+                              <button
+                                onClick={() => handleToolClick("Filo")}
+                                className={`p-2.5 rounded-lg border transition-all flex flex-col items-center justify-center gap-1 ${selectedTool === "Filo" ? "bg-orange-600 border-orange-700 text-white shadow-md transform -translate-y-0.5" : "bg-neutral-50 border-neutral-200 hover:bg-white text-neutral-800"}`}
+                              >
+                                <FiloIcon size={16} />
+                                <span className="text-[10px] font-bold">Attiva Lenza</span>
+                              </button>
+                              
+                              <div className="flex flex-col justify-between">
+                                <span className="text-[9px] font-bold text-neutral-400">Colore Filo:</span>
+                                <div className="grid grid-cols-4 gap-1.5 mt-1">
+                                  {['#ff5500', '#f59e0b', '#10b981', '#3b82f6'].map(c => (
+                                    <button
+                                      key={c}
+                                      onClick={() => setDefaultFiloColor(c)}
+                                      className={`w-6 h-6 rounded-full flex items-center justify-center border border-black/10 transition-transform ${defaultFiloColor === c ? 'ring-2 ring-offset-2 ring-orange-500 scale-110' : 'hover:scale-105'}`}
+                                      style={{ backgroundColor: c }}
+                                    >
+                                      {defaultFiloColor === c && <Check size={10} className="text-white drop-shadow-md" />}
+                                    </button>
+                                  ))}
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+
                         </div>
                       </div>
                     )}

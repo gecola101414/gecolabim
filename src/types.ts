@@ -33,6 +33,8 @@ export interface CADEntity {
   lineWidth: number;
   layer: string;
   dashed?: boolean;
+  lineType?: 'continuous' | 'dashed' | 'dotted' | 'dashdot' | 'dashdash';
+  isFilo?: boolean;
   mode?: 'ink' | 'pencil' | 'CAD';
   groupId?: string;
   templateId?: string;

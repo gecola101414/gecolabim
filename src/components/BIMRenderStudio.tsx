@@ -128,7 +128,24 @@ export const BIMRenderStudio: React.FC<BIMRenderStudioProps> = ({ entities, onCl
 
   // AI Description Render States
   const [activeTab, setActiveTab] = useState<'cad' | 'ai'>('cad');
-  const [aiDescription, setAiDescription] = useState('Pilastri a vista in cemento armato, pareti esterne in mattone svizzero rosso con fughe chiare, pavimentazione in lastre di pietra di Luserna, grandi infissi minimalisti in alluminio antracite, sole pomeridiano radioso, rendering fotorealistico di architettura moderna');
+  
+  // 5 Prompt Variable Dialog Windows
+  const [aiMaterials, setAiMaterials] = useState('Pilastri a vista in cemento armato, pareti esterne in mattone svizzero rosso con fughe chiare');
+  const [aiFloor, setAiFloor] = useState('pavimentazione in lastre di pietra di Luserna');
+  const [aiWindows, setAiWindows] = useState('grandi infissi minimalisti in alluminio antracite');
+  const [aiLighting, setAiLighting] = useState('sole pomeridiano radioso');
+  const [aiStyle, setAiStyle] = useState('rendering fotorealistico di architettura moderna');
+
+  const combinedAiDescription = useMemo(() => {
+    const parts = [];
+    if (aiMaterials.trim()) parts.push(aiMaterials.trim());
+    if (aiFloor.trim()) parts.push(aiFloor.trim());
+    if (aiWindows.trim()) parts.push(aiWindows.trim());
+    if (aiLighting.trim()) parts.push(aiLighting.trim());
+    if (aiStyle.trim()) parts.push(aiStyle.trim());
+    return parts.join(', ');
+  }, [aiMaterials, aiFloor, aiWindows, aiLighting, aiStyle]);
+
   const [aiRenderedImage, setAiRenderedImage] = useState<string | null>(null);
   const [aiExpandedPrompt, setAiExpandedPrompt] = useState<string | null>(null);
   const [isAiLoading, setIsAiLoading] = useState(false);
@@ -199,7 +216,7 @@ export const BIMRenderStudio: React.FC<BIMRenderStudioProps> = ({ entities, onCl
           'Content-Type': 'application/json'
         },
         body: JSON.stringify({
-          description: aiDescription,
+          description: combinedAiDescription,
           aspectRatio: '16:9',
           image: baseImage || undefined
         })
@@ -557,90 +574,106 @@ export const BIMRenderStudio: React.FC<BIMRenderStudioProps> = ({ entities, onCl
 
               </div>
             ) : (
-              <div className="space-y-6">
-                {/* AI Description Input */}
-                <div className="space-y-3">
-                  <label className="text-[10.5px] font-black uppercase tracking-wider text-indigo-400 flex items-center justify-between">
-                    <span className="flex items-center gap-1.5">
-                      <Sparkles size={13} className="text-pink-400 animate-pulse" />
-                      <span>Descrizione Struttura</span>
-                    </span>
-                    <span className={`text-[9px] px-2 py-0.5 rounded-full font-bold border transition-colors ${
-                      aiRendersLeft > 3 
-                        ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' 
-                        : aiRendersLeft > 0 
-                          ? 'bg-amber-500/10 text-amber-400 border-amber-500/20' 
-                          : 'bg-rose-500/10 text-rose-400 border-rose-500/20 animate-pulse'
-                    }`}>
-                      {aiRendersLeft} RIMANENTI OGGI
-                    </span>
+              <div className="space-y-4 max-h-[55vh] overflow-y-auto pr-1 custom-scrollbar">
+                {/* AI Description Header with remaining renders */}
+                <div className="flex items-center justify-between pb-1 border-b border-slate-800/80">
+                  <span className="flex items-center gap-1.5 text-[10.5px] font-black uppercase tracking-wider text-indigo-400">
+                    <Sparkles size={13} className="text-pink-400 animate-pulse" />
+                    <span>Variabili Prompt AI</span>
+                  </span>
+                  <span className={`text-[9px] px-2 py-0.5 rounded-full font-bold border transition-colors ${
+                    aiRendersLeft > 3 
+                      ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' 
+                      : aiRendersLeft > 0 
+                        ? 'bg-amber-500/10 text-amber-400 border-amber-500/20' 
+                        : 'bg-rose-500/10 text-rose-400 border-rose-500/20 animate-pulse'
+                  }`}>
+                    {aiRendersLeft} RIMANENTI
+                  </span>
+                </div>
+
+                {/* FINESTRA 1: Pareti e Struttura */}
+                <div className="space-y-1.5 bg-slate-900/40 p-2.5 rounded-xl border border-slate-800/60">
+                  <label className="text-[10px] font-black uppercase tracking-wider text-slate-300 flex items-center gap-1.5">
+                    <span className="w-2 h-2 rounded-full bg-indigo-500"></span>
+                    <span>1. Pareti e Struttura</span>
                   </label>
-                  <div className="text-[9.5px] text-slate-400 font-medium leading-relaxed mb-1">
-                    Fornisci una descrizione in italiano degli elementi portanti e dei materiali per far generare all'AI un rendering fotorealistico.
-                  </div>
                   <textarea
-                    rows={7}
-                    value={aiDescription}
-                    onChange={(e) => setAiDescription(e.target.value)}
-                    placeholder="Esempio: Pilastri in cemento armato a vista, pareti portanti in mattone svizzero rosso..."
-                    className="w-full p-3 text-[11px] bg-slate-950/80 border border-slate-800 rounded-xl text-slate-100 placeholder-slate-600 focus:outline-none focus:border-indigo-500/80 resize-none font-medium leading-normal shadow-inner"
+                    rows={2}
+                    value={aiMaterials}
+                    onChange={(e) => setAiMaterials(e.target.value)}
+                    placeholder="Es: Pilastri in cemento armato a vista, pareti esterne..."
+                    className="w-full p-2 text-[10.5px] bg-slate-950/80 border border-slate-800 rounded-lg text-slate-100 placeholder-slate-600 focus:outline-none focus:border-indigo-500/80 resize-none font-medium leading-relaxed shadow-inner"
                   />
                 </div>
 
-                {/* Material Presets Shortcuts */}
-                <div className="space-y-2">
-                  <div className="text-[9px] font-black uppercase tracking-wider text-slate-500">Preset Materiali Rapidi</div>
-                  <div className="space-y-2 max-h-[220px] overflow-y-auto pr-1 custom-scrollbar">
-                    {[
-                      {
-                        label: "Cemento Armato & Mattoni Svizzeri",
-                        desc: "Pilastri a vista, mattoni svizzeri rossi, ampie vetrate.",
-                        text: "Edificio residenziale moderno con pilastri portanti a vista in cemento armato grigio grezzo, tamponamenti perimetrali in mattoni svizzeri rossi estrusi a facce rigate con fughe bianche a contrasto, grandi vetrate cielo-terra con profili metallici neri, illuminazione calda del sole del tardo pomeriggio."
-                      },
-                      {
-                        label: "Brutalismo & Vetro Continuo",
-                        desc: "Struttura in calcestruzzo a vista e facciata vetrata.",
-                        text: "Inquadratura grandangolare di un'ala dell'edificio in puro stile brutalista con massicci pilastri in calcestruzzo armato con venature del legno del cassero, pareti strutturali in pietra naturale e mattoni scuri, grandi specchiature vetrate riflettenti, cielo nuvoloso, rendering fotorealistico 8k."
-                      },
-                      {
-                        label: "Bioarchitettura Legno e Pietra",
-                        desc: "Travature a vista, pilastri in legno, pietra naturale.",
-                        text: "Padiglione moderno con struttura portante in massicci pilastri e travi di legno lamellare biondo chiaro, pareti di tamponamento in mattoni di pietra spaccata, ampi serramenti scorrevoli in legno di rovere naturale, luce solare diffusa, cortile con ghiaia bianca."
-                      }
-                    ].map((p, idx) => (
-                      <button
-                        key={idx}
-                        onClick={() => setAiDescription(p.text)}
-                        className={`w-full p-2.5 rounded-xl border text-left hover:border-slate-600 hover:bg-slate-900/60 transition-all cursor-pointer block ${
-                          aiDescription === p.text ? 'border-indigo-500 bg-slate-900/80' : 'border-slate-800/80 bg-slate-900/10'
-                        }`}
-                      >
-                        <div className="text-[10px] font-black text-slate-200">{p.label}</div>
-                        <div className="text-[8.5px] text-slate-500 mt-0.5 leading-normal">{p.desc}</div>
-                      </button>
-                    ))}
-                  </div>
+                {/* FINESTRA 2: Infissi e Serramenti */}
+                <div className="space-y-1.5 bg-slate-900/40 p-2.5 rounded-xl border border-slate-800/60">
+                  <label className="text-[10px] font-black uppercase tracking-wider text-slate-300 flex items-center gap-1.5">
+                    <span className="w-2 h-2 rounded-full bg-purple-500"></span>
+                    <span>2. Infissi e Serramenti</span>
+                  </label>
+                  <textarea
+                    rows={2}
+                    value={aiWindows}
+                    onChange={(e) => setAiWindows(e.target.value)}
+                    placeholder="Es: Grandi infissi minimalisti in alluminio..."
+                    className="w-full p-2 text-[10.5px] bg-slate-950/80 border border-slate-800 rounded-lg text-slate-100 placeholder-slate-600 focus:outline-none focus:border-indigo-500/80 resize-none font-medium leading-relaxed shadow-inner"
+                  />
                 </div>
 
-                {/* Aspect Ratio */}
-                <div className="space-y-2.5">
-                  <div className="text-[9.5px] font-black uppercase tracking-wider text-slate-500">Formato Immagine</div>
-                  <div className="bg-slate-950 p-2 rounded-xl border border-slate-800 text-center">
-                    <span className="text-[10px] text-slate-400 font-extrabold">Widescreen Ultra HD (16:9)</span>
-                  </div>
+                {/* FINESTRA 3: Pavimentazione e Suolo */}
+                <div className="space-y-1.5 bg-slate-900/40 p-2.5 rounded-xl border border-slate-800/60">
+                  <label className="text-[10px] font-black uppercase tracking-wider text-slate-300 flex items-center gap-1.5">
+                    <span className="w-2 h-2 rounded-full bg-pink-500"></span>
+                    <span>3. Pavimentazione e Suolo</span>
+                  </label>
+                  <textarea
+                    rows={2}
+                    value={aiFloor}
+                    onChange={(e) => setAiFloor(e.target.value)}
+                    placeholder="Es: Pavimentazione in lastre di pietra..."
+                    className="w-full p-2 text-[10.5px] bg-slate-950/80 border border-slate-800 rounded-lg text-slate-100 placeholder-slate-600 focus:outline-none focus:border-indigo-500/80 resize-none font-medium leading-relaxed shadow-inner"
+                  />
                 </div>
 
-                {/* Base Image Reference */}
+                {/* FINESTRA 4: Illuminazione e Sole */}
+                <div className="space-y-1.5 bg-slate-900/40 p-2.5 rounded-xl border border-slate-800/60">
+                  <label className="text-[10px] font-black uppercase tracking-wider text-slate-300 flex items-center gap-1.5">
+                    <span className="w-2 h-2 rounded-full bg-amber-500"></span>
+                    <span>4. Illuminazione e Sole</span>
+                  </label>
+                  <textarea
+                    rows={2}
+                    value={aiLighting}
+                    onChange={(e) => setAiLighting(e.target.value)}
+                    placeholder="Es: Sole pomeridiano radioso..."
+                    className="w-full p-2 text-[10.5px] bg-slate-950/80 border border-slate-800 rounded-lg text-slate-100 placeholder-slate-600 focus:outline-none focus:border-indigo-500/80 resize-none font-medium leading-relaxed shadow-inner"
+                  />
+                </div>
+
+                {/* FINESTRA 5: Stile ed Atmosfera */}
+                <div className="space-y-1.5 bg-slate-900/40 p-2.5 rounded-xl border border-slate-800/60">
+                  <label className="text-[10px] font-black uppercase tracking-wider text-slate-300 flex items-center gap-1.5">
+                    <span className="w-2 h-2 rounded-full bg-teal-500"></span>
+                    <span>5. Stile ed Atmosfera</span>
+                  </label>
+                  <textarea
+                    rows={2}
+                    value={aiStyle}
+                    onChange={(e) => setAiStyle(e.target.value)}
+                    placeholder="Es: Rendering fotorealistico di architettura..."
+                    className="w-full p-2 text-[10.5px] bg-slate-950/80 border border-slate-800 rounded-lg text-slate-100 placeholder-slate-600 focus:outline-none focus:border-indigo-500/80 resize-none font-medium leading-relaxed shadow-inner"
+                  />
+                </div>
+
+                {/* Base Image Reference (kept minimal and clean, without extra notes) */}
                 {baseImage && (
-                  <div className="space-y-2.5">
-                    <div className="text-[9.5px] font-black uppercase tracking-wider text-indigo-400 flex items-center gap-1.5">
-                      <Camera size={13} />
-                      <span>Prospettiva Camera BIM</span>
-                    </div>
-                    <div className="rounded-xl border border-indigo-500/30 overflow-hidden relative group">
-                      <img src={baseImage} alt="Base perspective" className="w-full h-auto object-cover opacity-80 group-hover:opacity-100 transition-opacity" />
-                      <div className="absolute inset-0 bg-gradient-to-t from-slate-900/80 to-transparent pointer-events-none flex items-end p-2">
-                        <span className="text-[8px] text-white font-bold tracking-wider">GUIDA STRUTTURALE ATTIVA</span>
+                  <div className="pt-2 border-t border-slate-800/50 space-y-2">
+                    <div className="rounded-xl border border-indigo-500/20 overflow-hidden relative">
+                      <img src={baseImage} alt="Base perspective" className="w-full h-16 object-cover opacity-60" />
+                      <div className="absolute inset-0 bg-slate-900/60 flex items-center justify-center p-1">
+                        <span className="text-[8px] text-indigo-300 font-extrabold tracking-wider uppercase">Prospettiva Camera Attiva</span>
                       </div>
                     </div>
                   </div>
@@ -662,7 +695,7 @@ export const BIMRenderStudio: React.FC<BIMRenderStudioProps> = ({ entities, onCl
               ) : (
                 <button
                   onClick={handleStartAiRender}
-                  disabled={isAiLoading || !aiDescription || aiRendersLeft <= 0}
+                  disabled={isAiLoading || !combinedAiDescription || aiRendersLeft <= 0}
                   className={`w-full py-4 text-white rounded-2xl font-black text-xs uppercase tracking-wider shadow-lg cursor-pointer active:scale-95 disabled:opacity-50 hover:brightness-110 flex items-center justify-center gap-2 transition-all ${
                     aiRendersLeft <= 0 
                       ? 'bg-rose-950/50 border border-rose-500/30 text-rose-400 cursor-not-allowed shadow-none'
