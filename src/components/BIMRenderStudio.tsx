@@ -132,11 +132,11 @@ export const BIMRenderStudio: React.FC<BIMRenderStudioProps> = ({ entities, onCl
   const [activeTab, setActiveTab] = useState<'cad' | 'ai'>(initialTab);
   
   // 5 Prompt Variable Dialog Windows
-  const [aiMaterials, setAiMaterials] = useState('Pilastri a vista in cemento armato, pareti esterne in mattone svizzero rosso con fughe chiare');
-  const [aiFloor, setAiFloor] = useState('pavimentazione in lastre di pietra di Luserna');
-  const [aiWindows, setAiWindows] = useState('grandi infissi minimalisti in alluminio antracite');
-  const [aiLighting, setAiLighting] = useState('sole pomeridiano radioso');
-  const [aiStyle, setAiStyle] = useState('rendering fotorealistico di architettura moderna');
+  const [aiMaterials, setAiMaterials] = useState('');
+  const [aiFloor, setAiFloor] = useState('');
+  const [aiWindows, setAiWindows] = useState('');
+  const [aiLighting, setAiLighting] = useState('');
+  const [aiStyle, setAiStyle] = useState('');
 
   const combinedAiDescription = useMemo(() => {
     const parts = [];
@@ -149,6 +149,7 @@ export const BIMRenderStudio: React.FC<BIMRenderStudioProps> = ({ entities, onCl
   }, [aiMaterials, aiFloor, aiWindows, aiLighting, aiStyle]);
 
   const [aiRenderedImage, setAiRenderedImage] = useState<string | null>(null);
+  const [aiRenderHistory, setAiRenderHistory] = useState<string[]>([]);
   const [aiExpandedPrompt, setAiExpandedPrompt] = useState<string | null>(null);
   const [isAiLoading, setIsAiLoading] = useState(false);
   const [aiProgress, setAiProgress] = useState(0);
@@ -262,6 +263,7 @@ export const BIMRenderStudio: React.FC<BIMRenderStudioProps> = ({ entities, onCl
       setAiProgress(100);
       setAiStage('Rendering completato con successo!');
       setAiRenderedImage(data.imageUrl);
+      setAiRenderHistory(prev => [data.imageUrl, ...prev]);
       setAiExpandedPrompt(data.expandedPrompt);
 
       // Record daily usage on success
@@ -619,77 +621,57 @@ export const BIMRenderStudio: React.FC<BIMRenderStudioProps> = ({ entities, onCl
                   </span>
                 </div>
 
-                {/* FINESTRA 1: Pareti e Struttura */}
+                {/* Prompt 1 */}
                 <div className="space-y-1.5 bg-slate-900/40 p-2.5 rounded-xl border border-slate-800/60">
-                  <label className="text-[10px] font-black uppercase tracking-wider text-slate-300 flex items-center gap-1.5">
-                    <span className="w-2 h-2 rounded-full bg-indigo-500"></span>
-                    <span>1. Pareti e Struttura</span>
-                  </label>
                   <textarea
                     rows={2}
                     value={aiMaterials}
                     onChange={(e) => setAiMaterials(e.target.value)}
-                    placeholder="Es: Pilastri in cemento armato a vista, pareti esterne..."
+                    placeholder="Materiali Pareti e Struttura..."
                     className="w-full p-2 text-[10.5px] bg-slate-950/80 border border-slate-800 rounded-lg text-slate-100 placeholder-slate-600 focus:outline-none focus:border-indigo-500/80 resize-none font-medium leading-relaxed shadow-inner"
                   />
                 </div>
 
-                {/* FINESTRA 2: Infissi e Serramenti */}
+                {/* Prompt 2 */}
                 <div className="space-y-1.5 bg-slate-900/40 p-2.5 rounded-xl border border-slate-800/60">
-                  <label className="text-[10px] font-black uppercase tracking-wider text-slate-300 flex items-center gap-1.5">
-                    <span className="w-2 h-2 rounded-full bg-purple-500"></span>
-                    <span>2. Infissi e Serramenti</span>
-                  </label>
                   <textarea
                     rows={2}
                     value={aiWindows}
                     onChange={(e) => setAiWindows(e.target.value)}
-                    placeholder="Es: Grandi infissi minimalisti in alluminio..."
+                    placeholder="Infissi e Serramenti..."
                     className="w-full p-2 text-[10.5px] bg-slate-950/80 border border-slate-800 rounded-lg text-slate-100 placeholder-slate-600 focus:outline-none focus:border-indigo-500/80 resize-none font-medium leading-relaxed shadow-inner"
                   />
                 </div>
 
-                {/* FINESTRA 3: Pavimentazione e Suolo */}
+                {/* Prompt 3 */}
                 <div className="space-y-1.5 bg-slate-900/40 p-2.5 rounded-xl border border-slate-800/60">
-                  <label className="text-[10px] font-black uppercase tracking-wider text-slate-300 flex items-center gap-1.5">
-                    <span className="w-2 h-2 rounded-full bg-pink-500"></span>
-                    <span>3. Pavimentazione e Suolo</span>
-                  </label>
                   <textarea
                     rows={2}
                     value={aiFloor}
                     onChange={(e) => setAiFloor(e.target.value)}
-                    placeholder="Es: Pavimentazione in lastre di pietra..."
+                    placeholder="Pavimentazione e Suolo..."
                     className="w-full p-2 text-[10.5px] bg-slate-950/80 border border-slate-800 rounded-lg text-slate-100 placeholder-slate-600 focus:outline-none focus:border-indigo-500/80 resize-none font-medium leading-relaxed shadow-inner"
                   />
                 </div>
 
-                {/* FINESTRA 4: Illuminazione e Sole */}
+                {/* Prompt 4 */}
                 <div className="space-y-1.5 bg-slate-900/40 p-2.5 rounded-xl border border-slate-800/60">
-                  <label className="text-[10px] font-black uppercase tracking-wider text-slate-300 flex items-center gap-1.5">
-                    <span className="w-2 h-2 rounded-full bg-amber-500"></span>
-                    <span>4. Illuminazione e Sole</span>
-                  </label>
                   <textarea
                     rows={2}
                     value={aiLighting}
                     onChange={(e) => setAiLighting(e.target.value)}
-                    placeholder="Es: Sole pomeridiano radioso..."
+                    placeholder="Illuminazione e Atmosfera..."
                     className="w-full p-2 text-[10.5px] bg-slate-950/80 border border-slate-800 rounded-lg text-slate-100 placeholder-slate-600 focus:outline-none focus:border-indigo-500/80 resize-none font-medium leading-relaxed shadow-inner"
                   />
                 </div>
 
-                {/* FINESTRA 5: Stile ed Atmosfera */}
+                {/* Prompt 5 */}
                 <div className="space-y-1.5 bg-slate-900/40 p-2.5 rounded-xl border border-slate-800/60">
-                  <label className="text-[10px] font-black uppercase tracking-wider text-slate-300 flex items-center gap-1.5">
-                    <span className="w-2 h-2 rounded-full bg-teal-500"></span>
-                    <span>5. Stile ed Atmosfera</span>
-                  </label>
                   <textarea
                     rows={2}
                     value={aiStyle}
                     onChange={(e) => setAiStyle(e.target.value)}
-                    placeholder="Es: Rendering fotorealistico di architettura..."
+                    placeholder="Stile di Rendering Finale..."
                     className="w-full p-2 text-[10.5px] bg-slate-950/80 border border-slate-800 rounded-lg text-slate-100 placeholder-slate-600 focus:outline-none focus:border-indigo-500/80 resize-none font-medium leading-relaxed shadow-inner"
                   />
                 </div>
@@ -1272,7 +1254,7 @@ export const BIMRenderStudio: React.FC<BIMRenderStudioProps> = ({ entities, onCl
                       <div className="bg-slate-950/80 rounded-2xl p-4 border border-slate-800/50 space-y-2 text-left text-[9.5px]">
                         <div className="flex justify-between py-1 border-b border-slate-800/30">
                           <span className="text-slate-500 font-bold">Modello Generativo:</span>
-                          <span className="text-pink-400 font-bold font-mono">Gemini 2.5 Image Studio</span>
+                          <span className="text-pink-400 font-bold font-mono">GE-COLA Image Studio</span>
                         </div>
                         <div className="flex justify-between py-1 border-b border-slate-800/30">
                           <span className="text-slate-500 font-bold">Finitura:</span>
@@ -1357,7 +1339,7 @@ export const BIMRenderStudio: React.FC<BIMRenderStudioProps> = ({ entities, onCl
                       <div className="bg-slate-950/60 border border-slate-800 rounded-xl p-3.5 space-y-1.5 text-[10px]">
                         <div className="flex justify-between">
                           <span className="text-slate-500 font-bold">Motore AI:</span>
-                          <span className="text-pink-400 font-bold font-mono">Gemini-2.5-Image</span>
+                          <span className="text-pink-400 font-bold font-mono">GE-COLA Engine</span>
                         </div>
                         <div className="flex justify-between">
                           <span className="text-slate-500 font-bold">Formato:</span>
@@ -1510,6 +1492,29 @@ export const BIMRenderStudio: React.FC<BIMRenderStudioProps> = ({ entities, onCl
                 </motion.div>
               )}
             </AnimatePresence>
+
+            {/* HISTORY RAIL (STAY IN MEMORY) */}
+            {activeTab === 'ai' && aiRenderHistory.length > 0 && (
+              <div className="absolute bottom-6 left-1/2 -translate-x-1/2 flex gap-3 p-2 bg-slate-900/80 backdrop-blur-xl border border-white/10 rounded-2xl shadow-2xl z-50 max-w-[90%] overflow-x-auto custom-scrollbar">
+                {aiRenderHistory.map((img, idx) => (
+                  <button
+                    key={idx}
+                    onClick={() => {
+                      setAiRenderedImage(img);
+                      // Reset comparison if needed or trigger animation
+                    }}
+                    className={`relative w-24 h-14 rounded-lg overflow-hidden border-2 transition-all shrink-0 hover:scale-105 active:scale-95 cursor-pointer ${
+                      aiRenderedImage === img ? 'border-indigo-500 ring-2 ring-indigo-500/30' : 'border-slate-800 opacity-60 hover:opacity-100'
+                    }`}
+                  >
+                    <img src={img} alt={`Render ${idx}`} className="w-full h-full object-cover" />
+                    <div className="absolute inset-0 bg-gradient-to-t from-slate-950/60 to-transparent flex items-end p-1">
+                      <span className="text-[7px] font-black text-white uppercase tracking-tighter">RENDER #{aiRenderHistory.length - idx}</span>
+                    </div>
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
         )}
       </main>

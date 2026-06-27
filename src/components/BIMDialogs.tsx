@@ -1069,6 +1069,7 @@ interface BIMElementDialogProps {
     zPlane: number;
     zElevation: number;
     objectHeight: number;
+    objectWidth?: number;
     hatch: 'SOLID' | 'ANSI31' | 'CROSS' | 'NONE';
     bimRenderMode?: 'solid' | 'transparent' | 'parete_verticale' | 'parete_orizzontale';
     duplicate?: boolean;
@@ -1082,6 +1083,7 @@ interface BIMElementDialogProps {
     zPlane: number;
     zElevation: number;
     objectHeight: number;
+    objectWidth?: number;
     hatch: 'SOLID' | 'ANSI31' | 'CROSS' | 'NONE';
     bimRenderMode?: 'solid' | 'transparent' | 'parete_verticale' | 'parete_orizzontale';
   };
@@ -1112,6 +1114,7 @@ export const BIMElementDialog: React.FC<BIMElementDialogProps> = ({
   const [selectedFloorId, setSelectedFloorId] = useState<string>('');
   const [zElevationInput, setZElevationInput] = useState<string>('0');
   const [objectHeightInput, setObjectHeightInput] = useState<string>('270');
+  const [objectWidthInput, setObjectWidthInput] = useState<string>('15');
   const [hatch, setHatch] = useState<'SOLID' | 'ANSI31' | 'CROSS' | 'NONE'>('SOLID');
   const [bimRenderMode, setBimRenderMode] = useState<'solid' | 'transparent' | 'parete_verticale' | 'parete_orizzontale'>('solid');
   
@@ -1152,6 +1155,7 @@ export const BIMElementDialog: React.FC<BIMElementDialogProps> = ({
         setColor(initialData.color);
         setZElevationInput(initialData.zElevation.toString());
         setObjectHeightInput(initialData.objectHeight.toString());
+        setObjectWidthInput((initialData.objectWidth || 15).toString());
         setHatch(initialData.hatch);
         setBimRenderMode(initialData.bimRenderMode || 'solid');
       } else {
@@ -1164,6 +1168,7 @@ export const BIMElementDialog: React.FC<BIMElementDialogProps> = ({
         setColor(famObj?.defaultColor || '#34d399');
         setZElevationInput(localStorage.getItem('last_bim_zElevation') || '0');
         setObjectHeightInput(localStorage.getItem('last_bim_height') || '270');
+        setObjectWidthInput(localStorage.getItem('last_bim_width') || '15');
         setHatch('SOLID');
         
         const isLinear = points && !Array.isArray(points) && (points as any).isLinear;
@@ -1194,9 +1199,11 @@ export const BIMElementDialog: React.FC<BIMElementDialogProps> = ({
     localStorage.setItem('last_bim_zPlane', actualZPlane.toString());
     localStorage.setItem('last_bim_zElevation', zElevationInput);
     localStorage.setItem('last_bim_height', objectHeightInput);
+    localStorage.setItem('last_bim_width', objectWidthInput);
     
     const parsedZElevation = parseFloat(zElevationInput.replace(',', '.')) || 0;
     const parsedObjectHeight = parseFloat(objectHeightInput.replace(',', '.')) || 270;
+    const parsedObjectWidth = parseFloat(objectWidthInput.replace(',', '.')) || 15;
 
     onConfirm({ 
       familyId: customFamilyMode ? 'custom' : familyId,
@@ -1206,6 +1213,7 @@ export const BIMElementDialog: React.FC<BIMElementDialogProps> = ({
       zPlane: actualZPlane,
       zElevation: parsedZElevation,
       objectHeight: Math.max(0.1, parsedObjectHeight), 
+      objectWidth: Math.max(0.1, parsedObjectWidth),
       hatch,
       bimRenderMode,
       duplicate: shouldDuplicate
@@ -1376,6 +1384,24 @@ export const BIMElementDialog: React.FC<BIMElementDialogProps> = ({
               <span className="text-[9px] text-slate-500 italic mt-1 block">Sempre positiva</span>
             </div>
           </div>
+
+          {/* Width Input for Linear Elements */}
+          {( (points && !Array.isArray(points) && (points as any).isLinear) || (initialData && (initialData as any).isLinear) ) && (
+            <div className="col-span-2 bg-indigo-500/5 p-4 rounded-xl border border-indigo-500/10">
+               <label className="block text-[10px] text-slate-400 font-black uppercase tracking-widest mb-1 font-mono">
+                Spessore / Larghezza Elemento (cm)
+              </label>
+              <input
+                type="text"
+                value={objectWidthInput}
+                onChange={(e) => setObjectWidthInput(e.target.value)}
+                className="w-full bg-slate-900 border border-white/10 text-emerald-400 rounded p-2.5 text-sm font-mono font-bold focus:outline-none focus:border-indigo-500"
+                placeholder="Es. 2 per intonaco, 10 per tramezzo"
+              />
+              <span className="text-[9px] text-slate-500 italic mt-1 block">Utile per intonaci (es. 1.5 cm) o rivestimenti</span>
+            </div>
+          )}
+
           <div className="col-span-2 pt-4 border-t border-white/5">
             <label className="block text-[11px] text-slate-400 font-black uppercase tracking-widest mb-2 font-mono italic">Rendering 3D / Tipo Elemento</label>
             <div className="grid grid-cols-3 gap-1.5">

@@ -54,6 +54,8 @@ export interface CADEntity {
   isBIM?: boolean;
   isVisible?: boolean;  // BIM-specific visibility state
   isFrozen?: boolean;   // BIM-specific frozen state
+  width?: number;
+  height?: number;
 
   /** @deprecated Use bimData instead */
   bimType?: 'room' | 'door' | 'window' | 'wall' | 'electrical_symbol' | 'hydraulic_symbol' | 'functional_area' | 'bim_element' | 'element';

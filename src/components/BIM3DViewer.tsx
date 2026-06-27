@@ -2,62 +2,13 @@ import React, { useMemo, useRef, useEffect, useState, useCallback } from 'react'
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { OrbitControls, PerspectiveCamera, OrthographicCamera, Grid, Stars, Float, Text, Html, ContactShadows, Environment, Edges, GizmoHelper, GizmoViewcube, Line } from '@react-three/drei';
 
-const AICameraManager = ({ aiCamera, triggerCapture, onCaptureDone }: { aiCamera: any, triggerCapture: boolean, onCaptureDone: (dataUrl: string) => void }) => {
-  const { camera, gl, scene } = useThree();
-  
-  useEffect(() => {
-    if (triggerCapture) {
-      if (aiCamera) {
-        const oldPos = camera.position.clone();
-        const oldRot = camera.rotation.clone();
-        
-        const x = aiCamera.point.x / 100;
-        const z = -aiCamera.point.y / 100;
-        const y = 1.6; // Eye level in meters
-        
-        const angleRad = aiCamera.angle * Math.PI / 180;
-        const dx = Math.cos(angleRad);
-        const dy = Math.sin(angleRad); 
-        
-        const targetX = x + dx;
-        const targetZ = z - dy; // Because 2D Y goes down, but in 3D -Z goes "up" the 2D canvas
-        
-        camera.position.set(x, y, z);
-        camera.lookAt(targetX, y, targetZ);
-        camera.updateMatrixWorld();
-        
-        gl.render(scene, camera);
-        
-        try {
-          const dataUrl = gl.domElement.toDataURL('image/png', 1.0);
-          onCaptureDone(dataUrl);
-        } catch (e) {
-          onCaptureDone('');
-        }
-        
-        camera.position.copy(oldPos);
-        camera.rotation.copy(oldRot);
-        camera.updateMatrixWorld();
-      } else {
-        gl.render(scene, camera);
-        try {
-          const dataUrl = gl.domElement.toDataURL('image/png', 1.0);
-          onCaptureDone(dataUrl);
-        } catch (e) {
-          onCaptureDone('');
-        }
-      }
-    }
-  }, [triggerCapture, aiCamera, camera, gl, scene, onCaptureDone]);
-
-  return null;
-};
 import * as THREE from 'three';
 import { Entity, Point, LineEntity, RectEntity, Floor } from '../types';
+import { createBIMMaterialTexture } from '../utils/materialTextures';
 import { X, ZoomIn, ZoomOut, RotateCw, Box, Layers, Database, Maximize, Home, Compass, Eye, EyeOff, Lightbulb, LightbulbOff, Info, Settings, MousePointer2, Move, Scissors, Play, Pause, RefreshCw, ArrowDown, ArrowUp, ArrowLeft, ArrowRight, Edit, Trash2, Wand2, Lock, Unlock, FolderTree, ChevronDown, ChevronRight, Sliders, Layers3, Camera, Sparkles } from 'lucide-react';
 import { BIMElementDialog, PorteDialog, FinestreDialog } from './BIMDialogs';
 import { BIMPropertyCardDialog } from './BIMPropertyCardDialog';
-import { BIMRenderStudio } from './BIMRenderStudio';
+
 
 interface BIM3DViewerProps {
   entities: Entity[];
@@ -637,6 +588,7 @@ export const Wall = ({
   width, 
   color, 
   baseZ, 
+  bimFamilyId,
   clippingPlanes = [], 
   opacity = 1,
   globalOpacityMode = 'WORK',
@@ -662,6 +614,7 @@ export const Wall = ({
   width?: number, 
   color: string, 
   baseZ: number, 
+  bimFamilyId?: string,
   clippingPlanes?: THREE.Plane[], 
   opacity?: number,
   isSlicing?: boolean,
@@ -711,6 +664,30 @@ export const Wall = ({
     }
     return result;
   }, [points, height, width, baseZ]);
+
+  const realisticTextures = useMemo(() => {
+    const id = (bimFamilyId || '').toLowerCase().trim();
+    if (!id) return null;
+    let type: 'concrete' | 'masonry' | 'partition' | 'plaster' | null = null;
+    if (id.includes('pilastri') || id.includes('fondazioni') || id.includes('solaio') || id.includes('c.a.')) {
+      type = 'concrete';
+    } else if (id.includes('murature') || id.includes('muro') || id.includes('portant') || id.includes('matton') || id.includes('svizzeri')) {
+      type = 'masonry';
+    } else if (id.includes('tramezz') || id.includes('divisori')) {
+      type = 'partition';
+    } else if (id.includes('intonac') || id.includes('rivest') || id.includes('plaster') || id.includes('finitura')) {
+      type = 'plaster';
+    }
+    
+    if (type) {
+      return {
+        side: createBIMMaterialTexture(type, 'side'),
+        top: createBIMMaterialTexture(type, 'top'),
+        type
+      };
+    }
+    return null;
+  }, [bimFamilyId]);
 
   const finalOpacity = globalOpacityMode === 'SOLID' 
     ? 1.0 
@@ -779,18 +756,60 @@ export const Wall = ({
             {/* Solid Clipped Part */}
             <mesh position={seg.position} rotation={seg.rotation} castShadow receiveShadow>
               <boxGeometry args={seg.args} />
-              <meshStandardMaterial 
-                color={color} 
-                transparent={renderMode === 'transparent' || finalOpacity < 1}
-                wireframe={renderMode === 'transparent'}
-                opacity={renderMode === 'transparent' ? 0.3 : finalOpacity}
-                metalness={0.155} 
-                roughness={0.4} 
-                envMapIntensity={1}
-                clippingPlanes={clippingPlanes}
-                clipShadows={true}
-                side={THREE.DoubleSide}
-              />
+              {realisticTextures ? (
+                (() => {
+                  const sideTex = realisticTextures.side.clone();
+                  const topTex = realisticTextures.top.clone();
+                  
+                  // Side Scaling
+                  const sideRepeatX = seg.args[0] / (bimFamilyId === 'tramezzature' ? 0.25 : 0.40);
+                  const sideRepeatY = seg.args[1] / 0.25;
+                  sideTex.repeat.set(sideRepeatX, sideRepeatY);
+                  sideTex.needsUpdate = true;
+
+                  // Top Scaling (Brick holes)
+                  // Typical Poroton block is 30x25 or 25x25
+                  const topRepeatX = seg.args[0] / 0.25;
+                  const topRepeatY = seg.args[2] / 0.30;
+                  topTex.repeat.set(topRepeatX, topRepeatY);
+                  topTex.needsUpdate = true;
+
+                  const matProps = {
+                    color: realisticTextures ? '#ffffff' : color,
+                    transparent: renderMode === 'transparent' || finalOpacity < 1,
+                    wireframe: renderMode === 'transparent',
+                    opacity: renderMode === 'transparent' ? 0.3 : finalOpacity,
+                    metalness: 0.1,
+                    roughness: 0.8,
+                    envMapIntensity: 0.5,
+                    clippingPlanes: clippingPlanes,
+                    clipShadows: true,
+                    side: THREE.DoubleSide
+                  };
+
+                  return [
+                    <meshStandardMaterial key="0" attach="material-0" map={sideTex} {...matProps} />, // +X
+                    <meshStandardMaterial key="1" attach="material-1" map={sideTex} {...matProps} />, // -X
+                    <meshStandardMaterial key="2" attach="material-2" map={topTex} {...matProps} />,  // +Y (TOP)
+                    <meshStandardMaterial key="3" attach="material-3" map={sideTex} {...matProps} />, // -Y (BOTTOM)
+                    <meshStandardMaterial key="4" attach="material-4" map={sideTex} {...matProps} />, // +Z
+                    <meshStandardMaterial key="5" attach="material-5" map={sideTex} {...matProps} />, // -Z
+                  ];
+                })()
+              ) : (
+                <meshStandardMaterial 
+                  color={color} 
+                  transparent={renderMode === 'transparent' || finalOpacity < 1}
+                  wireframe={renderMode === 'transparent'}
+                  opacity={renderMode === 'transparent' ? 0.3 : finalOpacity}
+                  metalness={0.155} 
+                  roughness={0.4} 
+                  envMapIntensity={1}
+                  clippingPlanes={clippingPlanes}
+                  clipShadows={true}
+                  side={THREE.DoubleSide}
+                />
+              )}
             </mesh>
             {/* Flat horizontal cap matching the cut exactly so there's no visual hollow space */}
             {segShowCapBottom && (
@@ -857,7 +876,7 @@ export const Wall = ({
             <mesh position={seg.position} rotation={seg.rotation}>
               <boxGeometry args={seg.args} />
               <meshBasicMaterial transparent opacity={0} depthWrite={false} color={color} />
-              <Edges color="#e2e8f0" threshold={5} transparent opacity={globalOpacityMode === 'SOLID' ? 0.9 : 0.4} />
+              <Edges color="#cbd5e1" threshold={5} transparent opacity={globalOpacityMode === 'SOLID' ? 0.2 : 0.1} />
             </mesh>
           </group>
         );
@@ -871,9 +890,11 @@ export const Room = ({
   holes, 
   height, 
   color, 
+  width,
   name, 
   areaType, 
   baseZ, 
+  bimFamilyId,
   renderMode,
   isLinear,
   clippingPlanes = [], 
@@ -899,10 +920,12 @@ export const Room = ({
   points: Point[], 
   holes?: Point[][], 
   height: number, 
+  width?: number,
   color: string, 
   name?: string, 
   areaType?: string, 
   baseZ: number, 
+  bimFamilyId?: string,
   renderMode?: 'solid' | 'transparent' | 'parete_verticale' | 'parete_orizzontale',
   isLinear?: boolean,
   clippingPlanes?: THREE.Plane[], 
@@ -927,6 +950,31 @@ export const Room = ({
 }) => {
   const h = renderMode === 'parete_orizzontale' ? 0.03 : height / 100; // Convert to meters: 3cm symbolic thickness for horizontal walls
   const zBase = baseZ / 100;
+
+  const realisticTextures = useMemo(() => {
+    const id = (bimFamilyId || '').toLowerCase().trim();
+    if (!id) return null;
+    let type: 'concrete' | 'masonry' | 'partition' | 'plaster' | null = null;
+    if (id.includes('pilastri') || id.includes('fondazioni') || id.includes('solaio') || id.includes('c.a.')) {
+      type = 'concrete';
+    } else if (id.includes('murature') || id.includes('muro') || id.includes('portant') || id.includes('matton') || id.includes('svizzeri')) {
+      type = 'masonry';
+    } else if (id.includes('tramezz') || id.includes('divisori')) {
+      type = 'partition';
+    } else if (id.includes('intonac') || id.includes('rivest') || id.includes('plaster') || id.includes('finitura')) {
+      type = 'plaster';
+    }
+    
+    if (type) {
+      return {
+        side: createBIMMaterialTexture(type, 'side'),
+        top: createBIMMaterialTexture(type, 'top'),
+        type
+      };
+    }
+    return null;
+  }, [bimFamilyId]);
+
   const shape = useMemo(() => {
     if (!points || points.length < 3) return null;
     const s = new THREE.Shape();
@@ -1035,8 +1083,14 @@ export const Room = ({
     const result = [];
     const h = height / 100;
     const zBase = baseZ / 100;
-    const symbolicThickness = 0.04; // 4 cm symbolic thickness for vertical walls
+    const symbolicThickness = (width || 4) / 100; // Use object width if provided, otherwise default to symbolic 4cm
     
+    const isPlaster = (bimFamilyId || '').toLowerCase().includes('intonac') || 
+                      (bimFamilyId || '').toLowerCase().includes('rivest');
+    
+    // Small offset for plaster to avoid Z-fighting with walls
+    const offsetZ = isPlaster ? 0.01 : 0; 
+
     // Close the loop for perimeter walls only if not linear
     const len = points.length;
     const loopLimit = isLinear ? len - 1 : len;
@@ -1053,14 +1107,30 @@ export const Room = ({
       const centerX = (p1.x + p2.x) / 2;
       const centerY = (p1.y + p2.y) / 2;
       
+      // Calculate normal for offset if it's a coating
+      let ox = 0;
+      let oy = 0;
+      if (offsetZ > 0) {
+          // Normal is (-dy, dx)
+          const nx = -dy / length;
+          const ny = dx / length;
+          ox = nx * offsetZ;
+          oy = ny * offsetZ;
+      }
+      
       result.push({
-        position: [centerX / 100, zBase + h / 2, -centerY / 100] as [number, number, number],
+        position: [centerX / 100 + ox, zBase + h / 2, -centerY / 100 - oy] as [number, number, number],
         rotation: [0, -angle, 0] as [number, number, number],
         args: [length / 100, h, symbolicThickness] as [number, number, number],
+        length: length / 100,
+        thickness: symbolicThickness,
+        centerX: centerX / 100,
+        centerY: centerY / 100,
+        angle: angle
       });
     }
     return result;
-  }, [points, height, baseZ, renderMode, isLinear]);
+  }, [points, height, baseZ, renderMode, isLinear, width, bimFamilyId]);
 
   if (renderMode === 'parete_verticale') {
     return (
@@ -1070,24 +1140,65 @@ export const Room = ({
             {/* Solid Clipped part */}
             <mesh position={seg.position} rotation={seg.rotation} castShadow receiveShadow>
               <boxGeometry args={seg.args} />
-              <meshStandardMaterial 
-                color={color} 
-                transparent={finalOpacity < 1} 
-                opacity={finalOpacity} 
-                metalness={0.25}
-                roughness={0.4}
-                envMapIntensity={1.2}
-                clippingPlanes={clippingPlanes}
-                clipShadows={true}
-                side={THREE.DoubleSide}
-              />
+              {realisticTextures ? (
+                (() => {
+                  const type = realisticTextures.type;
+                  const sideTex = realisticTextures.side.clone();
+                  const topTex = realisticTextures.top.clone();
+                  
+                  // Side Scaling
+                  const sideRepeatX = seg.args[0] / (type === 'partition' ? 0.25 : 0.40);
+                  const sideRepeatY = seg.args[1] / 0.25;
+                  sideTex.repeat.set(sideRepeatX, sideRepeatY);
+                  sideTex.needsUpdate = true;
+
+                  // Top Scaling
+                  const topRepeatX = seg.args[0] / 0.25;
+                  const topRepeatY = seg.args[2] / 0.30;
+                  topTex.repeat.set(topRepeatX, topRepeatY);
+                  topTex.needsUpdate = true;
+
+                  const matProps = {
+                    color: realisticTextures ? '#ffffff' : color,
+                    transparent: finalOpacity < 1,
+                    opacity: finalOpacity,
+                    metalness: 0.05,
+                    roughness: 0.9,
+                    envMapIntensity: 0.2,
+                    clippingPlanes: clippingPlanes,
+                    clipShadows: true,
+                    side: THREE.DoubleSide
+                  };
+
+                  return [
+                    <meshStandardMaterial key="0" attach="material-0" map={sideTex} {...matProps} />, // +X
+                    <meshStandardMaterial key="1" attach="material-1" map={sideTex} {...matProps} />, // -X
+                    <meshStandardMaterial key="2" attach="material-2" map={topTex} {...matProps} />,  // +Y (TOP)
+                    <meshStandardMaterial key="3" attach="material-3" map={sideTex} {...matProps} />, // -Y (BOTTOM)
+                    <meshStandardMaterial key="4" attach="material-4" map={sideTex} {...matProps} />, // +Z
+                    <meshStandardMaterial key="5" attach="material-5" map={sideTex} {...matProps} />, // -Z
+                  ];
+                })()
+              ) : (
+                <meshStandardMaterial 
+                  color={color} 
+                  transparent={finalOpacity < 1} 
+                  opacity={finalOpacity} 
+                  metalness={0.25}
+                  roughness={0.4}
+                  envMapIntensity={1.2}
+                  clippingPlanes={clippingPlanes}
+                  clipShadows={true}
+                  side={THREE.DoubleSide}
+                />
+              )}
             </mesh>
 
             {/* Wireframe Reference - Unclipped */}
             <mesh position={seg.position} rotation={seg.rotation}>
               <boxGeometry args={seg.args} />
               <meshBasicMaterial transparent opacity={0} depthWrite={false} />
-              <Edges color="#e2e8f0" threshold={5} transparent opacity={globalOpacityMode === 'SOLID' ? 0.9 : 0.4} />
+              <Edges color="#cbd5e1" threshold={5} transparent opacity={globalOpacityMode === 'SOLID' ? 0.2 : 0.1} />
             </mesh>
           </group>
         ))}
@@ -1116,25 +1227,53 @@ export const Room = ({
         {/* Solid Clipped part */}
         <mesh rotation={[-Math.PI / 2, 0, 0]} castShadow receiveShadow>
           <extrudeGeometry args={[shape, extrudeSettings]} />
-          <meshStandardMaterial 
-            color={color} 
-            transparent={renderMode === 'transparent' || finalOpacity < 1} 
-            wireframe={renderMode === 'transparent'}
-            opacity={renderMode === 'transparent' ? 0.3 : finalOpacity} 
-            metalness={isWall ? 0.25 : 0.15}
-            roughness={isWall ? 0.4 : 0.3}
-            envMapIntensity={1.2}
-            clippingPlanes={clippingPlanes}
-            clipShadows={true}
-            side={THREE.DoubleSide}
-          />
+          {realisticTextures ? (
+            (() => {
+                const topTex = realisticTextures.top.clone();
+                const sideTex = realisticTextures.side.clone();
+                topTex.repeat.set(2.5, 2.5);
+                topTex.wrapS = topTex.wrapT = THREE.RepeatWrapping;
+                sideTex.repeat.set(2.5, 0.5);
+                sideTex.wrapS = sideTex.wrapT = THREE.RepeatWrapping;
+                
+                const matProps = {
+                  color: realisticTextures ? '#ffffff' : color,
+                  transparent: renderMode === 'transparent' || finalOpacity < 1, 
+                  opacity: renderMode === 'transparent' ? 0.3 : finalOpacity, 
+                  metalness: 0.05,
+                  roughness: 0.9,
+                  envMapIntensity: 0.2,
+                  clippingPlanes: clippingPlanes,
+                  clipShadows: true,
+                  side: THREE.DoubleSide
+                };
+
+                return [
+                    <meshStandardMaterial key="top" attach="material-0" map={topTex} {...matProps} />,
+                    <meshStandardMaterial key="side" attach="material-1" map={sideTex} {...matProps} />
+                ];
+            })()
+          ) : (
+            <meshStandardMaterial 
+                color={color} 
+                transparent={renderMode === 'transparent' || finalOpacity < 1} 
+                wireframe={renderMode === 'transparent'}
+                opacity={renderMode === 'transparent' ? 0.3 : finalOpacity} 
+                metalness={isWall ? 0.25 : 0.15}
+                roughness={isWall ? 0.4 : 0.3}
+                envMapIntensity={1.2}
+                clippingPlanes={clippingPlanes}
+                clipShadows={true}
+                side={THREE.DoubleSide}
+            />
+          )}
         </mesh>
 
         {/* Wireframe Reference - Unclipped */}
         <mesh rotation={[-Math.PI / 2, 0, 0]}>
           <extrudeGeometry args={[shape, extrudeSettings]} />
           <meshBasicMaterial transparent opacity={0} depthWrite={false} />
-          <Edges color="#e2e8f0" threshold={5} transparent opacity={globalOpacityMode === 'SOLID' ? 0.9 : 0.4} />
+          <Edges color="#cbd5e1" threshold={5} transparent opacity={globalOpacityMode === 'SOLID' ? 0.2 : 0.1} />
         </mesh>
         
         {/* Floor Highlight - Clipped */}
@@ -1547,13 +1686,13 @@ export const CSGMeshRender = ({
 
   const points = entity.points || [];
   const height = entity.bimHeight || entity.height || 270;
-  const width = entity.bimWidth || 15;
+  const width = entity.bimWidth || entity.width || 15;
   const baseZ = (entity.bimZPlane || 0) + (entity.bimZElevation || 0);
 
   const h = height / 100;
   const zBase = baseZ / 100;
 
-  const isWall = entity.bimType === 'wall' || entity.bimAreaType === 'muro' || entity.bimType === 'element';
+  const isWall = entity.bimType === 'wall' || entity.bimAreaType === 'muro' || entity.bimType === 'element' || entity.isLinear;
   const isCappingEnabled = isSlicing && (renderMode !== 'transparent' || globalOpacityMode === 'SOLID');
 
   const [px, py, pz] = parentPivot;
@@ -1655,20 +1794,72 @@ export const CSGMeshRender = ({
     }
   }
 
+  const realisticTextures = useMemo(() => {
+    const bimFamilyId = (entity.bimFamilyId || entity.bimAreaType || '').toLowerCase().trim();
+    if (!bimFamilyId) return null;
+    let type: 'concrete' | 'masonry' | 'partition' | 'plaster' | null = null;
+    if (bimFamilyId.includes('pilastri') || bimFamilyId.includes('fondazioni') || bimFamilyId.includes('solaio') || bimFamilyId.includes('c.a.')) {
+      type = 'concrete';
+    } else if (bimFamilyId.includes('murature') || bimFamilyId.includes('muro') || bimFamilyId.includes('portant') || bimFamilyId.includes('matton') || bimFamilyId.includes('svizzeri')) {
+      type = 'masonry';
+    } else if (bimFamilyId.includes('tramezz') || bimFamilyId.includes('divisori')) {
+      type = 'partition';
+    } else if (bimFamilyId.includes('intonac') || bimFamilyId.includes('rivest') || bimFamilyId.includes('plaster') || bimFamilyId.includes('finitura')) {
+      type = 'plaster';
+    }
+    
+    if (type) {
+      const topTex = createBIMMaterialTexture(type, 'top');
+      const sideTex = createBIMMaterialTexture(type, 'side');
+      
+      // Improved scaling for generic CSG meshes based on object dimensions
+      const totalLength = points.length > 1 ? points.reduce((acc, p, i) => {
+        if (i === 0) return 0;
+        const prev = points[i-1];
+        return acc + Math.sqrt((p.x - prev.x)**2 + (p.y - prev.y)**2);
+      }, 0) / 100 : 4;
+
+      const repeatX = Math.max(1, totalLength / (type === 'masonry' ? 0.30 : 0.50));
+      const repeatY = Math.max(1, h / 0.25);
+      
+      topTex.repeat.set(repeatX, Math.max(1, width / 25)); 
+      sideTex.repeat.set(repeatX, repeatY);
+      topTex.wrapS = topTex.wrapT = THREE.RepeatWrapping;
+      sideTex.wrapS = sideTex.wrapT = THREE.RepeatWrapping;
+      
+      return { top: topTex, side: sideTex };
+    }
+    return null;
+  }, [entity.bimFamilyId, entity.bimAreaType]);
+
+  const materials = useMemo(() => {
+    const matProps = {
+      color: realisticTextures ? '#ffffff' : color,
+      transparent: finalOpacity < 1,
+      opacity: finalOpacity,
+      metalness: 0.05,
+      roughness: 0.9,
+      envMapIntensity: 0.3,
+      clippingPlanes: clippingPlanes,
+      clipShadows: true,
+      side: THREE.DoubleSide
+    };
+
+    if (realisticTextures) {
+      // For CSG meshes that might not have material groups, use Side as primary
+      // But we can also use a group array if we want to try (though it only works if groups exist)
+      return [
+        new THREE.MeshStandardMaterial({ ...matProps, map: realisticTextures.side }), // Index 0: Sides (usually most faces)
+        new THREE.MeshStandardMaterial({ ...matProps, map: realisticTextures.top }),  // Index 1: Top
+      ];
+    }
+    return new THREE.MeshStandardMaterial({ ...matProps, metalness: 0.15, roughness: 0.4, envMapIntensity: 1 });
+  }, [color, finalOpacity, clippingPlanes, realisticTextures]);
+
   return (
     <group>
-      <mesh geometry={geom} castShadow receiveShadow>
-        <meshStandardMaterial 
-          color={color} 
-          transparent={finalOpacity < 1}
-          opacity={finalOpacity}
-          metalness={0.15} 
-          roughness={0.4} 
-          envMapIntensity={1}
-          clippingPlanes={clippingPlanes}
-          clipShadows={true}
-          side={THREE.DoubleSide}
-        />
+      <mesh geometry={geom} material={materials} castShadow receiveShadow>
+        <Edges color="#cbd5e1" threshold={5} transparent opacity={globalOpacityMode === 'SOLID' ? 0.2 : 0.1} />
       </mesh>
       {/* Capping Plates for CSG wall segments */}
       {segments.map((seg, i) => {
@@ -2204,25 +2395,10 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
   const [editingEntityId, setEditingEntityId] = useState<string | null>(null);
   const [isSectionMode, setIsSectionMode] = useState(false);
   const [showSectionConfig, setShowSectionConfig] = useState(false);
-  const [isRealistic, setIsRealistic] = useState(false);
-  const [isRenderStudioOpen, setIsRenderStudioOpen] = useState(false);
-  const [renderBaseImage, setRenderBaseImage] = useState<string | null>(null);
-  const [triggerAICapture, setTriggerAICapture] = useState(false);
-  const [renderTargetTab, setRenderTargetTab] = useState<'cad' | 'ai'>('cad');
-  const [globalOpacityMode, setGlobalOpacityMode] = useState<'WORK' | 'SOLID'>('WORK');
-
-  const handleSetRenderView = (tab: 'cad' | 'ai') => {
-    setRenderTargetTab(tab);
-    setTriggerAICapture(true);
-  };
-  
-  const onAICaptureDone = useCallback((dataUrl: string) => {
-    setTriggerAICapture(false);
-    if (dataUrl) setRenderBaseImage(dataUrl);
-    setIsRenderStudioOpen(true);
-  }, []);
+  const [isRealistic, setIsRealistic] = useState(true);
+  const [globalOpacityMode, setGlobalOpacityMode] = useState<'WORK' | 'SOLID'>('SOLID');
   const [globalRoomOpacityVal, setGlobalRoomOpacityVal] = useState<number>(0.25);
-  const [globalWallOpacityVal, setGlobalWallOpacityVal] = useState<number>(0.50);
+  const [globalWallOpacityVal, setGlobalWallOpacityVal] = useState<number>(1.0);
   const [transparentEntities, setTransparentEntities] = useState<Set<string>>(new Set());
   const [stepCm, setStepCm] = useState(10);
 
@@ -3318,28 +3494,6 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
         >
           <FolderTree size={20} className={isBimTreeOpen ? "animate-pulse" : ""} />
           <span className="text-[10.5px] font-black uppercase tracking-wider">Albero BIM</span>
-        </button>
-
-        <div className="w-px h-8 bg-slate-200 mx-1" />
-
-        <button 
-          onClick={() => handleSetRenderView('cad')}
-          className="p-3 rounded-xl hover:bg-slate-50 hover:text-indigo-600 text-slate-500 border border-transparent transition-all active:scale-95 flex items-center gap-1.5 cursor-pointer"
-          title="Studio Rendering Fotorealistico PBR"
-        >
-          <Camera size={20} className="text-indigo-500" />
-          <span className="text-[10.5px] font-black uppercase tracking-wider">Rendering Classico</span>
-        </button>
-
-        <div className="w-px h-8 bg-slate-200 mx-1" />
-
-        <button 
-          onClick={() => handleSetRenderView('ai')}
-          className="p-3 rounded-xl bg-gradient-to-br from-indigo-500 to-purple-600 text-white shadow-lg shadow-indigo-500/20 transition-all active:scale-95 flex items-center gap-1.5 cursor-pointer"
-          title="Imposta Vista per Rendering AI"
-        >
-          <Sparkles size={20} className="animate-pulse" />
-          <span className="text-[10.5px] font-black uppercase tracking-wider">Rendering AI</span>
         </button>
 
         <div className="w-px h-8 bg-slate-200 mx-1" />
@@ -4924,6 +5078,20 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
             </>
           )}
         </div>
+
+        {/* Realistic Rendering Toggle */}
+        <div className="flex items-center justify-between pt-2.5 border-t border-slate-100 mt-1">
+          <div className="flex items-center gap-2">
+            <Sparkles size={14} className={isRealistic ? "text-amber-500 fill-amber-500/20" : "text-slate-400"} />
+            <span className="text-[10px] font-black text-slate-600 uppercase tracking-wider">Rendering Reale</span>
+          </div>
+          <button
+            onClick={() => setIsRealistic(!isRealistic)}
+            className={`w-10 h-5.5 rounded-full transition-all relative cursor-pointer outline-none border-none ${isRealistic ? 'bg-indigo-600 shadow-[0_0_10px_rgba(79,70,229,0.3)]' : 'bg-slate-200 shadow-inner'}`}
+          >
+            <div className={`absolute top-1 w-3.5 h-3.5 bg-white rounded-full shadow-sm transition-all duration-300 ${isRealistic ? 'left-5.5' : 'left-1'}`} />
+          </button>
+        </div>
       </div>
 
       {/* Navigation Help */}
@@ -4940,7 +5108,6 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
       {/* 3D SCENE CANVAS */}
       <div className={`flex-1 cursor-crosshair transition-colors duration-1000 ${isRealistic ? 'bg-gradient-to-b from-sky-100 to-white' : 'bg-[#fdfdfd]'}`}>
         <Canvas shadows dpr={[1, 2]} gl={{ preserveDrawingBuffer: true, antialias: true, alpha: true, localClippingEnabled: true }}>
-          <AICameraManager aiCamera={entities.find(e => e.type === 'camera')} triggerCapture={triggerAICapture} onCaptureDone={onAICaptureDone} />
           {isRealistic ? (
              <Environment preset="apartment" background blur={0.8} />
           ) : (
@@ -4996,12 +5163,12 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
             />
           </GizmoHelper>
           
-          <ambientLight intensity={isRealistic ? 0.6 : 0.4} />
+          <ambientLight intensity={isRealistic ? 0.4 : 0.4} />
           <directionalLight 
-            position={[10, 20, 15]} 
-            intensity={isRealistic ? 2.0 : 1.2} 
+            position={[20, 30, 20]} 
+            intensity={isRealistic ? 3.0 : 1.2} 
             castShadow 
-            shadow-mapSize={[2048, 2048]}
+            shadow-mapSize={[4096, 4096]}
             shadow-bias={-0.0001}
           />
 
@@ -5154,9 +5321,12 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
                               points={points} 
                               holes={e.holes} 
                               height={heightValue} 
+                              width={e.bimWidth || e.width}
                               color={color} 
+                              name={e.bimName}
                               areaType="muro" 
                               baseZ={baseZ} 
+                              bimFamilyId={e.bimFamilyId || e.bimAreaType || e.bimFamily}
                               clippingPlanes={clippingPlanes} 
                               opacity={entityOpacity} 
                               globalOpacityMode={globalOpacityMode}
@@ -5184,6 +5354,7 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
                               width={e.bimWidth} 
                               color={color} 
                               baseZ={baseZ} 
+                              bimFamilyId={e.bimFamilyId || e.bimAreaType}
                               clippingPlanes={clippingPlanes} 
                               opacity={entityOpacity} 
                               globalOpacityMode={globalOpacityMode}
@@ -5216,6 +5387,7 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
                               color={color} 
                               name={e.bimName}
                               baseZ={baseZ}
+                              bimFamilyId={e.bimFamilyId || e.bimAreaType}
                               clippingPlanes={clippingPlanes}
                               opacity={entityOpacity}
                               globalOpacityMode={globalOpacityMode}
@@ -5337,14 +5509,6 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
         </div>
       </div>
 
-      {isRenderStudioOpen && (
-        <BIMRenderStudio 
-          entities={entities} 
-          onClose={() => setIsRenderStudioOpen(false)} 
-          baseImage={renderBaseImage}
-          initialTab={renderTargetTab}
-        />
-      )}
     </div>
   );
 };

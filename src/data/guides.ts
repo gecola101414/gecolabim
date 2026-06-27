@@ -132,12 +132,6 @@ export const GUIDE_DATABASE: Record<string, GuideItem> = {
     tip: "Fai doppio clic sul titolo di una tavola nell'elenco a sinistra per ricaricare la sua vista.",
     hotkey: "Click"
   },
-  "Gemini AI": {
-    title: "Assistente Intelligenza Artificiale",
-    description: "Interagisci con l'Intelligenza Artificiale Gemini integrata per generare interi disegni complessi scrivendo indicazioni testuali libere.",
-    tip: "Esempio: 'Disegnami una piastra rettangolare spessore 12 con quattro cerchi negli angoli'.",
-    hotkey: "Click"
-  },
   "Incrocio CAD": {
     title: "Mirino CAD (Crosshair)",
     description: "Ingrandisce le guide del mouse in assi ortogonali infiniti che tagliano verticalmente e orizzontalmente tutto lo schermo per un perfetto riscontro d'assi.",

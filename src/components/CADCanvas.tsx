@@ -289,6 +289,8 @@ const AREA_TYPE_COLORS: Record<string, string> = {
   'tramezzo': 'rgba(156, 163, 175, 0.15)',
   'giardino': 'rgba(34, 197, 94, 0.15)',
   'tetto': 'rgba(239, 68, 68, 0.15)',
+  'intonaco': 'rgba(226, 232, 240, 0.6)',
+  'rivestimento': 'rgba(148, 163, 184, 0.5)',
   'altro': 'rgba(168, 85, 247, 0.15)'
 };
 
@@ -1450,6 +1452,8 @@ const findBoundaryPolygon = (
         ent.type === 'text' ||
         ent.type === 'point' ||
         ent.type === 'hatch' ||
+        ent.isFilo ||
+        ent.layer === 'Fili' ||
         ent.groupId ||
         ent.templateId
       ) {
@@ -5733,9 +5737,22 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
               ctx.lineWidth = (selectedEntityId === entity.id || isFlashing ? 5.0 : 4.0) / view.zoom;
               ctx.setLineDash([4 / view.zoom, 4 / view.zoom]);
             } else if (entity.isLinear) {
-              ctx.strokeStyle = selectedEntityId === entity.id || isFlashing ? '#06b6d4' : (isDefaultColor ? '#059669' : entity.color);
-              ctx.lineWidth = (selectedEntityId === entity.id || isFlashing ? 5.0 : 4.0) / view.zoom;
-              ctx.setLineDash([]);
+              const isPlaster = (entity.bimName || '').toLowerCase().includes('intonac') || 
+                                (entity.bimFamily || '').toLowerCase().includes('intonac') ||
+                                (entity.bimAreaType || '').toLowerCase().includes('intonac');
+              const isCoating = (entity.bimName || '').toLowerCase().includes('rivest') || 
+                                (entity.bimFamily || '').toLowerCase().includes('rivest');
+              
+              if (isPlaster || isCoating) {
+                // Plaster/Coating specific trace in plan
+                ctx.strokeStyle = selectedEntityId === entity.id || isFlashing ? '#06b6d4' : (isDefaultColor ? '#94a3b8' : entity.color);
+                ctx.lineWidth = (selectedEntityId === entity.id || isFlashing ? 3.0 : 2.0) / view.zoom;
+                ctx.setLineDash([]);
+              } else {
+                ctx.strokeStyle = selectedEntityId === entity.id || isFlashing ? '#06b6d4' : (isDefaultColor ? '#059669' : entity.color);
+                ctx.lineWidth = (selectedEntityId === entity.id || isFlashing ? 5.0 : 4.0) / view.zoom;
+                ctx.setLineDash([]);
+              }
             } else {
               ctx.strokeStyle = selectedEntityId === entity.id || isFlashing ? '#06b6d4' : (isDefaultColor ? '#475569' : entity.color);
               ctx.lineWidth = (selectedEntityId === entity.id || isFlashing ? 3.0 : 2.0) / view.zoom;
