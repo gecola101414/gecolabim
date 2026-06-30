@@ -90,6 +90,8 @@ interface BIMTopBarControlsProps {
   onOpen3DView?: () => void;
   entities: Entity[];
   setEntities?: React.Dispatch<React.SetStateAction<Entity[]>>;
+  isStratifiedView: boolean;
+  setIsStratifiedView: (val: boolean) => void;
 }
 
 export const BIMTopBarControls: React.FC<BIMTopBarControlsProps> = ({
@@ -119,7 +121,9 @@ export const BIMTopBarControls: React.FC<BIMTopBarControlsProps> = ({
   setIsBIMFinestreOpen,
   onOpen3DView,
   entities,
-  setEntities
+  setEntities,
+  isStratifiedView,
+  setIsStratifiedView,
 }) => {
    const [activeDropdown, setActiveDropdown] = useState<
      'porte' | 'finestre' | 'arredi' | 'sanitari' | 'elettrico' | 'idraulico' | 'finiture' | 'vani' | null
@@ -338,8 +342,24 @@ export const BIMTopBarControls: React.FC<BIMTopBarControlsProps> = ({
             >
               <PolylineIcon size={13} className="text-emerald-600" />
               <div className="flex flex-col text-left">
-                <span>Tracciato Lineare</span>
+                <span>Tracciato Perimetro</span>
                 <span className="text-[9px] text-neutral-400 font-normal">Pareti verticali per polilinea</span>
+              </div>
+            </button>
+
+            <button
+              onClick={() => {
+                setSelectedTool('BIM_TracciaSegmento');
+                setActiveDropdown(null);
+              }}
+              className={`w-full text-left px-2 py-1.5 hover:bg-neutral-50 transition rounded text-[11px] font-medium flex items-center gap-2 ${
+                selectedTool === 'BIM_TracciaSegmento' ? 'bg-orange-50 text-orange-800 font-bold' : 'text-neutral-700'
+              }`}
+            >
+              <Crosshair size={13} className="text-orange-600" />
+              <div className="flex flex-col text-left">
+                <span>Traccia Segmento</span>
+                <span className="text-[9px] text-neutral-400 font-normal">Trova elemento BIM più vicino</span>
               </div>
             </button>
           </div>

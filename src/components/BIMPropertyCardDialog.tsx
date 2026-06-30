@@ -187,8 +187,18 @@ export const BIMPropertyCardDialog: React.FC<BIMPropertyCardDialogProps> = ({
 
     // Try to derive dimensions from geometry if not defined in BIM properties
     const points = (entity as any).bimPoints || (entity as any).points || [];
+    const isLinear = !!entity.isLinear || !!(entity as any).isLinear || entity.bimRenderMode === 'parete_verticale' || (entity as any).bimRenderMode === 'parete_verticale';
     
-    if (points && points.length > 2) {
+    if (points && points.length >= 2 && isLinear) {
+        let lengthM = 0;
+        for (let i = 0; i < points.length - 1; i++) {
+            lengthM += Math.hypot(points[i + 1].x - points[i].x, points[i + 1].y - points[i].y);
+        }
+        lengthM = lengthM / 100;
+        perimetroM = lengthM;
+        areaMq = lengthM * (spessoreCm / 100);
+        volumeMc = areaMq * altezzaM;
+    } else if (points && points.length > 2) {
         // Handle any entity with points (rooms, areas, hatches, polylines)
         areaMq = getRoomAreaMq(points);
         perimetroM = getRoomPerimeterM(points);
@@ -318,6 +328,19 @@ export const BIMPropertyCardDialog: React.FC<BIMPropertyCardDialogProps> = ({
         prezzoUnitario = 120.00;
         quantita = 1;
         break;
+    }
+
+    const isPlaster = (entity.bimName || '').toLowerCase().includes('intonac') || 
+                      (entity.bimFamily || '').toLowerCase().includes('intonac') ||
+                      (entity.bimAreaType || '').toLowerCase().includes('intonac') ||
+                      (entity.bimType || '').toLowerCase().includes('intonac');
+
+    if (isPlaster) {
+      codice = "NP.OP04.015a";
+      descrizione = "Intonaco rustico e di finitura tirato in piano con malta bastarda o premiscelata per interni, spessore medio 1.5 cm, eseguito a regola d'arte.";
+      unitaClass = "mq";
+      prezzoUnitario = 22.50;
+      quantita = geomMetrics.intonacoMq || (geomMetrics.perimetroM * geomMetrics.altezzaM);
     }
 
     const totaleImporto = prezzoUnitario * quantita;
@@ -511,27 +534,37 @@ export const BIMPropertyCardDialog: React.FC<BIMPropertyCardDialogProps> = ({
               </div>
 
               {/* WALL EXTRA THICKNESS CARD */}
-              {(entity.bimType as string === 'wall' || entity.bimType as string === 'muro' || entity.type === 'line') && (
+              {(entity.bimType as string === 'wall' || entity.bimType as string === 'muro' || entity.type === 'line' || (entity as any).bimWidth !== undefined) && (
                 <>
-                  <div className="bg-cyan-500/5 border border-cyan-500/10 p-4 rounded-2xl flex justify-between items-center text-xs">
-                    <div>
-                      <span className="block font-black text-cyan-300">PARAMETRI DIVISIONALE SPAZZIO</span>
-                      <span className="text-[11px] text-slate-400 mt-0.5">Spessore stratigrafia calcolato in pianta</span>
-                    </div>
-                    <div className="bg-slate-900 border border-cyan-400/20 px-3 py-1.5 rounded-xl font-mono text-right">
-                      <span className="block text-[8px] text-slate-500">SPESSORE MURO</span>
-                      <span className="text-[13px] text-cyan-400 font-bold">{geomMetrics.spessoreCm} cm</span>
+                  <div className="bg-cyan-500/5 border border-cyan-500/10 p-4 rounded-2xl flex flex-col gap-3">
+                    <div className="flex justify-between items-center text-xs">
+                      <div>
+                        <span className="block font-black text-cyan-300">SPESSORE ELEMENTO / SEZIONE</span>
+                        <span className="text-[11px] text-slate-400 mt-0.5">Definisce la larghezza fisica del componente</span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="number"
+                          value={geomMetrics.spessoreCm}
+                          onChange={(e) => onUpdateField && onUpdateField(entity.id, "bimWidth", parseFloat(e.target.value))}
+                          className="w-20 bg-slate-900 border border-cyan-400/40 text-cyan-400 rounded-xl p-2 text-sm font-mono font-bold focus:outline-none focus:border-cyan-400"
+                        />
+                        <span className="text-[11px] text-slate-500 font-bold">cm</span>
+                      </div>
                     </div>
                   </div>
 
                   <div className="bg-cyan-500/5 border border-cyan-500/10 p-4 rounded-2xl flex flex-col gap-1 text-xs mt-4">
-                    <span className="text-[8px] font-black tracking-wider text-slate-400 uppercase">LUNGHEZZA SEGMENTO</span>
-                    <input
-                      type="number"
-                      value={(entity as any).bimLength || (geomMetrics.perimetroM * 100).toFixed(0)}
-                      onChange={(e) => onUpdateField && onUpdateField(entity.id, "bimLength", parseFloat(e.target.value))}
-                      className="bg-slate-900 border border-cyan-400/20 px-3 py-1.5 rounded-xl font-mono text-cyan-400 font-bold w-full"
-                    />
+                    <span className="text-[8px] font-black tracking-wider text-slate-400 uppercase">LUNGHEZZA SEGMENTO (Sviluppo)</span>
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="number"
+                        value={(entity as any).bimLength || (geomMetrics.perimetroM * 100).toFixed(0)}
+                        onChange={(e) => onUpdateField && onUpdateField(entity.id, "bimLength", parseFloat(e.target.value))}
+                        className="flex-1 bg-slate-900 border border-cyan-400/20 px-3 py-2 rounded-xl font-mono text-cyan-400 font-bold text-sm"
+                      />
+                      <span className="text-[11px] text-slate-500 font-bold">cm</span>
+                    </div>
                   </div>
                 </>
               )}

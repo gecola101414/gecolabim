@@ -588,8 +588,14 @@ const MASONRY_TYPES = [
 
   const [activeSidebarTab, setActiveSidebarTab] = useState<'penne' | 'tavole' | 'layers' | 'maschere' | 'testo' | 'manuale' | 'bim'>(() => (localStorage.getItem('activeSidebarTab') as any) || 'penne');
   const [isBIMElementDialogOpen, setIsBIMElementDialogOpen] = useState(false);
+  const [isFaceSurveyMode, setIsFaceSurveyMode] = useState(false);
   const [isMultiAreaMode, setIsMultiAreaMode] = useState(false);
   const [is3DViewOpen, setIs3DViewOpen] = useState(false);
+  const [isStratifiedView, setIsStratifiedView] = useState(false);
+
+  useEffect(() => {
+    console.log("App: isStratifiedView changed to:", isStratifiedView);
+  }, [isStratifiedView]);
   const [detectedAreaPoints, setDetectedAreaPoints] = useState<any>(null);
   const [editingEntityId, setEditingEntityId] = useState<string | null>(null);
   const [hoveredGuide, setHoveredGuide] = useState<GuideItem | null>(null);
@@ -875,6 +881,93 @@ const MASONRY_TYPES = [
     }
   };
 
+  const shiftPointsSuccessive = (original: any, otherEntities: any[], originalWidth: number): any => {
+    let pts: { x: number; y: number }[] = [];
+    let isRect = false;
+    let isLine = false;
+    
+    if (original.type === 'rectangle') {
+      isRect = true;
+      pts = [
+        original.p1,
+        { x: original.p2.x, y: original.p1.y },
+        original.p2,
+        { x: original.p1.x, y: original.p2.y }
+      ];
+    } else if (original.type === 'line') {
+      isLine = true;
+      pts = [original.start, original.end];
+    } else {
+      pts = original.points || original.bimPoints || [];
+    }
+
+    if (pts.length < 2) return {};
+
+    const pA = pts[0];
+    const pB = pts[1];
+    const dx = pB.x - pA.x;
+    const dy = pB.y - pA.y;
+    const L = Math.sqrt(dx * dx + dy * dy) || 1;
+    
+    const n1 = { x: -dy / L, y: dx / L };
+    const n2 = { x: dy / L, y: -dx / L };
+    
+    const mid = { x: (pA.x + pB.x) / 2, y: (pA.y + pB.y) / 2 };
+    const testDist = originalWidth + 15;
+    const cand1 = { x: mid.x + n1.x * testDist, y: mid.y + n1.y * testDist };
+    const cand2 = { x: mid.x + n2.x * testDist, y: mid.y + n2.y * testDist };
+    
+    let minDist1 = Infinity;
+    let minDist2 = Infinity;
+    
+    for (const ent of otherEntities) {
+      if (ent.id === original.id) continue;
+      if (!ent.isBIM) continue;
+      
+      let entPts: { x: number; y: number }[] = [];
+      if (ent.type === 'rectangle') {
+        entPts = [ent.p1, ent.p2];
+      } else if (ent.type === 'line') {
+        entPts = [ent.start, ent.end];
+      } else {
+        entPts = ent.points || ent.bimPoints || [];
+      }
+      
+      for (const pt of entPts) {
+        const d1 = Math.sqrt((cand1.x - pt.x) ** 2 + (cand1.y - pt.y) ** 2);
+        const d2 = Math.sqrt((cand2.x - pt.x) ** 2 + (cand2.y - pt.y) ** 2);
+        if (d1 < minDist1) minDist1 = d1;
+        if (d2 < minDist2) minDist2 = d2;
+      }
+    }
+    
+    const chosenNormal = (minDist1 >= minDist2) ? n1 : n2;
+    const shiftAmount = (originalWidth / 2) + 0.5;
+    const shiftX = chosenNormal.x * shiftAmount;
+    const shiftY = chosenNormal.y * shiftAmount;
+    
+    if (isRect) {
+      return {
+        p1: { x: original.p1.x + shiftX, y: original.p1.y + shiftY },
+        p2: { x: original.p2.x + shiftX, y: original.p2.y + shiftY }
+      };
+    } else if (isLine) {
+      return {
+        start: { x: original.start.x + shiftX, y: original.start.y + shiftY },
+        end: { x: original.end.x + shiftX, y: original.end.y + shiftY }
+      };
+    } else {
+      const shiftedPoints = pts.map(pt => ({
+        x: pt.x + shiftX,
+        y: pt.y + shiftY
+      }));
+      return {
+        points: shiftedPoints,
+        bimPoints: shiftedPoints
+      };
+    }
+  };
+
   const handleConfirmBIMElement = (data: { 
     familyId: string; 
     subFamily: string;
@@ -887,17 +980,22 @@ const MASONRY_TYPES = [
     hatch: 'SOLID' | 'ANSI31' | 'CROSS' | 'NONE';
     bimRenderMode?: 'solid' | 'transparent' | 'parete_verticale' | 'parete_orizzontale';
     duplicate?: boolean;
+    overlay?: boolean;
+    sideSign?: number;
   }) => {
     if (!detectedAreaPoints) return;
 
-    if (editingEntityId && !data.duplicate) {
+    if (editingEntityId && !data.duplicate && !data.overlay) {
       // UPDATE EXISTING
       updateEntitiesWithHistory(prev => prev.map(e => {
         if (e.id === editingEntityId) {
           return {
             ...e,
             bimFamily: data.subFamily || data.familyId,
+            bimFamilyId: data.familyId,
             bimAreaType: data.familyId,
+            bimSubFamily: data.subFamily || data.familyId,
+            bimData: undefined,
             bimName: data.name,
             backgroundColor: data.color,
             color: data.color,
@@ -909,23 +1007,30 @@ const MASONRY_TYPES = [
             width: data.objectWidth || e.width || 15,
             bimZPlane: data.zPlane,
             bimZElevation: data.zElevation,
-            bimRenderMode: data.bimRenderMode || 'solid'
+            bimRenderMode: data.bimRenderMode || 'solid',
+            sideSign: data.sideSign !== undefined ? data.sideSign : (e as any).sideSign
           };
         }
         return e;
       }));
       setShortcutToast(`Elemento ${data.name} aggiornato ✅`);
-    } else if (editingEntityId && data.duplicate) {
-      // DUPLICATE EXISTING
+    } else if (editingEntityId && (data.duplicate || data.overlay)) {
+      // DUPLICATE/OVERLAY EXISTING
       updateEntitiesWithHistory(prev => {
         const original = prev.find(e => e.id === editingEntityId);
         if (!original) return prev;
         
+        const originalWidth = data.objectWidth || original.bimWidth || original.width || 15;
+        const finalWidth = data.overlay ? 1 : (originalWidth <= 60 ? Math.max(10, Math.round(originalWidth / 10) * 10) : originalWidth);
+
         const newElement: Entity = {
           ...original,
           id: `bim-elem-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
           bimFamily: data.subFamily || data.familyId,
+          bimFamilyId: data.familyId,
           bimAreaType: data.familyId,
+          bimSubFamily: data.subFamily || data.familyId,
+          bimData: undefined,
           bimName: data.name,
           backgroundColor: data.color,
           color: data.color,
@@ -933,17 +1038,22 @@ const MASONRY_TYPES = [
           pattern: data.hatch === 'NONE' ? 'SOLID' : data.hatch as any,
           bimHeight: data.objectHeight,
           height: data.objectHeight,
-          bimWidth: data.objectWidth || original.bimWidth || 15,
-          width: data.objectWidth || original.width || 15,
+          bimWidth: finalWidth,
+          width: finalWidth,
           bimZPlane: data.zPlane,
-          bimZElevation: data.zElevation,
+          bimZElevation: data.zElevation + (data.overlay ? 0.1 : 0),
           bimRenderMode: data.bimRenderMode || 'solid',
-          timestamp: Date.now()
+          sideSign: data.sideSign !== undefined ? data.sideSign : (original as any).sideSign,
+          timestamp: Date.now(),
+          isOverlay: data.overlay,
+          // Shift to imply "successive" position
+          ...(data.overlay ? shiftPointsSuccessive(original, prev, originalWidth) : {})
         } as any;
+        console.log("New element created, original:", original.id, "newElement:", newElement.id, "Overlay:", data.overlay);
         return [...prev, newElement];
       });
-      setSelectedId(null); // Clear selected entity to avoid editing the original by mistake
-      setShortcutToast(`Elemento ${data.name} duplicato (Piano: ${data.zPlane} cm) ✅`);
+      setSelectedId(null);
+      setShortcutToast(data.overlay ? `Elemento ${data.name} successiva 🎨` : `Elemento ${data.name} duplicato ⎘`);
     } else {
       // CREATE NEW
       let polys: any[] = [];
@@ -969,7 +1079,9 @@ const MASONRY_TYPES = [
         isBIM: true,
         bimType: 'element',
         bimFamily: data.subFamily || data.familyId,
+        bimFamilyId: data.familyId,
         bimAreaType: data.familyId,
+        bimSubFamily: data.subFamily || data.familyId,
         bimName: polys.length > 1 ? `${data.name} ${idx + 1}` : data.name,
         backgroundColor: data.color,
         bimHatchPattern: data.hatch as any,
@@ -981,6 +1093,8 @@ const MASONRY_TYPES = [
         bimZPlane: data.zPlane,
         bimZElevation: data.zElevation,
         bimRenderMode: data.bimRenderMode || 'solid',
+        sideSign: data.sideSign !== undefined ? data.sideSign : (poly.sideSign !== undefined ? poly.sideSign : 1),
+        isFaceAligned: poly.isFaceAligned,
         timestamp: Date.now(),
         isVisible: true,
         isFrozen: false
@@ -2247,6 +2361,8 @@ const MASONRY_TYPES = [
             onOpen3DView={() => setIs3DViewOpen(true)}
             entities={entities}
             setEntities={setEntities}
+            isStratifiedView={isStratifiedView}
+            setIsStratifiedView={setIsStratifiedView}
           />
         ) : (
           selectedCategoryTools.map((tool) => (
@@ -2909,12 +3025,14 @@ const MASONRY_TYPES = [
               isOpen={isBIMElementDialogOpen}
               onClose={() => {
                 setIsBIMElementDialogOpen(false);
+                setIsFaceSurveyMode(false);
                 setDetectedAreaPoints(null);
                 setEditingEntityId(null);
                 setIsMultiAreaMode(false); // Reset this on close
               }}
               onConfirm={handleConfirmBIMElement}
               points={detectedAreaPoints || undefined}
+              isFaceSurveyMode={isFaceSurveyMode}
               initialData={editingEntityId ? (() => {
                 const e = entities.find(ent => ent.id === editingEntityId);
                 if (!e) return undefined;
@@ -2926,10 +3044,23 @@ const MASONRY_TYPES = [
                   zPlane: (e as any).bimZPlane || (e as any).zPlane || 0,
                   zElevation: (e as any).bimZElevation || (e as any).zElevation || 0,
                   objectHeight: (e as any).bimHeight || (e as any).height || 270,
+                  objectWidth: (e as any).bimWidth || (e as any).width,
                   hatch: (e as any).bimHatchPattern || 'SOLID',
-                  bimRenderMode: (e as any).bimRenderMode || 'solid'
+                  bimRenderMode: (e as any).bimRenderMode || 'solid',
+                  sideSign: (e as any).sideSign
                 };
-              })() : undefined}
+              })() : (detectedAreaPoints?.from3DFace ? {
+                familyId: 'Finiture',
+                subFamily: 'Intonaco',
+                name: 'Finitura',
+                color: '#e5e7eb',
+                zPlane: detectedAreaPoints.zPlane,
+                zElevation: 0,
+                objectHeight: detectedAreaPoints.objectHeight,
+                objectWidth: detectedAreaPoints.isLinear ? 5 : undefined,
+                hatch: 'SOLID',
+                bimRenderMode: 'solid'
+              } : undefined)}
               floors={floors}
               isMultiAreaMode={isMultiAreaMode}
               onToggleMultiAreaMode={setIsMultiAreaMode}
@@ -2942,6 +3073,27 @@ const MASONRY_TYPES = [
               onClose={() => setIsFloorManagerOpen(false)}
               floors={floors}
               onUpdateFloors={setFloors}
+              onToggleVisibility={(floorId) => {
+                setFloors(prev => {
+                  const newFloors = [...prev];
+                  const idx = newFloors.findIndex(f => f.id === floorId);
+                  if (idx >= 0) {
+                    const newVisible = newFloors[idx].visibleInPlan === false ? true : false;
+                    newFloors[idx] = { ...newFloors[idx], visibleInPlan: newVisible };
+                    
+                    // Update entities visibility dynamically
+                    updateEntitiesWithHistory(ents => ents.map(e => {
+                      // Check if the entity belongs to this floor
+                      // Also handle entities that have legacy properties like bimZPlane
+                      if ((e as any).bimZPlane === newFloors[idx].elevation || (e.bimData?.properties?.dimensions?.zPlane === newFloors[idx].elevation)) {
+                        return { ...e, isVisible: newVisible } as any;
+                      }
+                      return e;
+                    }));
+                  }
+                  return newFloors;
+                });
+              }}
             />
           )}
           <FinestreDialog
@@ -3037,6 +3189,19 @@ const MASONRY_TYPES = [
               onClose={() => setIs3DViewOpen(false)} 
               setEntities={updateEntitiesWithHistory}
               floors={floors}
+              isStratifiedView={isStratifiedView}
+              setIsStratifiedView={setIsStratifiedView}
+              isFaceSurveyMode={isFaceSurveyMode}
+              onCreateFaceFinish={(points, isLinear, zPlane, objectHeight) => {
+                setEditingEntityId(null);
+                setIsFaceSurveyMode(true);
+                setDetectedAreaPoints({ points, isLinear, zPlane, objectHeight, from3DFace: true, isFaceAligned: true });
+                setIsBIMElementDialogOpen(true);
+              }}
+              onShowToast={(msg) => {
+                setShortcutToast(msg);
+                setTimeout(() => setShortcutToast(null), 3000);
+              }}
             />
           )}
           

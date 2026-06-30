@@ -1,0 +1,52 @@
+1:import React, { useMemo, useRef, useEffect, useState, useCallback } from 'react';
+535:  const [texture, setTexture] = useState<THREE.CanvasTexture | null>(null);
+678:  const [texture, setTexture] = useState<THREE.CanvasTexture | null>(null);
+2787:  const [textureObj, setTextureObj] = useState<{ tex: THREE.CanvasTexture } | null>(null);
+3197:  const [texture, setTexture] = useState<THREE.Texture | null>(null);
+3539:  const [resetTrigger, setResetTrigger] = useState(0);
+3540:  const [focusTrigger, setFocusTrigger] = useState(0);
+3541:  const [viewMode, setViewMode] = useState<'PERSPECTIVE' | 'TOP'>('PERSPECTIVE');
+3542:  const [selectedEntity, setSelectedEntity] = useState<Entity | null>(null);
+3543:  const [csgTargetEntity, setCSGTargetEntity] = useState<Entity | null>(null);
+3544:  const [inspectorOpen, setInspectorOpen] = useState(false);
+3545:  const [hoveredId, setHoveredId] = useState<string | null>(null);
+3546:  const [isCSGOperating, setIsCSGOperating] = useState(false);
+3547:  const [isBimTreeOpen, setIsBimTreeOpen] = useState(false);
+3548:  const [expandedFamilies, setExpandedFamilies] = useState<{[key: string]: boolean}>({});
+3549:  const [showPropertyDialogId, setShowPropertyDialogId] = useState<string | null>(null);
+3563:  const [cameraPreset, setCameraPreset] = useState<'FRONT' | 'BACK' | 'LEFT' | 'RIGHT' | 'TOP' | 'BOTTOM' | 'ISO' | null>(null);
+3564:  const [cameraViewMode, setCameraViewMode] = useState<'FRONT' | 'BACK' | 'LEFT' | 'RIGHT' | 'TOP' | 'BOTTOM' | 'ISO'>('ISO');
+3565:  const [flashingId, setFlashingId] = useState<string | null>(null);
+3573:  const [isRotationMode, setIsRotationMode] = useState(false);
+3574:  const [selectedPivotIndex, setSelectedPivotIndex] = useState(0);
+3575:  const [currentRotationVal, setCurrentRotationVal] = useState(0);
+3576:  const [originalPoints, setOriginalPoints] = useState<Point[] | null>(null);
+3577:  const [originalAngle, setOriginalAngle] = useState(0);
+3580:  const [isAreaEditOpen, setIsAreaEditOpen] = useState(false);
+3581:  const [isDoorEditOpen, setIsDoorEditOpen] = useState(false);
+3582:  const [isWindowEditOpen, setIsWindowEditOpen] = useState(false);
+3583:  const [editingEntityId, setEditingEntityId] = useState<string | null>(null);
+3584:  const [isSectionMode, setIsSectionMode] = useState(false);
+3585:  const [showSectionConfig, setShowSectionConfig] = useState(false);
+3586:  const [isRealistic, setIsRealistic] = useState(true);
+3587:  const [globalOpacityMode, setGlobalOpacityMode] = useState<'WORK' | 'SOLID'>('SOLID');
+3588:  const [globalRoomOpacityVal, setGlobalRoomOpacityVal] = useState<number>(0.25);
+3589:  const [globalWallOpacityVal, setGlobalWallOpacityVal] = useState<number>(1.0);
+3590:  const [transparentEntities, setTransparentEntities] = useState<Set<string>>(new Set());
+3591:  const [stepCm, setStepCm] = useState(10);
+3594:  const [sectionHatchMode, setSectionHatchMode] = useState<boolean>(() => {
+3600:  const [perimeterThickness, setPerimeterThickness] = useState<number>(() => {
+3606:  const [hatchDensity, setHatchDensity] = useState<number>(() => {
+3612:  const [hatchThickness, setHatchThickness] = useState<number>(() => {
+3618:  const [hatchLineColor, setHatchLineColor] = useState<string>(() => {
+3624:  const [hatchBgColorMode, setHatchBgColorMode] = useState<'white' | 'entity' | 'gray' | 'custom'>(() => {
+3630:  const [hatchBgColorCustom, setHatchBgColorCustom] = useState<string>(() => {
+3636:  const [hatchPatternMode, setHatchPatternMode] = useState<'diagonal' | 'horizontal' | 'vertical' | 'cross'>(() => {
+3708:  const [panelPos, setPanelPos] = useState({ x: 0, y: 0 });
+3746:  const [isDragging, setIsDragging] = useState(false);
+4380:  const [isSlicing, setIsSlicing] = useState(false);
+4394:  const [slicingHeight, setSlicingHeight] = useState(6.0);
+4402:  const [slicingMode, setSlicingMode] = useState<'HIDE_ABOVE' | 'HIDE_BELOW' | 'WINDOW'>('HIDE_ABOVE');
+4403:  const [slicingDirection, setSlicingDirection] = useState<'UP' | 'DOWN'>('UP');
+4404:  const [isAutoSlicing, setIsAutoSlicing] = useState(false);
+4405:  const [windowThickness, setWindowThickness] = useState(0.5);

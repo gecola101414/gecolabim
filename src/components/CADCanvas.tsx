@@ -1,4 +1,5 @@
 import React, { useRef, useEffect, useState, forwardRef, useImperativeHandle, useMemo } from 'react';
+import { Check, X } from 'lucide-react';
 import { Entity, Point, Layer, LineEntity, CircleEntity, ArcEntity, RectEntity, InkPoint, Tavola, DimensionEntity, PointEntity, ImageEntity, CameraEntity } from '../types';
 import { ManualInputOverlay } from './ManualInputOverlay';
 import { TEMPLATES, Template } from '../data/templates';
@@ -780,6 +781,61 @@ const distanceToSegmentPt = (p: Point, s: Point, e: Point): number => {
   return Math.sqrt((p.x - (s.x + t * (e.x - s.x))) ** 2 + (p.y - (s.y + t * (e.y - s.y))) ** 2);
 };
 
+const chainSegmentsToPoints = (segs: { start: Point, end: Point }[]): Point[] => {
+  if (segs.length === 0) return [];
+  if (segs.length === 1) return [segs[0].start, segs[0].end];
+  
+  const remaining = [...segs];
+  const first = remaining.shift()!;
+  const pts: Point[] = [first.start, first.end];
+  
+  let changed = true;
+  while (changed && remaining.length > 0) {
+    changed = false;
+    const lastPt = pts[pts.length - 1];
+    const firstPt = pts[0];
+    
+    for (let i = 0; i < remaining.length; i++) {
+      const seg = remaining[i];
+      const tolerance = 0.05; // 5cm tolerance
+      
+      // Connect to lastPt
+      if (Math.hypot(seg.start.x - lastPt.x, seg.start.y - lastPt.y) < tolerance) {
+        pts.push(seg.end);
+        remaining.splice(i, 1);
+        changed = true;
+        break;
+      }
+      if (Math.hypot(seg.end.x - lastPt.x, seg.end.y - lastPt.y) < tolerance) {
+        pts.push(seg.start);
+        remaining.splice(i, 1);
+        changed = true;
+        break;
+      }
+      // Connect to firstPt
+      if (Math.hypot(seg.start.x - firstPt.x, seg.start.y - firstPt.y) < tolerance) {
+        pts.unshift(seg.end);
+        remaining.splice(i, 1);
+        changed = true;
+        break;
+      }
+      if (Math.hypot(seg.end.x - firstPt.x, seg.end.y - firstPt.y) < tolerance) {
+        pts.unshift(seg.start);
+        remaining.splice(i, 1);
+        changed = true;
+        break;
+      }
+    }
+  }
+  
+  while (remaining.length > 0) {
+    const seg = remaining.shift()!;
+    pts.push(seg.start, seg.end);
+  }
+  
+  return pts;
+};
+
 const traceContour = (grid: boolean[][], startX: number, startY: number): Point[] => {
   const height = grid.length;
   const width = grid[0].length;
@@ -899,20 +955,51 @@ const getRgbaFromColor = (colorStr: string, alpha: number) => {
 };
 
 const drawHatchPattern = (ctx: CanvasRenderingContext2D, entity: any, zoom: number) => {
-    const { pattern, scale, angle, color, points, holes, sfumatura = 0, backgroundColor } = entity;
-    if (!points || points.length < 3) return;
+    const { pattern, scale, angle, color, points, holes, sfumatura = 0, backgroundColor, isLinear, bimWidth } = entity;
+    if (!points || (points.length < 2) || (!isLinear && points.length < 3)) return;
 
     ctx.save();
     
-    // Set clipping path to the closed shape boundary (with holes) using even-odd fill rule
+    // Set clipping path
     ctx.beginPath();
-    ctx.moveTo(points[0].x, points[0].y);
-    for (let i = 1; i < points.length; i++) {
-        ctx.lineTo(points[i].x, points[i].y);
-    }
-    ctx.closePath();
     
-    if (holes && holes.length > 0) {
+    if (isLinear && points.length >= 2) {
+      const thickness = bimWidth || 15;
+      const sideSign = (entity as any).sideSign || 1;
+      const forward: Point[] = [];
+      const backward: Point[] = [];
+      
+      for (let i = 0; i < points.length - 1; i++) {
+        const pA = points[i];
+        const pB = points[i+1];
+        const dx = pB.x - pA.x;
+        const dy = pB.y - pA.y;
+        const L = Math.sqrt(dx*dx + dy*dy) || 1;
+        const nx = -dy / L;
+        const ny = dx / L;
+        const off = (thickness / 2) * sideSign;
+        
+        if (i === 0) {
+          forward.push({ x: pA.x + nx * off, y: pA.y + ny * off });
+          backward.push({ x: pA.x - nx * off, y: pA.y - ny * off });
+        }
+        forward.push({ x: pB.x + nx * off, y: pB.y + ny * off });
+        backward.push({ x: pB.x - nx * off, y: pB.y - ny * off });
+      }
+      
+      ctx.moveTo(forward[0].x, forward[0].y);
+      for (let i = 1; i < forward.length; i++) ctx.lineTo(forward[i].x, forward[i].y);
+      for (let i = backward.length - 1; i >= 0; i--) ctx.lineTo(backward[i].x, backward[i].y);
+      ctx.closePath();
+    } else {
+      ctx.moveTo(points[0].x, points[0].y);
+      for (let i = 1; i < points.length; i++) {
+        ctx.lineTo(points[i].x, points[i].y);
+      }
+      ctx.closePath();
+    }
+    
+    if (holes && holes.length > 0 && !isLinear) {
         holes.forEach((hole: Point[]) => {
             if (hole.length < 3) return;
             ctx.moveTo(hole[0].x, hole[0].y);
@@ -1001,7 +1088,7 @@ const drawHatchPattern = (ctx: CanvasRenderingContext2D, entity: any, zoom: numb
   ctx.rotate((angle || 0) * Math.PI / 180);
 
   ctx.strokeStyle = color || '#3b82f6';
-  ctx.lineWidth = Math.max(0.7, 1.2 / zoom);
+  ctx.lineWidth = Math.max(1.0, 1.5 / zoom);
   ctx.fillStyle = color || '#3b82f6';
   ctx.setLineDash([]);
 
@@ -1010,7 +1097,7 @@ const drawHatchPattern = (ctx: CanvasRenderingContext2D, entity: any, zoom: numb
 
   // HEAVY PERFORMANCE FIX: If user is zoomed out and patterns are too tight, 
   // skip pattern rendering to save thousands of lineTo calls.
-  if (step * zoom < 2) {
+  if (step * zoom < 1.5) {
       if (pattern?.toLowerCase() !== 'solid') {
           ctx.beginPath();
           ctx.moveTo(points[0].x, points[0].y);
@@ -1019,7 +1106,7 @@ const drawHatchPattern = (ctx: CanvasRenderingContext2D, entity: any, zoom: numb
           }
           ctx.closePath();
           ctx.fillStyle = color || 'rgba(99, 102, 241, 0.45)';
-          ctx.globalAlpha = 0.2;
+          ctx.globalAlpha = 0.25;
           ctx.fill();
           ctx.globalAlpha = 1.0;
       }
@@ -1232,7 +1319,7 @@ const drawHatchPattern = (ctx: CanvasRenderingContext2D, entity: any, zoom: numb
         ctx.stroke();
       }
     }
-  } else if (pat === 'honey') {
+  } else if (pat === 'honey' || pat === 'hexagon') {
     const r = step / 1.73;
     const h = r * Math.sin(Math.PI / 3);
     for (let y = -halfDiag - r; y <= halfDiag + r; y += h * 2) {
@@ -1252,6 +1339,171 @@ const drawHatchPattern = (ctx: CanvasRenderingContext2D, entity: any, zoom: numb
         isAlt = !isAlt;
       }
     }
+  } else if (pat.startsWith('tile_')) {
+    // Format: tile_50x40
+    const dims = pat.split('_')[1].split('x');
+    const tileW = parseInt(dims[0]) || 50;
+    const tileH = parseInt(dims[1]) || 40;
+    ctx.strokeStyle = 'rgba(0, 0, 0, 0.45)';
+    ctx.lineWidth = Math.max(0.8, 1.2 / zoom);
+    ctx.beginPath();
+    for (let x = -halfDiag; x <= halfDiag; x += tileW) {
+      ctx.moveTo(x, -halfDiag);
+      ctx.lineTo(x, halfDiag);
+    }
+    for (let y = -halfDiag; y <= halfDiag; y += tileH) {
+      ctx.moveTo(-halfDiag, y);
+      ctx.lineTo(halfDiag, y);
+    }
+    ctx.stroke();
+  } else if (pat === 'parquet_strip') {
+    const stripW = step * 4;
+    const stripH = step;
+    ctx.strokeStyle = 'rgba(0, 0, 0, 0.35)';
+    ctx.lineWidth = Math.max(0.6, 0.9 / zoom);
+    ctx.beginPath();
+    for (let y = -halfDiag; y <= halfDiag; y += stripH) {
+      ctx.moveTo(-halfDiag, y);
+      ctx.lineTo(halfDiag, y);
+      const rowOffset = (Math.floor(y / stripH) % 3) * (stripW / 3);
+      for (let x = -halfDiag + rowOffset - stripW; x <= halfDiag; x += stripW) {
+        ctx.moveTo(x, y);
+        ctx.lineTo(x, y + stripH);
+      }
+    }
+    ctx.stroke();
+  } else if (pat === 'parquet_herringbone') {
+    const w = step * 1.5;
+    const h = step * 4;
+    ctx.strokeStyle = 'rgba(0, 0, 0, 0.4)';
+    ctx.lineWidth = Math.max(0.7, 1.0 / zoom);
+    for (let y = -halfDiag - h; y <= halfDiag + h; y += w * 2) {
+      for (let x = -halfDiag - h; x <= halfDiag + h; x += h) {
+        ctx.save();
+        ctx.translate(x, y);
+        ctx.rotate(Math.PI / 4);
+        ctx.strokeRect(0, 0, w, h);
+        ctx.restore();
+        ctx.save();
+        ctx.translate(x + h/2, y + w);
+        ctx.rotate(-Math.PI / 4);
+        ctx.strokeRect(0, 0, w, h);
+        ctx.restore();
+      }
+    }
+  } else if (pat === 'brick_stretcher' || pat === 'brick_bond') {
+    const bW = step * 2.5;
+    const bH = step;
+    ctx.strokeStyle = 'rgba(0, 0, 0, 0.45)';
+    ctx.lineWidth = Math.max(0.8, 1.2 / zoom);
+    ctx.beginPath();
+    for (let y = -halfDiag; y <= halfDiag; y += bH) {
+      ctx.moveTo(-halfDiag, y);
+      ctx.lineTo(halfDiag, y);
+      const isShifted = (Math.floor(y / bH) % 2 !== 0);
+      const offset = isShifted ? bW / 2 : 0;
+      for (let x = -halfDiag - bW + offset; x <= halfDiag; x += bW) {
+        ctx.moveTo(x, y);
+        ctx.lineTo(x, y + bH);
+      }
+    }
+    ctx.stroke();
+  } else if (pat === 'stone_random') {
+    for (let i = 0; i < 50; i++) {
+       const x = (Math.random() - 0.5) * diag;
+       const y = (Math.random() - 0.5) * diag;
+       const sides = 5 + Math.floor(Math.random() * 3);
+       const r = step * (0.5 + Math.random());
+       ctx.beginPath();
+       for (let s = 0; s < sides; s++) {
+         const a = (s * Math.PI * 2) / sides + Math.random() * 0.5;
+         const px = x + r * Math.cos(a);
+         const py = y + r * Math.sin(a);
+         if (s === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+       }
+       ctx.closePath();
+       ctx.stroke();
+    }
+  } else if (pat === 'concrete') {
+    for (let i = 0; i < 200; i++) {
+      const x = (Math.random() - 0.5) * diag;
+      const y = (Math.random() - 0.5) * diag;
+      const r = 0.2 + Math.random() * 0.8;
+      ctx.beginPath();
+      ctx.arc(x, y, r / zoom, 0, Math.PI * 2);
+      ctx.fill();
+      if (i % 20 === 0) {
+        ctx.beginPath();
+        ctx.moveTo(x, y);
+        ctx.lineTo(x + (Math.random() - 0.5) * 5, y + (Math.random() - 0.5) * 5);
+        ctx.stroke();
+      }
+    }
+  } else if (pat === 'gravel') {
+    for (let i = 0; i < 100; i++) {
+      const x = (Math.random() - 0.5) * diag;
+      const y = (Math.random() - 0.5) * diag;
+      const r = (2 + Math.random() * 3) / zoom;
+      ctx.beginPath();
+      ctx.arc(x, y, r, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+  } else if (pat === 'sand') {
+    for (let i = 0; i < 400; i++) {
+      const x = (Math.random() - 0.5) * diag;
+      const y = (Math.random() - 0.5) * diag;
+      ctx.fillRect(x, y, 0.5/zoom, 0.5/zoom);
+    }
+  } else if (pat === 'insulation') {
+    const w = step * 1.5;
+    ctx.beginPath();
+    for (let y = -halfDiag; y <= halfDiag; y += w) {
+       ctx.moveTo(-halfDiag, y);
+       for (let x = -halfDiag; x <= halfDiag; x += w) {
+          ctx.lineTo(x + w/2, y + w/2);
+          ctx.lineTo(x + w, y);
+       }
+    }
+    ctx.stroke();
+  } else if (pat === 'wood_veneer') {
+    for (let y = -halfDiag; y <= halfDiag; y += step * 0.5) {
+      ctx.beginPath();
+      ctx.moveTo(-halfDiag, y);
+      for (let x = -halfDiag; x <= halfDiag; x += 10) {
+        const vy = y + Math.sin(x / 50) * 5 + (Math.random() - 0.5) * 2;
+        ctx.lineTo(x, vy);
+      }
+      ctx.stroke();
+    }
+  } else if (pat === 'marble') {
+    for (let i = 0; i < 10; i++) {
+      ctx.beginPath();
+      ctx.globalAlpha = 0.3;
+      let x = (Math.random() - 0.5) * diag;
+      let y = (Math.random() - 0.5) * diag;
+      ctx.moveTo(x, y);
+      for (let j = 0; j < 20; j++) {
+        x += (Math.random() - 0.5) * 30;
+        y += (Math.random() - 0.5) * 30;
+        ctx.lineTo(x, y);
+      }
+      ctx.stroke();
+      ctx.globalAlpha = 1.0;
+    }
+  } else if (pat === 'metal_deck') {
+    const w = step * 2;
+    ctx.beginPath();
+    for (let x = -halfDiag; x <= halfDiag; x += w) {
+      ctx.moveTo(x, -halfDiag);
+      ctx.lineTo(x, halfDiag);
+      ctx.moveTo(x + w * 0.3, -halfDiag);
+      ctx.lineTo(x + w * 0.3, halfDiag);
+      ctx.setLineDash([2, 2]);
+      ctx.moveTo(x + w * 0.6, -halfDiag);
+      ctx.lineTo(x + w * 0.6, halfDiag);
+      ctx.setLineDash([]);
+    }
+    ctx.stroke();
   } else if (pat === 'gravel') {
     const size = step * 0.35;
     for (let x = -halfDiag; x <= halfDiag; x += step) {
@@ -2690,6 +2942,8 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
 
   const [hoveredTavolaPart, setHoveredTavolaPart] = useState<{ id: string; part: 'cartiglio' | 'badge' } | null>(null);
   const [manualRoomPoints, setManualRoomPoints] = useState<Point[]>([]);
+  const [manualSideSign, setManualSideSign] = useState<number>(1);
+  const [hoveredBIMSegments, setHoveredBIMSegments] = useState<{ start: Point, end: Point, entity: Entity, distance: number }[]>([]);
 
   const getHoveredTavolaPart = (rawPoint: Point): { id: string; part: 'cartiglio' | 'badge' } | null => {
     if (!tavole) return null;
@@ -2724,6 +2978,14 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
     }
     return null;
   };
+
+  useEffect(() => {
+    if (activeTool !== 'BIM_DisegnaStanza' && activeTool !== 'BIM_DisegnaLineare' && activeTool !== 'BIM_TracciaSegmento') {
+      if (manualRoomPoints.length > 0) {
+        setManualRoomPoints([]);
+      }
+    }
+  }, [activeTool]);
 
   const [helpPanelOffset, setHelpPanelOffset] = useState<{x: number, y: number} | null>(null);
   const helpDragRef = useRef<{startX: number, startY: number, initialOffset: {x: number, y: number}}>({startX: 0, startY: 0, initialOffset: {x: 0, y: 0}});
@@ -3663,7 +3925,26 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
   };
 
   const [flashIds, setFlashIds] = useState<string[]>([]);
+  const [bimFlashIds, setBimFlashIds] = useState<string[]>([]);
   const [flashIntensity, setFlashIntensity] = useState(0);
+  const [pulsingEntityId, setPulsingEntityId] = useState<string | null>(null);
+  const [pulseIntensity, setPulseIntensity] = useState(0);
+
+  useEffect(() => {
+    if (pulsingEntityId) {
+      const start = Date.now();
+      const interval = setInterval(() => {
+        const elapsed = Date.now() - start;
+        // Pulse every 1.5 seconds (sine wave 0.3 to 1.0 range for visibility)
+        const intensity = 0.3 + 0.7 * ((Math.sin(elapsed * 0.006) + 1) / 2);
+        setPulseIntensity(intensity);
+        renderRef.current?.();
+      }, 30);
+      return () => clearInterval(interval);
+    } else {
+      setPulseIntensity(0);
+    }
+  }, [pulsingEntityId]);
 
   const screenToCanvas = (x: number, y: number): Point => {
     return {
@@ -3941,7 +4222,7 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
         }
     }
 
-    const isDrawingTool = ['Line', 'Circle', 'Arc', 'Rectangle', 'Hatch', 'Dimension', 'Muro', 'BIM_Muro', 'BIM_Porta', 'BIM_Finestra', 'BIM_Symbol', 'BIM_DisegnaStanza', 'BIM_DisegnaLineare'].includes(activeTool);
+    const isDrawingTool = ['Line', 'Circle', 'Arc', 'Rectangle', 'Hatch', 'Dimension', 'Muro', 'BIM_Muro', 'BIM_Porta', 'BIM_Finestra', 'BIM_Symbol', 'BIM_DisegnaStanza', 'BIM_DisegnaLineare', 'BIM_TracciaSegmento'].includes(activeTool);
     if (isDrawingTool && (drawing ? true : isShiftPressedRef.current)) {
         const threshold = 12 / view.zoom;
         const uniqueKeyPoints: Point[] = [];
@@ -4872,6 +5153,14 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
             ctx.shadowBlur = 10 * flashIntensity;
         }
 
+        const isBimFlashing = bimFlashIds.includes(entity.id);
+        if (isBimFlashing) {
+            const p = (Math.sin(Date.now() / 150) + 1) / 2;
+            ctx.shadowColor = isLavagna ? 'rgba(103, 232, 249, 0.9)' : 'rgba(79, 70, 229, 0.9)';
+            ctx.shadowBlur = (10 + 15 * p) / view.zoom;
+            ctx.lineWidth += (2 + 4 * p) / view.zoom;
+        }
+
         const isCurrentlyDragged = dragEntityIds.includes(entity.id);
         const isPropSelected = (selectedEntityIds as string[]).includes(entity.id);
         const isReallySelected = isPropSelected || isCurrentlyDragged ||
@@ -5710,54 +5999,99 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
             else if (ctx.textAlign === 'right') offsetX = -maxW;
             ctx.strokeRect(entity.point.x + offsetX - 4/view.zoom, entity.point.y - 4/view.zoom, maxW + 8/view.zoom, h + 8/view.zoom);
           }
-        } else if (entity.type === 'hatch') {
-          if (entity.bimRenderMode !== 'parete_verticale' && entity.bimRenderMode !== 'parete_orizzontale' && !entity.isLinear) {
+        } else if (entity.type === 'hatch' || entity.isBIM) {
+          // BIM elements like walls or rooms should be able to show hatch patterns
+          const ent = entity as any;
+          const pat = ent.pattern || ent.bimHatchPattern;
+          const hasHatch = pat && pat !== 'NONE' && pat !== 'SOLID';
+          const isBimMode = ent.bimRenderMode === 'parete_verticale' || ent.bimRenderMode === 'parete_orizzontale' || ent.isLinear;
+
+          if (hasHatch) {
             drawHatchPattern(ctx, entity, view.zoom);
           }
           
-          if (entity.points && entity.points.length >= 2) {
+          if (ent.points && ent.points.length >= 2) {
             ctx.save();
             ctx.beginPath();
-            ctx.moveTo(entity.points[0].x, entity.points[0].y);
-            for (let i = 1; i < entity.points.length; i++) {
-              ctx.lineTo(entity.points[i].x, entity.points[i].y);
+            ctx.moveTo(ent.points[0].x, ent.points[0].y);
+            for (let i = 1; i < ent.points.length; i++) {
+              ctx.lineTo(ent.points[i].x, ent.points[i].y);
             }
-            if (entity.points.length > 2 && !entity.isLinear && entity.bimRenderMode !== 'parete_verticale' && entity.bimRenderMode !== 'parete_orizzontale') {
+            if (ent.points.length > 2 && !ent.isLinear && ent.bimRenderMode !== 'parete_verticale' && ent.bimRenderMode !== 'parete_orizzontale') {
                ctx.closePath();
             }
             
-            const isDefaultColor = !entity.color || entity.color === '#000000' || entity.color === 'rgba(0,0,0,0.5)' || entity.color === 'rgba(0, 0, 0, 0.5)';
+            const isDefaultColor = !ent.color || ent.color === '#000000' || ent.color === 'rgba(0,0,0,0.5)' || ent.color === 'rgba(0, 0, 0, 0.5)';
             
-            if (entity.bimRenderMode === 'parete_verticale') {
-              ctx.strokeStyle = selectedEntityId === entity.id || isFlashing ? '#06b6d4' : (isDefaultColor ? '#059669' : entity.color);
+            if (ent.bimRenderMode === 'parete_verticale') {
+              ctx.strokeStyle = selectedEntityId === entity.id || isFlashing ? '#06b6d4' : (isDefaultColor ? '#059669' : ent.color);
               ctx.lineWidth = (selectedEntityId === entity.id || isFlashing ? 5.0 : 4.0) / view.zoom;
               ctx.setLineDash([8 / view.zoom, 4 / view.zoom]);
-            } else if (entity.bimRenderMode === 'parete_orizzontale') {
-              ctx.strokeStyle = selectedEntityId === entity.id || isFlashing ? '#06b6d4' : (isDefaultColor ? '#0284c7' : entity.color);
+            } else if (ent.bimRenderMode === 'parete_orizzontale') {
+              ctx.strokeStyle = selectedEntityId === entity.id || isFlashing ? '#06b6d4' : (isDefaultColor ? '#0284c7' : ent.color);
               ctx.lineWidth = (selectedEntityId === entity.id || isFlashing ? 5.0 : 4.0) / view.zoom;
               ctx.setLineDash([4 / view.zoom, 4 / view.zoom]);
-            } else if (entity.isLinear) {
+            } else if (ent.isLinear) {
+              const thickness = ent.bimWidth || 15;
+              const sideSign = ent.sideSign || 1;
+              const isFaceAligned = ent.isFaceAligned;
+              
+              if (isFaceAligned && ent.points && ent.points.length >= 2) {
+                // Redraw path with offset so one face is on the base line
+                ctx.beginPath();
+                for (let i = 0; i < ent.points.length - 1; i++) {
+                   const pA = ent.points[i];
+                   const pB = ent.points[i+1];
+                   const dx = pB.x - pA.x;
+                   const dy = pB.y - pA.y;
+                   const L = Math.sqrt(dx*dx + dy*dy) || 1;
+                   const nx = -dy / L;
+                   const ny = dx / L;
+                   const offset = (thickness / 2) * sideSign;
+                   
+                   if (i === 0) ctx.moveTo(pA.x + nx * offset, pA.y + ny * offset);
+                   ctx.lineTo(pB.x + nx * offset, pB.y + ny * offset);
+                }
+              }
+
               const isPlaster = (entity.bimName || '').toLowerCase().includes('intonac') || 
                                 (entity.bimFamily || '').toLowerCase().includes('intonac') ||
                                 (entity.bimAreaType || '').toLowerCase().includes('intonac');
+              const isRustic = (entity.bimName || '').toLowerCase().includes('rustic') || 
+                               (entity.bimFamily || '').toLowerCase().includes('rustic') ||
+                               (entity.bimAreaType || '').toLowerCase().includes('rustic');
               const isCoating = (entity.bimName || '').toLowerCase().includes('rivest') || 
                                 (entity.bimFamily || '').toLowerCase().includes('rivest');
               
               if (isPlaster || isCoating) {
                 // Plaster/Coating specific trace in plan
-                ctx.strokeStyle = selectedEntityId === entity.id || isFlashing ? '#06b6d4' : (isDefaultColor ? '#94a3b8' : entity.color);
-                ctx.lineWidth = (selectedEntityId === entity.id || isFlashing ? 3.0 : 2.0) / view.zoom;
-                ctx.setLineDash([]);
+                ctx.strokeStyle = selectedEntityId === entity.id || isFlashing ? '#06b6d4' : (entity.color || '#f3f4f6');
+                
+                if (isRustic) {
+                   ctx.lineWidth = Math.max(thickness * 1.5, 4.0 / view.zoom); // Make it slightly thicker for dots
+                   ctx.lineCap = 'round'; // Use round dots
+                   ctx.setLineDash([0, Math.max(thickness * 1.5, 6 / view.zoom)]); // Dots spaced out
+                } else {
+                   ctx.lineWidth = Math.max(thickness, 2.0 / view.zoom);
+                   ctx.lineCap = 'butt';
+                   ctx.setLineDash([]);
+                }
               } else {
                 ctx.strokeStyle = selectedEntityId === entity.id || isFlashing ? '#06b6d4' : (isDefaultColor ? '#059669' : entity.color);
-                ctx.lineWidth = (selectedEntityId === entity.id || isFlashing ? 5.0 : 4.0) / view.zoom;
+                ctx.lineWidth = Math.max(thickness, 3.0 / view.zoom);
                 ctx.setLineDash([]);
+                ctx.lineCap = 'butt';
               }
             } else {
               ctx.strokeStyle = selectedEntityId === entity.id || isFlashing ? '#06b6d4' : (isDefaultColor ? '#475569' : entity.color);
               ctx.lineWidth = (selectedEntityId === entity.id || isFlashing ? 3.0 : 2.0) / view.zoom;
             }
             ctx.stroke();
+            
+            // Revert changes to prevent affecting other shapes
+            ctx.lineCap = 'butt';
+            ctx.setLineDash([]);
+            
             ctx.restore();
           }
         } else if (entity.type === 'image') {
@@ -6202,11 +6536,159 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
       // Removed Redundant Tecnigrafo measurement label block here
 
       // --- BIM LIVE PREVIEWS (STARTS) ---
-      if ((activeTool === 'BIM_DisegnaStanza' || activeTool === 'BIM_DisegnaLineare') && manualRoomPoints.length > 0) {
+      if ((activeTool === 'BIM_DisegnaLineare' || activeTool === 'BIM_TracciaSegmento') && hoveredBIMSegments.length > 0) {
         ctx.save();
-        ctx.strokeStyle = activeTool === 'BIM_DisegnaLineare' ? '#10b981' : '#10b981';
-        ctx.lineWidth = activeTool === 'BIM_DisegnaLineare' ? 4.0 / view.zoom : 1.5 / view.zoom;
-        ctx.fillStyle = activeTool === 'BIM_DisegnaLineare' ? 'rgba(16, 185, 129, 0.04)' : 'rgba(16, 185, 129, 0.08)';
+        
+        // For BIM_TracciaSegmento, only show the best (first) segment
+        const segmentsToHighlight = activeTool === 'BIM_TracciaSegmento' 
+            ? [hoveredBIMSegments[0]] 
+            : hoveredBIMSegments;
+
+        // Compute total length
+        let totalLength = 0;
+        segmentsToHighlight.forEach(seg => {
+            const dx = seg.end.x - seg.start.x;
+            const dy = seg.end.y - seg.start.y;
+            totalLength += Math.sqrt(dx * dx + dy * dy);
+        });
+
+        // 1. Highlight all segments
+        segmentsToHighlight.forEach(seg => {
+            const { start, end } = seg;
+            ctx.strokeStyle = activeTool === 'BIM_TracciaSegmento' ? '#10b981' : '#10b981'; 
+            ctx.lineWidth = 5.0 / view.zoom;
+            ctx.lineCap = 'round';
+            ctx.beginPath();
+            ctx.moveTo(start.x, start.y);
+            ctx.lineTo(end.x, end.y);
+            ctx.stroke();
+
+            ctx.strokeStyle = activeTool === 'BIM_TracciaSegmento' ? '#34d399' : '#34d399';
+            ctx.lineWidth = 2.0 / view.zoom;
+            ctx.setLineDash([4 / view.zoom, 4 / view.zoom]);
+            ctx.beginPath();
+            ctx.moveTo(start.x, start.y);
+            ctx.lineTo(end.x, end.y);
+            ctx.stroke();
+            ctx.setLineDash([]);
+        });
+
+        // 2. Draw nice circles at vertices
+        ctx.fillStyle = activeTool === 'BIM_TracciaSegmento' ? '#059669' : '#059669';
+        ctx.strokeStyle = '#ffffff';
+        ctx.lineWidth = 1.5 / view.zoom;
+        const drawnPoints = new Set<string>();
+        segmentsToHighlight.forEach(seg => {
+            [seg.start, seg.end].forEach(p => {
+                const key = `${p.x.toFixed(3)},${p.y.toFixed(3)}`;
+                if (!drawnPoints.has(key)) {
+                    drawnPoints.add(key);
+                    ctx.beginPath();
+                    ctx.arc(p.x, p.y, 6 / view.zoom, 0, Math.PI * 2);
+                    ctx.fill();
+                    ctx.stroke();
+                }
+            });
+        });
+
+        // 3. Draw individual length labels for each segment if there are multiple
+        if (hoveredBIMSegments.length > 1) {
+            ctx.font = `${10 / view.zoom}px sans-serif`;
+            ctx.fillStyle = '#0891b2';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'bottom';
+            hoveredBIMSegments.forEach(seg => {
+                const midX = (seg.start.x + seg.end.x) / 2;
+                const midY = (seg.start.y + seg.end.y) / 2;
+                const dx = seg.end.x - seg.start.x;
+                const dy = seg.end.y - seg.start.y;
+                const len = Math.sqrt(dx * dx + dy * dy);
+                ctx.fillText(`${len.toFixed(2)} m`, midX, midY - 4 / view.zoom);
+            });
+        }
+
+        // 4. Draw unified badge near mouse pos or centroid
+        const firstSeg = hoveredBIMSegments[0];
+        const midX = (firstSeg.start.x + firstSeg.end.x) / 2;
+        const midY = (firstSeg.start.y + firstSeg.end.y) / 2;
+        
+        const isMulti = hoveredBIMSegments.length > 1;
+        const label = isMulti 
+            ? `Rilievo Multiplo: ${totalLength.toFixed(2)} m (${hoveredBIMSegments.length} tratti)`
+            : `Rilievo Auto: ${totalLength.toFixed(2)} m (${firstSeg.entity.bimName || 'Muro'})`;
+
+        ctx.font = `bold ${11 / view.zoom}px sans-serif`;
+        const textMetrics = ctx.measureText(label);
+        const paddingX = 8 / view.zoom;
+        const paddingY = 4 / view.zoom;
+        const boxW = textMetrics.width + paddingX * 2;
+        const boxH = 20 / view.zoom;
+
+        const mouseX = actualMousePosRef.current.x;
+        const mouseY = actualMousePosRef.current.y;
+        const perpX = mouseX - midX;
+        const perpY = mouseY - midY;
+        const perpLen = Math.hypot(perpX, perpY);
+        let badgeX = midX;
+        let badgeY = midY;
+        
+        if (perpLen > 0.001) {
+            const offsetAmt = Math.min(25 / view.zoom, perpLen * 0.5);
+            badgeX += (perpX / perpLen) * offsetAmt;
+            badgeY += (perpY / perpLen) * offsetAmt;
+        } else {
+            badgeY -= 15 / view.zoom;
+        }
+
+        ctx.fillStyle = '#06b6d4'; // Cyan badge
+        ctx.strokeStyle = '#ffffff';
+        ctx.lineWidth = 1 / view.zoom;
+        ctx.beginPath();
+        ctx.roundRect(badgeX - boxW / 2, badgeY - boxH / 2, boxW, boxH, 4 / view.zoom);
+        ctx.fill();
+        ctx.stroke();
+
+        ctx.fillStyle = '#ffffff'; // White text
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(label, badgeX, badgeY);
+
+        // 5. Draw projection dashed line to the nearest segment
+        ctx.strokeStyle = 'rgba(6, 182, 212, 0.6)';
+        ctx.lineWidth = 1 / view.zoom;
+        ctx.setLineDash([2 / view.zoom, 2 / view.zoom]);
+        ctx.beginPath();
+        ctx.moveTo(mouseX, mouseY);
+        
+        let nearestProj: Point = { x: midX, y: midY };
+        let minProjDist = Infinity;
+        hoveredBIMSegments.forEach(seg => {
+            const l2 = (seg.end.x - seg.start.x) ** 2 + (seg.end.y - seg.start.y) ** 2;
+            let t = 0;
+            if (l2 > 0) {
+                t = ((mouseX - seg.start.x) * (seg.end.x - seg.start.x) + (mouseY - seg.start.y) * (seg.end.y - seg.start.y)) / l2;
+                t = Math.max(0, Math.min(1, t));
+            }
+            const projX = seg.start.x + t * (seg.end.x - seg.start.x);
+            const projY = seg.start.y + t * (seg.end.y - seg.start.y);
+            const d = Math.hypot(mouseX - projX, mouseY - projY);
+            if (d < minProjDist) {
+                minProjDist = d;
+                nearestProj = { x: projX, y: projY };
+            }
+        });
+        
+        ctx.lineTo(nearestProj.x, nearestProj.y);
+        ctx.stroke();
+
+        ctx.restore();
+      }
+
+      if ((activeTool === 'BIM_DisegnaStanza' || activeTool === 'BIM_DisegnaLineare' || activeTool === 'BIM_TracciaSegmento') && manualRoomPoints.length > 0) {
+        ctx.save();
+        ctx.strokeStyle = (activeTool === 'BIM_DisegnaLineare' || activeTool === 'BIM_TracciaSegmento') ? '#10b981' : '#10b981';
+        ctx.lineWidth = (activeTool === 'BIM_DisegnaLineare' || activeTool === 'BIM_TracciaSegmento') ? 4.0 / view.zoom : 1.5 / view.zoom;
+        ctx.fillStyle = (activeTool === 'BIM_DisegnaLineare' || activeTool === 'BIM_TracciaSegmento') ? 'rgba(16, 185, 129, 0.04)' : 'rgba(16, 185, 129, 0.08)';
         ctx.beginPath();
         ctx.moveTo(manualRoomPoints[0].x, manualRoomPoints[0].y);
         for (let i = 1; i < manualRoomPoints.length; i++) {
@@ -7586,6 +8068,79 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
       });
       // --- BIM OVERLAY RENDERING PASS (ENDS) ---
 
+      // --- PULSING HIGHLIGHT PASS (Double-click effect) ---
+      if (pulsingEntityId) {
+        const entity = projectedEntities.find(e => e.id === pulsingEntityId);
+        if (entity && entity.isBIM) {
+          const pulseColor = `rgba(34, 197, 94, ${0.45 * pulseIntensity})`; 
+          const glowColor = `rgba(34, 197, 94, ${0.25 * pulseIntensity})`;
+          const extraWidth = (8 + 10 * pulseIntensity) / view.zoom;
+
+          const drawGenericPulse = (pts: Point[]) => {
+              if (pts.length < 2) return;
+              ctx.save();
+              ctx.beginPath();
+              ctx.moveTo(pts[0].x, pts[0].y);
+              for(let i=1; i<pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
+              ctx.closePath();
+              
+              // External Glow
+              ctx.strokeStyle = glowColor;
+              ctx.lineWidth = extraWidth * 1.8;
+              ctx.stroke();
+              
+              // Pulse line
+              ctx.strokeStyle = pulseColor;
+              ctx.lineWidth = extraWidth;
+              ctx.stroke();
+              ctx.restore();
+          };
+
+          if (entity.bimType === 'room') {
+             const roomPoints = (entity as any).bimPoints || (entity as any).points;
+             if (roomPoints) drawGenericPulse(roomPoints);
+          } else if (entity.bimType === 'door' || entity.bimType === 'window' || entity.bimType === 'wall') {
+             const entAny = entity as any;
+             const start = entAny.start || entAny.p1;
+             const end = entAny.end || entAny.p2;
+             if (start && end) {
+                ctx.save();
+                ctx.lineCap = 'round';
+                ctx.beginPath();
+                ctx.moveTo(start.x, start.y);
+                ctx.lineTo(end.x, end.y);
+                
+                ctx.strokeStyle = glowColor;
+                ctx.lineWidth = extraWidth * 2.2;
+                ctx.stroke();
+                
+                ctx.strokeStyle = pulseColor;
+                ctx.lineWidth = extraWidth;
+                ctx.stroke();
+                ctx.restore();
+             }
+          } else if (entity.bimType === 'electrical_symbol' || entity.bimType === 'hydraulic_symbol') {
+             const entAny = entity as any;
+             const pt = entAny.point || entAny.center || entAny.start;
+             if (pt) {
+                ctx.save();
+                ctx.beginPath();
+                ctx.arc(pt.x, pt.y, (12 + 10 * pulseIntensity) / view.zoom, 0, Math.PI * 2);
+                ctx.strokeStyle = glowColor;
+                ctx.lineWidth = (4 * pulseIntensity) / view.zoom;
+                ctx.stroke();
+                
+                ctx.beginPath();
+                ctx.arc(pt.x, pt.y, (10 + 6 * pulseIntensity) / view.zoom, 0, Math.PI * 2);
+                ctx.strokeStyle = pulseColor;
+                ctx.lineWidth = (2 / view.zoom);
+                ctx.stroke();
+                ctx.restore();
+             }
+          }
+        }
+      }
+
       ctx.restore();
       
       // Render selection window
@@ -8111,7 +8666,7 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
   }, [entities, layers, view, flashIds, flashIntensity, selectedParallelLine, blink, selectedEntityId, 
       positioningGroupId, positioningEntityId, selectedRaccordoLineIds, dragEntityIds, highlightedTrimLine, 
       highlightedTrimSegment, allungaHover, activeTool, specchioMode, specchioSelectedIds, copySourceEntityIds, eraserPos, 
-      tecnigrafoOrigin, tecnigrafoLock, manualRoomPoints, drawing, highlightedPoints, selectedLine, referenceLine]);
+      tecnigrafoOrigin, tecnigrafoLock, manualRoomPoints, drawing, highlightedPoints, selectedLine, referenceLine, hoveredBIMSegments]);
 
 
   // BASIC PAN/ZOOM HANDLING
@@ -10121,10 +10676,13 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
             if (clickedText && clickedText.isBIM && (clickedText.bimType === 'door' || clickedText.bimType === 'window' || clickedText.bimAreaType)) {
                 setDragEntityId(null);
                 dragEntityIdRef.current = null;
+                setPulsingEntityId(clickedText.id);
                 if (onDoubleClickBIMElement) {
                     onDoubleClickBIMElement(clickedText);
                 }
                 return;
+            } else {
+                setPulsingEntityId(null);
             }
 
             if (clickedText && clickedText.type === 'text') {
@@ -10154,6 +10712,33 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
 
             if (activeTool === 'Join') {
                 confirmJoin();
+                return;
+            }
+            
+            if (activeTool === 'BIM_TracciaSegmento' && hoveredBIMSegments.length > 0) {
+                const seg = hoveredBIMSegments[0];
+                setManualRoomPoints(prev => {
+                    if (prev.length === 0) {
+                        // First segment: calculate initial sideSign
+                        const dx = seg.end.x - seg.start.x;
+                        const dy = seg.end.y - seg.start.y;
+                        const apX = rawPoint.x - seg.start.x;
+                        const apY = rawPoint.y - seg.start.y;
+                        const cross = dx * apY - dy * apX;
+                        setManualSideSign(cross >= 0 ? 1 : -1);
+                        return [seg.start, seg.end];
+                    } else {
+                        const lastPt = prev[prev.length - 1];
+                        const dStart = Math.hypot(seg.start.x - lastPt.x, seg.start.y - lastPt.y);
+                        const dEnd = Math.hypot(seg.end.x - lastPt.x, seg.end.y - lastPt.y);
+                        // Add the point that is NOT closest to the last point to extend the chain
+                        if (dStart < dEnd) {
+                            return [...prev, seg.end];
+                        } else {
+                            return [...prev, seg.start];
+                        }
+                    }
+                });
                 return;
             }
             
@@ -10457,6 +11042,7 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
 
             // Click activates movement for BIM/Arredo immediately
             onSelect(found.id, undefined, rawPoint);
+            setPulsingEntityId(null); // Clear unique highlight when clicking another entity
             if (isBIMDoorWindow || isArredo) {
                 if (found.groupId) {
                     setPositioningGroupId(found.groupId);
@@ -10469,6 +11055,7 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
             return;
         } else {
             onSelect(null);
+            setPulsingEntityId(null); // Clear pulsing highlight on empty click
             setSelectionWindow({ start: rawPoint, current: rawPoint });
         }
     } else if (activeTool === 'Specchio') {
@@ -10880,6 +11467,71 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
         }
     } else if (activeTool === 'BIM_DisegnaStanza' || activeTool === 'BIM_DisegnaLineare') {
         const clickedPoint = snapped.point;
+        
+        if (activeTool === 'BIM_DisegnaLineare' && hoveredBIMSegments.length > 0) {
+            // Clicked near a segment! Perform automated linear survey!
+            const pts = chainSegmentsToPoints(hoveredBIMSegments);
+            
+            const firstSeg = hoveredBIMSegments[0];
+            let sideSign = 1;
+            if (firstSeg) {
+                const abX = firstSeg.end.x - firstSeg.start.x;
+                const abY = firstSeg.end.y - firstSeg.start.y;
+                const apX = clickedPoint.x - firstSeg.start.x;
+                const apY = clickedPoint.y - firstSeg.start.y;
+                const cross = abX * apY - abY * apX;
+                sideSign = cross >= 0 ? 1 : -1;
+            }
+            
+            // Create permanent trace lines to leave a trace of the occurred insertion of a BIM object
+            const traceLines: Entity[] = hoveredBIMSegments.map((seg, idx) => ({
+                id: `trace_${Date.now()}_${idx}`,
+                type: 'line',
+                color: '#06b6d4',
+                lineWidth: 2,
+                lineType: 'dashed',
+                layer: activeLayerId || '0',
+                start: seg.start,
+                end: seg.end,
+                isBIM: false,
+                name: 'Tracciato Rilievo'
+            } as any));
+
+            if (onAreaDetected) {
+                // First insert the permanent trace lines
+                setEntities(prev => [...prev, ...traceLines]);
+                onAreaDetected({ points: pts, isLinear: true, isJollyActive, sideSign } as any);
+                setManualRoomPoints([]);
+                setHoveredBIMSegments([]);
+                setActiveTool?.('Select');
+            } else {
+                const nextIdx = entities.filter(e => e.isBIM && e.bimType === 'room').length + 1;
+                const newRoom: Entity = {
+                    id: Date.now().toString(),
+                    type: 'hatch',
+                    isBIM: true,
+                    bimType: 'room',
+                    bimName: 'Parete Lineare ' + nextIdx,
+                    bimHeight: 2.70,
+                    color: 'rgba(16, 185, 129, 0.15)',
+                    points: pts,
+                    pattern: 'SOLID',
+                    scale: 1,
+                    angle: 0,
+                    lineWidth: 1,
+                    mode: 'pencil',
+                    layer: activeLayerId,
+                    bimRenderMode: 'parete_verticale'
+                };
+                setEntities(prev => [...prev, ...traceLines, newRoom]);
+                onSelect(newRoom.id);
+                setManualRoomPoints([]);
+                setHoveredBIMSegments([]);
+                setActiveTool?.('Select');
+            }
+            return;
+        }
+
         if (manualRoomPoints.length > 2) {
             const firstPt = manualRoomPoints[0];
             const distToStart = Math.sqrt((clickedPoint.x - firstPt.x)**2 + (clickedPoint.y - firstPt.y)**2);
@@ -11966,6 +12618,156 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
     }
 
     onMouseMovePosition?.(rawPoint);
+
+    if (activeTool === 'BIM_DisegnaLineare' || activeTool === 'BIM_TracciaSegmento') {
+        const candidates: { start: Point, end: Point, entity: Entity, distance: number, isSubElement?: boolean }[] = [];
+        const segmentThreshold = 60 / view.zoom;
+
+        entities.forEach(ent => {
+            const isBimOrWall = ent.isBIM || ent.type === 'line' || (ent as any).type === 'muro' || (ent as any).type === 'BIM_Muro';
+            if (activeTool === 'BIM_TracciaSegmento' && !ent.isBIM) return;
+            if (!isBimOrWall) return;
+
+            if (ent.type === 'line' && ent.start && ent.end) {
+                const d = distanceToSegment(rawPoint, ent.start, ent.end);
+                // Prioritize doors/windows/symbols as they represent exact base boundaries
+                const isSub = ent.isBIM && (ent.bimType === 'door' || ent.bimType === 'window' || ent.bimType === 'electrical_symbol' || ent.bimType === 'hydraulic_symbol');
+                candidates.push({ start: ent.start, end: ent.end, entity: ent, distance: d, isSubElement: isSub });
+            } else if (ent.type === 'hatch' && ent.points && ent.points.length > 1) {
+                const pts = ent.points;
+                const isClosed = !ent.isLinear && ent.bimRenderMode !== 'parete_verticale' && ent.bimRenderMode !== 'parete_orizzontale';
+                const limit = isClosed ? pts.length : pts.length - 1;
+                for (let i = 0; i < limit; i++) {
+                    const p1 = pts[i];
+                    const p2 = pts[(i + 1) % pts.length];
+                    const d = distanceToSegment(rawPoint, p1, p2);
+                    candidates.push({ start: p1, end: p2, entity: ent, distance: d });
+                }
+            }
+        });
+
+        const validCandidates = candidates.filter(c => c.distance < segmentThreshold);
+        let best: typeof candidates[0] | null = null;
+        if (validCandidates.length > 0) {
+            validCandidates.sort((a, b) => {
+                const getPriorityScore = (c: typeof candidates[0]) => {
+                    const ent = c.entity;
+                    if (ent.isBIM) {
+                        const bt = (ent as any).bimType;
+                        // Doors and windows represent base opening limits - absolute priority!
+                        if (bt === 'door' || bt === 'window') return 100;
+
+                        // Check if it is a coating/finish (intonaco, pittura, rivestimento, cappotto, tinteggiatura, etc.)
+                        const nameLower = (ent.bimName || (ent as any).name || '').toLowerCase();
+                        const familyLower = ((ent as any).bimFamily || (ent as any).bimAreaType || (ent as any).bimFamilyId || '').toLowerCase();
+                        const isCoating = familyLower.includes('intonac') || 
+                                          familyLower.includes('rivest') ||
+                                          familyLower.includes('pittur') ||
+                                          familyLower.includes('tinteg') ||
+                                          familyLower.includes('isolam') ||
+                                          familyLower.includes('cappott') ||
+                                          familyLower.includes('finitur') ||
+                                          familyLower.includes('plaster') ||
+                                          nameLower.includes('intonac') ||
+                                          nameLower.includes('rivest') ||
+                                          nameLower.includes('pittur') ||
+                                          nameLower.includes('tinteg') ||
+                                          nameLower.includes('cappott') ||
+                                          nameLower.includes('isolam');
+
+                        if (isCoating) return 95; // Higher priority than walls (90) when we are close, so we can snap to plaster/coatings first!
+                        if (bt === 'wall' || bt === 'element') return 90;
+                        if (bt === 'room') return 80;
+                        return 70;
+                    }
+                    // regular lines or construction lines
+                    return 0;
+                };
+                
+                const scoreA = getPriorityScore(a);
+                const scoreB = getPriorityScore(b);
+                
+                if (activeTool === 'BIM_TracciaSegmento') {
+                    // For TracciaSegmento, we want the absolute closest BIM object first
+                    if (Math.abs(a.distance - b.distance) > 1.0 / view.zoom) {
+                        return a.distance - b.distance;
+                    }
+                    // If distances are very similar, use priority
+                    return scoreB - scoreA;
+                }
+
+                if (scoreA !== scoreB) {
+                    return scoreB - scoreA; // higher score first (BIM objects have maximum priority!)
+                }
+                // Within the same category, pick the closest one to the cursor
+                return a.distance - b.distance;
+            });
+            best = validCandidates[0];
+        }
+
+        if (best) {
+            const list: typeof candidates = [best];
+            
+            let hardwareCaps = false;
+            let scrollLock = false;
+            let numLock = false;
+            if (e && (e as any).getModifierState) {
+                hardwareCaps = !!(e as any).getModifierState('CapsLock');
+                scrollLock = !!(e as any).getModifierState('ScrollLock');
+                numLock = !!(e as any).getModifierState('NumLock');
+            }
+            const isJollyNow = (hardwareCaps || scrollLock || numLock || (e && e.shiftKey)) && activeTool !== 'BIM_TracciaSegmento';
+
+            if (isJollyNow) {
+                if (best.entity.type === 'hatch' && best.entity.points) {
+                    const pts = best.entity.points;
+                    const isClosed = !best.entity.isLinear && best.entity.bimRenderMode !== 'parete_verticale' && best.entity.bimRenderMode !== 'parete_orizzontale';
+                    const limit = isClosed ? pts.length : pts.length - 1;
+                    list.length = 0;
+                    for (let i = 0; i < limit; i++) {
+                        const p1 = pts[i];
+                        const p2 = pts[(i + 1) % pts.length];
+                        list.push({ start: p1, end: p2, entity: best.entity, distance: best.distance });
+                    }
+                } else if (best.entity.type === 'line') {
+                    const chain = [best];
+                    const visited = new Set<string>([best.entity.id]);
+                    let foundMore = true;
+                    while (foundMore) {
+                        foundMore = false;
+                        for (const ent of entities) {
+                            if (ent.type === 'line' && !visited.has(ent.id)) {
+                                const isBimOrWall = ent.isBIM || ent.type === 'line' || (ent as any).type === 'muro' || (ent as any).type === 'BIM_Muro';
+                                if (!isBimOrWall) continue;
+                                for (const item of chain) {
+                                    const d_ss = Math.hypot(ent.start.x - item.start.x, ent.start.y - item.start.y);
+                                    const d_se = Math.hypot(ent.start.x - item.end.x, ent.start.y - item.end.y);
+                                    const d_es = Math.hypot(ent.end.x - item.start.x, ent.end.y - item.start.y);
+                                    const d_ee = Math.hypot(ent.end.x - item.end.x, ent.end.y - item.end.y);
+                                    const tolerance = 0.15;
+                                    if (d_ss < tolerance || d_se < tolerance || d_es < tolerance || d_ee < tolerance) {
+                                        chain.push({ start: ent.start, end: ent.end, entity: ent, distance: 0 });
+                                        visited.add(ent.id);
+                                        foundMore = true;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    list.length = 0;
+                    list.push(...chain);
+                }
+            }
+            setHoveredBIMSegments(list);
+        } else {
+            setHoveredBIMSegments([]);
+        }
+    } else {
+        if (hoveredBIMSegments.length > 0) {
+            setHoveredBIMSegments([]);
+        }
+    }
 
     if (activeTool === 'Dimension' && selectionMode === 'object') {
         const ent = getEntityAtPoint(rawPoint);
@@ -13843,6 +14645,62 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
   let helpContent = null;
   let helpTitle = activeTool;
 
+  if (activeTool === 'BIM_TracciaSegmento' || activeTool === 'BIM_DisegnaLineare') {
+      helpTitle = activeTool === 'BIM_TracciaSegmento' ? "Traccia Segmento" : "Tracciato Perimetro";
+      helpContent = (
+          <div className="flex flex-col gap-3">
+             <div className="text-xs font-medium text-neutral-200">
+                <strong className="text-emerald-400 block mb-1">
+                  {activeTool === 'BIM_TracciaSegmento' ? "Rilevamento Segmento BIM" : "Rilievo Perimetrale"}
+                </strong>
+                {activeTool === 'BIM_TracciaSegmento' 
+                  ? "Seleziona uno o più segmenti degli oggetti BIM esistenti per tracciare il perimetro."
+                  : "Clicca i punti per definire il perimetro. Torna al punto iniziale per chiudere."}
+                {manualRoomPoints.length > 0 && (
+                  <p className="mt-2 text-emerald-300 font-bold">
+                    Punti raccolti: {manualRoomPoints.length}. Clicca "CONFERMA" per finire.
+                  </p>
+                )}
+             </div>
+             {manualRoomPoints.length > 0 && (
+                <div className="flex items-center gap-2 bg-white/10 rounded-xl p-2 pl-3" onPointerDown={e => e.stopPropagation()}>
+                   <button 
+                     onClick={(e) => { 
+                        e.stopPropagation();
+                        if (onAreaDetected) {
+                            onAreaDetected({ 
+                                points: [...manualRoomPoints], 
+                                isLinear: true, 
+                                isJollyActive: false, 
+                                sideSign: manualSideSign,
+                                isFaceAligned: activeTool === 'BIM_TracciaSegmento'
+                            } as any);
+                            setManualRoomPoints([]);
+                            setActiveTool?.('Select');
+                        }
+                     }}
+                     className="bg-emerald-500 hover:bg-emerald-600 text-white px-4 py-1.5 rounded-lg text-xs font-black uppercase transition-transform active:scale-95 shadow-lg flex items-center gap-2"
+                   >
+                     <Check size={14} />
+                     CONFERMA
+                   </button>
+                   <button 
+                     onClick={(e) => { 
+                        e.stopPropagation();
+                        setManualRoomPoints([]);
+                        setActiveTool?.('Select');
+                     }}
+                     className="bg-white/10 hover:bg-white/20 text-neutral-300 px-3 py-1.5 rounded-lg text-xs font-bold transition-colors flex items-center gap-2"
+                   >
+                     <X size={14} />
+                     ANNULLA
+                   </button>
+                </div>
+             )}
+          </div>
+      );
+  }
+
   if (activeTool === 'Specchio') {
       helpContent = (
           <div className="flex flex-col gap-3">
@@ -13884,6 +14742,25 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
   }
 
 
+  const handleDoubleClick = (e: React.MouseEvent) => {
+    const rect = containerRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    const x = (e.clientX - rect.left - view.pan.x) / view.zoom;
+    const y = (e.clientY - rect.top - view.pan.y) / view.zoom;
+    const pt = { x, y };
+
+    const clickedEntity = getEntityAtPoint(pt);
+    if (clickedEntity && clickedEntity.isBIM) {
+      setBimFlashIds([clickedEntity.id]);
+      // Remove after 3 seconds or keep until next interaction? 
+      // The user says "si deve evidenziare... in maniera univoca", maybe it stays until another click?
+      // Let's keep it for a while then fade out.
+      setTimeout(() => {
+        setBimFlashIds([]);
+      }, 5000);
+    }
+  };
+
   return (
     <div 
       ref={containerRef} 
@@ -13893,6 +14770,7 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
       onMouseDown={handleMouseDown} 
       onMouseMove={handleMouseMove} 
       onMouseUp={handleMouseUp} 
+      onDoubleClick={handleDoubleClick}
       onContextMenu={handleContextMenu}
       onDragOver={handleDragOver}
       onDrop={handleDrop}

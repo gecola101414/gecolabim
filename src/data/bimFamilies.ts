@@ -14,7 +14,8 @@ export const BIM_FAMILIES: BIMFamily[] = [
   { id: 'murature_portanti', name: 'Murature Portanti', description: 'Muri maestri in mattoni o blocchi', defaultColor: '#b91c1c', category: 'architettura' },
   { id: 'tramezzature', name: 'Tramezzature', description: 'Pareti divisorie interne in laterizio', defaultColor: '#ef4444', category: 'architettura' },
   { id: 'cartongesso', name: 'Pareti in Cartongesso', description: 'Sistemi a secco e contropareti', defaultColor: '#fbbf24', category: 'architettura' },
-  { id: 'intonaci', name: 'Intonaci', description: 'Rivestimenti grezzi e finiti per pareti', defaultColor: '#f3f4f6', category: 'finiture' },
+  { id: 'intonaco_completo', name: 'Intonaco completo', description: 'Intonaco di fondo e finitura (civile)', defaultColor: '#f3f4f6', category: 'finiture' },
+  { id: 'intonaco_rustico', name: 'Intonaco rustico', description: 'Intonaco grezzo a superficie irregolare', defaultColor: '#b0aca8', category: 'finiture' },
   { id: 'pitture', name: 'Opere da Pittore', description: 'Tinteggiature, smalti e decorazioni', defaultColor: '#60a5fa', category: 'finiture' },
   { id: 'rivestimenti', name: 'Rivestimenti', description: 'Piastrelle ceramiche e pietre a parete', defaultColor: '#34d399', category: 'finiture' },
   { id: 'pavimenti', name: 'Pavimenti', description: 'Gres, parquet, marmi e resine', defaultColor: '#d97706', category: 'finiture' },
@@ -29,5 +30,7 @@ export const BIM_FAMILIES: BIMFamily[] = [
   { id: 'scale_parapetti', name: 'Scale e Parapetti', description: 'Strutture di collegamento verticale', defaultColor: '#475569', category: 'architettura' },
   { id: 'arredo_bagno', name: 'Arredo Bagno', description: 'Sanitari e rubinetterie', defaultColor: '#6ee7b7', category: 'architettura' },
   { id: 'solaio_interpiano', name: 'Solaio Interpiano', description: 'Solai in laterocemento o legno', defaultColor: '#1f2937', category: 'struttura' },
-  { id: 'coperture', name: 'Coperture', description: 'Tetti a falde o piani', defaultColor: '#065f46', category: 'architettura' }
+  { id: 'coperture', name: 'Coperture', description: 'Tetti a falde o piani', defaultColor: '#065f46', category: 'architettura' },
+  { id: 'casseri_ca', name: 'Casseri C.A.', description: 'Casseri per cemento armato con tiranti', defaultColor: '#854d0e', category: 'struttura' },
+  { id: 'pavimenti_50x100', name: 'Pavimenti 50x100', description: 'Gres porcellanato formato 50x100 cm', defaultColor: '#92400e', category: 'finiture' }
 ];

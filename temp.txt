@@ -1,2 +1,86 @@
-    } else if (activeTool === 'Hatch') {
-  } else if (activeTool === 'Hatch') {
+2881:  const [hoveredId, setHoveredId] = useState<string | null>(null);
+3839:          className="p-3 hover:bg-slate-100 rounded-xl text-slate-400 hover:text-red-500 transition-all active:scale-95"
+3847:          <button className="p-1 rounded hover:bg-slate-100 text-slate-500" title="Muri"><Box size={16} /></button>
+3848:          <button className="p-1 rounded hover:bg-slate-100 text-slate-500" title="Porte"><Edit size={16} /></button>
+3849:          <button className="p-1 rounded hover:bg-slate-100 text-slate-500" title="Finestre"><Maximize size={16} /></button>
+3856:          className="p-3 hover:bg-slate-100 rounded-xl text-slate-400 hover:text-cyan-600 transition-all active:scale-95"
+3864:          className={`p-3 rounded-xl transition-all active:scale-95 ${viewMode === 'TOP' ? 'bg-cyan-500 text-white shadow-lg shadow-cyan-200' : 'hover:bg-slate-100 text-slate-400'}`}
+3890:              : 'hover:bg-slate-50 text-slate-400 border-transparent hover:text-amber-500'
+3904:            className={`p-2.5 rounded-lg transition-all ${isSectionMode ? 'bg-purple-500 text-white shadow-lg shadow-purple-200' : 'hover:bg-white text-slate-400'}`}
+3922:            className={`p-2.5 rounded-lg transition-all ${isSlicing ? 'bg-indigo-500 text-white shadow-lg shadow-indigo-200' : 'hover:bg-white text-slate-400'}`}
+3931:              className={`p-2.5 rounded-lg transition-all flex items-center gap-1.5 ${showSectionConfig ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-200' : 'hover:bg-white text-slate-400'}`}
+3946:                  className={`p-2 rounded-md transition-all ${slicingMode === 'HIDE_ABOVE' ? 'bg-indigo-100 text-indigo-600' : 'text-slate-400 hover:text-slate-600'}`}
+3953:                  className={`p-2 rounded-md transition-all ${slicingMode === 'HIDE_BELOW' ? 'bg-indigo-100 text-indigo-600' : 'text-slate-400 hover:text-slate-600'}`}
+3960:                  className={`p-2 rounded-md transition-all ${slicingMode === 'WINDOW' ? 'bg-indigo-100 text-indigo-600' : 'text-slate-400 hover:text-slate-600'}`}
+3971:                className={`p-2.5 rounded-lg transition-all ${isAutoSlicing ? 'bg-emerald-500 text-white shadow-lg shadow-emerald-100' : 'hover:bg-white text-emerald-600'}`}
+4018:              : 'hover:bg-slate-50 hover:text-indigo-600 text-slate-500 border-transparent'
+4106:              : 'hover:bg-slate-50 text-slate-600 border border-transparent'
+4120:              : 'hover:bg-slate-50 text-slate-600 border border-transparent'
+4134:              : 'hover:bg-slate-50 text-slate-600 border border-transparent'
+4148:              : 'hover:bg-slate-50 text-slate-600 border border-transparent'
+4164:              : 'hover:bg-slate-50 text-slate-600 border border-transparent'
+4178:              : 'hover:bg-slate-50 text-slate-600 border border-transparent'
+4194:              : 'hover:bg-slate-50 text-slate-600 border border-transparent'
+4225:                className="p-1.5 rounded-lg bg-slate-100 text-slate-500 hover:bg-indigo-50 hover:text-indigo-600 transition-all ml-2"
+4233:              className="text-slate-300 hover:text-slate-600 transition-colors cursor-pointer p-1 hover:bg-slate-50 rounded-lg"
+4256:                    <div className="p-3 flex items-center justify-between gap-2 hover:bg-slate-100/50 transition duration-200">
+4293:                              ? 'bg-amber-500/10 text-amber-500 hover:bg-amber-500/20' 
+4294:                              : 'bg-slate-200/60 text-slate-400 hover:bg-slate-200'
+4315:                              ? 'bg-amber-500/15 text-amber-600 hover:bg-amber-500/25' 
+4316:                              : 'bg-slate-200/60 text-slate-400 hover:bg-slate-200'
+4334:                          className="p-1.5 rounded-lg text-rose-500 hover:bg-rose-50 transition-all duration-200 cursor-pointer"
+4353:                              className={`pl-6 pr-3 py-2 flex items-center justify-between gap-2 hover:bg-indigo-50/20 transition duration-150 ${
+4385:                                     isMemVisible ? 'text-amber-500 hover:bg-amber-50' : 'text-slate-355 hover:bg-slate-100'
+4401:                                     isMemFrozen ? 'text-amber-600 hover:bg-amber-50' : 'text-slate-350 hover:bg-slate-100'
+4417:                                     isMemSelected ? 'text-indigo-600 bg-indigo-50' : 'text-slate-350 hover:bg-slate-100 hover:text-slate-700'
+4427:                                   className="p-1 rounded-md text-slate-350 hover:bg-slate-100 hover:text-slate-700 transition duration-150 cursor-pointer"
+4436:                                   className="p-1 rounded-md text-rose-450 hover:bg-rose-50 transition duration-150 cursor-pointer"
+4471:            <button onClick={() => setShowSectionConfig(false)} className="text-slate-350 hover:text-slate-600 transition-colors cursor-pointer">
+4490:                      : 'text-slate-600 hover:text-slate-850'
+4501:                      : 'text-slate-600 hover:text-slate-850'
+4520:                      hatchPatternMode === 'diagonal' ? 'bg-indigo-600 text-white shadow-xs' : 'text-slate-600 hover:bg-slate-100'
+4529:                      hatchPatternMode === 'horizontal' ? 'bg-indigo-600 text-white shadow-xs' : 'text-slate-600 hover:bg-slate-100'
+4538:                      hatchPatternMode === 'vertical' ? 'bg-indigo-600 text-white shadow-xs' : 'text-slate-600 hover:bg-slate-100'
+4547:                      hatchPatternMode === 'cross' ? 'bg-indigo-600 text-white shadow-xs' : 'text-slate-600 hover:bg-slate-100'
+4637:                  className="p-1 px-1.5 text-left bg-slate-50 hover:bg-indigo-50 hover:text-indigo-600 rounded-lg text-[9px] font-bold text-slate-600 transition-colors border border-slate-100 cursor-pointer"
+4652:                  className="p-1 px-1.5 text-left bg-slate-50 hover:bg-indigo-50 hover:text-indigo-600 rounded-lg text-[9px] font-bold text-slate-600 transition-colors border border-slate-100 cursor-pointer"
+4667:                  className="p-1 px-1.5 text-left bg-slate-50 hover:bg-indigo-50 hover:text-indigo-600 rounded-lg text-[9px] font-bold text-slate-600 transition-colors border border-slate-100 cursor-pointer"
+4683:                  className="p-1 px-1.5 text-left bg-slate-50 hover:bg-indigo-50 hover:text-indigo-600 rounded-lg text-[9px] font-bold text-slate-600 transition-colors border border-slate-100 cursor-pointer"
+4724:                      hatchBgColorMode === 'white' ? 'bg-indigo-600 text-white shadow-xs' : 'text-slate-600 hover:bg-slate-100'
+4734:                      hatchBgColorMode === 'entity' ? 'bg-indigo-600 text-white shadow-xs' : 'text-slate-600 hover:bg-slate-100'
+4744:                      hatchBgColorMode === 'gray' ? 'bg-indigo-600 text-white shadow-xs' : 'text-slate-600 hover:bg-slate-100'
+4754:                      hatchBgColorMode === 'custom' ? 'bg-indigo-600 text-white shadow-xs' : 'text-slate-600 hover:bg-slate-100'
+4800:                className="flex-1 py-1.5 rounded-xl text-center bg-emerald-50 hover:bg-emerald-100 text-emerald-700 text-[10px] font-extrabold uppercase tracking-widest transition-colors cursor-pointer border border-emerald-100"
+4817:                className="py-1.5 px-3 rounded-xl text-center bg-slate-100 hover:bg-slate-200 text-slate-600 text-[10px] font-extrabold uppercase tracking-widest transition-colors cursor-pointer"
+4846:            <button onClick={() => setInspectorOpen(false)} className="text-slate-300 hover:text-slate-600 transition-colors cursor-pointer">
+4866:                        className="py-2.5 bg-white border border-slate-200 hover:border-amber-400 hover:text-amber-600 active:scale-95 text-slate-700 rounded-xl font-bold text-xs transition-all shadow-sm cursor-pointer"
+4890:                className="w-full py-3.5 bg-gradient-to-r from-amber-500 via-orange-500 to-indigo-600 text-white font-black rounded-3xl shadow-lg shadow-amber-500/10 hover:shadow-indigo-500/20 active:scale-95 transition-all text-xs uppercase tracking-wider flex items-center justify-center gap-2 mb-1 cursor-pointer border-none shrink-0"
+4962:                          className={`p-2 rounded-xl transition-all duration-300 ${!isElementVisible ? 'bg-slate-200 text-slate-400' : 'bg-cyan-100 text-cyan-700 hover:bg-cyan-200'}`}
+4970:                          className={`p-2 rounded-xl transition-all duration-300 ${isElementFrozen ? 'bg-amber-100 text-amber-700 hover:bg-amber-200' : 'bg-slate-100 text-slate-400 hover:bg-slate-200'}`}
+4978:                          className="p-2 rounded-xl transition-all duration-300 bg-rose-50 text-rose-600 hover:bg-rose-100"
+4999:                          className={`p-2 rounded-xl transition-all duration-300 ${!isFamilyVisible ? 'bg-slate-200 text-slate-400' : 'bg-cyan-600/10 text-cyan-700 hover:bg-cyan-600/20'}`}
+5007:                          className={`p-2 rounded-xl transition-all duration-300 ${isFamilyFrozen ? 'bg-amber-100 text-amber-700 hover:bg-amber-200' : 'bg-slate-100 text-slate-400 hover:bg-slate-200'}`}
+5015:                          className="p-2 rounded-xl transition-all duration-300 bg-rose-100 text-rose-700 hover:bg-rose-200"
+5176:                  className="flex-1 py-4 bg-slate-900 text-white rounded-2xl font-black text-xs uppercase tracking-widest hover:bg-black transition-all shadow-xl shadow-slate-100 flex items-center justify-center gap-2 cursor-pointer"
+5184:                    ? 'bg-indigo-50 hover:bg-indigo-100 text-indigo-600 border-indigo-100' 
+5185:                    : 'bg-white hover:bg-slate-50 text-slate-400 border-slate-200 shadow-sm'
+5193:                  className="px-4 py-4 bg-rose-50 hover:bg-rose-100 text-rose-600 rounded-2xl font-black transition-all flex items-center justify-center cursor-pointer border border-rose-100"
+5228:                    className="p-2.5 bg-white hover:bg-slate-100 active:scale-95 text-slate-600 hover:text-cyan-500 transition-all rounded-xl border border-slate-200 shadow-sm cursor-pointer"
+5238:                      className="p-2.5 bg-white hover:bg-slate-100 active:scale-95 text-slate-600 hover:text-cyan-500 transition-all rounded-xl border border-slate-200 shadow-sm cursor-pointer"
+5247:                      className="px-4 py-2.5 bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-600 hover:to-teal-600 font-black text-[10px] text-white rounded-xl shadow-md cursor-pointer transition-all active:scale-95 uppercase tracking-wider"
+5256:                      className="p-2.5 bg-white hover:bg-slate-100 active:scale-95 text-slate-600 hover:text-cyan-500 transition-all rounded-xl border border-slate-200 shadow-sm cursor-pointer"
+5266:                    className="p-2.5 bg-white hover:bg-slate-100 active:scale-95 text-slate-600 hover:text-cyan-500 transition-all rounded-xl border border-slate-200 shadow-sm cursor-pointer"
+5291:                    ? 'bg-rose-50 hover:bg-rose-100 text-rose-600 border-rose-100 shadow-sm' 
+5292:                    : 'bg-white hover:bg-slate-50 text-slate-400 border-slate-200'
+5315:                    ? 'bg-amber-500 hover:bg-amber-600 text-white border-amber-600 shadow-lg shadow-amber-200' 
+5316:                    : 'bg-white hover:bg-slate-50 text-slate-800 border-slate-200 shadow-sm'
+5355:                                  : 'bg-slate-100 hover:bg-slate-200 text-slate-600'
+5401:                              : 'bg-slate-100 hover:bg-slate-200 text-slate-500'
+5417:                            className="py-1 rounded-md text-[9px] font-black bg-slate-50 hover:bg-slate-100 text-slate-500 border border-slate-200/50"
+5464:                              : 'bg-slate-50 hover:bg-slate-100 text-slate-500'
+5493:                      className={`py-2 rounded-xl text-[10px] font-black uppercase tracking-wider transition-transform ${csgTargetEntity ? 'bg-gradient-to-br from-indigo-500 to-indigo-600 hover:from-indigo-600 hover:to-indigo-700 text-white shadow-md shadow-indigo-200 cursor-pointer active:scale-95' : 'bg-slate-100 text-slate-300 cursor-not-allowed'}`}
+5500:                      className={`py-2 rounded-xl text-[10px] font-black uppercase tracking-wider transition-transform ${csgTargetEntity ? 'bg-gradient-to-br from-rose-500 to-rose-600 hover:from-rose-600 hover:to-rose-700 text-white shadow-md shadow-rose-200 cursor-pointer active:scale-95' : 'bg-slate-100 text-slate-300 cursor-not-allowed'}`}
+5533:                : 'text-slate-400 hover:text-slate-600 hover:bg-white/50'
+5547:                : 'text-slate-400 hover:text-slate-600 hover:bg-white/50'
+5707:              hoverColor="#6366f1"
+5793:              const isHovered = hoveredId === entity.id;

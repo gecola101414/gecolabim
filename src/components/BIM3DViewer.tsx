@@ -3,7 +3,7 @@ import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { OrbitControls, PerspectiveCamera, OrthographicCamera, Grid, Stars, Float, Text, Html, ContactShadows, Environment, Edges, GizmoHelper, GizmoViewcube, Line } from '@react-three/drei';
 
 import * as THREE from 'three';
-import { Entity, Point, LineEntity, RectEntity, Floor } from '../types';
+import { Entity, Point, LineEntity, RectEntity, Floor, CircleEntity, ArcEntity, TextEntity, DimensionEntity, PointEntity, HatchEntity, ImageEntity } from '../types';
 import { createBIMMaterialTexture } from '../utils/materialTextures';
 import { X, ZoomIn, ZoomOut, RotateCw, Box, Layers, Database, Maximize, Home, Compass, Eye, EyeOff, Lightbulb, LightbulbOff, Info, Settings, MousePointer2, Move, Scissors, Play, Pause, RefreshCw, ArrowDown, ArrowUp, ArrowLeft, ArrowRight, Edit, Trash2, Wand2, Lock, Unlock, FolderTree, ChevronDown, ChevronRight, Sliders, Layers3, Camera, Sparkles } from 'lucide-react';
 import { BIMElementDialog, PorteDialog, FinestreDialog } from './BIMDialogs';
@@ -15,6 +15,11 @@ interface BIM3DViewerProps {
   onClose: () => void;
   setEntities: React.Dispatch<React.SetStateAction<Entity[]>> | ((updater: (prev: Entity[]) => Entity[]) => void);
   floors?: Floor[];
+  isStratifiedView: boolean;
+  setIsStratifiedView: (val: boolean) => void;
+  isFaceSurveyMode?: boolean;
+  onCreateFaceFinish?: (points: Point[], isLinear: boolean, zPlane: number, objectHeight: number) => void;
+  onShowToast?: (msg: string) => void;
 }
 
 const getRoomAreaMq = (roomPoints: Point[]): number => {
@@ -40,6 +45,240 @@ const getRoomPerimeterM = (roomPoints: Point[]): number => {
     perimeter += Math.sqrt(dx*dx + dy*dy);
   }
   return perimeter / 100;
+};
+
+const isCoatingElement = (e: any): boolean => {
+  const nameLower = (e.bimName || e.name || '').toLowerCase();
+  const familyLower = (e.bimFamily || e.bimAreaType || e.bimFamilyId || '').toLowerCase();
+  return familyLower.includes('intonac') || 
+         familyLower.includes('rivest') ||
+         familyLower.includes('pittur') ||
+         familyLower.includes('tinteg') ||
+         familyLower.includes('isolam') ||
+         familyLower.includes('cappott') ||
+         familyLower.includes('finitur') ||
+         familyLower.includes('plaster') ||
+         nameLower.includes('intonac') ||
+         nameLower.includes('rivest') ||
+         nameLower.includes('pittur') ||
+         nameLower.includes('tinteg') ||
+         nameLower.includes('cappott') ||
+         nameLower.includes('isolam');
+};
+
+const getCoincidentStackedOffset = (e: any, entities: any[]): { offsetZ: number, baseWallWidth: number } => {
+  const isCoating = isCoatingElement(e);
+  if (!isCoating) {
+    return { offsetZ: 0, baseWallWidth: 0 };
+  }
+
+  const ePoints = e.bimPoints || e.points || [];
+  if (ePoints.length < 2) return { offsetZ: 0, baseWallWidth: 0 };
+
+  const firstPt = ePoints[0];
+  const lastPt = ePoints[ePoints.length - 1];
+
+  // Find the coincident base wall
+  let baseWall: any = null;
+  const tolerance = 10.0; // 10 cm tolerance for coincidence
+
+  for (const w of entities) {
+    if (w.id === e.id) continue;
+    
+    // A base wall is an element of type 'wall' or whose family/name contains wall/muro/parete, and is NOT a coating itself
+    const isWallType = w.bimType === 'wall' || 
+                       w.bimAreaType === 'muro' || 
+                       (w.bimFamily || '').toLowerCase().includes('muro') || 
+                       (w.bimFamily || '').toLowerCase().includes('parete');
+                       
+    if (!isWallType) continue;
+    if (isCoatingElement(w)) continue;
+
+    let wPoints = w.bimPoints || w.points || [];
+    if (wPoints.length === 0 && w.type === 'line' && w.start && w.end) {
+      wPoints = [w.start, w.end];
+    }
+    if (wPoints.length < 2) continue;
+
+    const wFirst = wPoints[0];
+    const wLast = wPoints[wPoints.length - 1];
+
+    const d1 = Math.hypot(firstPt.x - wFirst.x, firstPt.y - wFirst.y);
+    const d2 = Math.hypot(lastPt.x - wLast.x, lastPt.y - wLast.y);
+    const d3 = Math.hypot(firstPt.x - wLast.x, firstPt.y - wLast.y);
+    const d4 = Math.hypot(lastPt.x - wFirst.x, lastPt.y - wFirst.y);
+
+    if ((d1 < tolerance && d2 < tolerance) || (d3 < tolerance && d4 < tolerance)) {
+      baseWall = w;
+      break;
+    }
+  }
+
+  // Fallback: look for ANY non-coating wall extremely close
+  if (!baseWall) {
+    for (const w of entities) {
+      if (w.id === e.id) continue;
+      
+      const isWallType = w.bimType === 'wall' || 
+                         w.bimAreaType === 'muro' || 
+                         (w.bimFamily || '').toLowerCase().includes('muro') || 
+                         (w.bimFamily || '').toLowerCase().includes('parete');
+                         
+      if (!isWallType) continue;
+      if (isCoatingElement(w)) continue;
+
+      let wPoints = w.bimPoints || w.points || [];
+      if (wPoints.length === 0 && w.type === 'line' && w.start && w.end) {
+        wPoints = [w.start, w.end];
+      }
+      if (wPoints.length < 2) continue;
+
+      const eMid = { x: (firstPt.x + lastPt.x) / 2, y: (firstPt.y + lastPt.y) / 2 };
+      const wMid = { x: (wPoints[0].x + wPoints[wPoints.length - 1].x) / 2, y: (wPoints[0].y + wPoints[wPoints.length - 1].y) / 2 };
+      const dist = Math.hypot(eMid.x - wMid.x, eMid.y - wMid.y);
+      if (dist < 15.0) {
+        baseWall = w;
+        break;
+      }
+    }
+  }
+
+  const baseWallWidth = baseWall ? (baseWall.bimWidth || baseWall.width || 15) : 15;
+  const sideSign = e.sideSign !== undefined ? e.sideSign : 1;
+
+  // Find all OTHER coincident coatings on the SAME side
+  const otherCoatings: any[] = [];
+  for (const ent of entities) {
+    if (ent.id === e.id) continue;
+    if (!isCoatingElement(ent)) continue;
+
+    let entPoints = ent.bimPoints || ent.points || [];
+    if (entPoints.length === 0 && ent.type === 'line' && ent.start && ent.end) {
+      entPoints = [ent.start, ent.end];
+    }
+    if (entPoints.length < 2) continue;
+
+    const entFirst = entPoints[0];
+    const entLast = entPoints[entPoints.length - 1];
+
+    const d1 = Math.hypot(firstPt.x - entFirst.x, firstPt.y - entFirst.y);
+    const d2 = Math.hypot(lastPt.x - entLast.x, lastPt.y - entLast.y);
+    const d3 = Math.hypot(firstPt.x - entLast.x, firstPt.y - entLast.y);
+    const d4 = Math.hypot(lastPt.x - entFirst.x, lastPt.y - entFirst.y);
+
+    if ((d1 < tolerance && d2 < tolerance) || (d3 < tolerance && d4 < tolerance)) {
+      const entSideSign = ent.sideSign !== undefined ? ent.sideSign : 1;
+      if (entSideSign === sideSign) {
+        otherCoatings.push(ent);
+      }
+    }
+  }
+
+  // Sort other coatings to determine which ones should be rendered under 'e'
+  const getCoatingPriority = (ent: any): number => {
+    const n = (ent.bimName || ent.name || '').toLowerCase();
+    const f = (ent.bimFamily || ent.bimAreaType || ent.bimFamilyId || '').toLowerCase();
+    
+    if (f.includes('isolam') || f.includes('cappott') || n.includes('isolam') || n.includes('cappott')) {
+      return 1;
+    }
+    if (f.includes('intonac') || n.includes('intonac') || f.includes('plaster')) {
+      return 2;
+    }
+    if (f.includes('rivest') || n.includes('rivest')) {
+      return 3;
+    }
+    if (f.includes('pittur') || n.includes('pittur') || f.includes('tinteg') || n.includes('tinteg')) {
+      return 4;
+    }
+    return 5;
+  };
+
+  const currentPriority = getCoatingPriority(e);
+
+  const innerCoatings = otherCoatings.filter(ent => {
+    const entPriority = getCoatingPriority(ent);
+    if (entPriority < currentPriority) return true;
+    if (entPriority === currentPriority) {
+      const t1 = ent.timestamp || 0;
+      const t2 = e.timestamp || 0;
+      return t1 < t2;
+    }
+    return false;
+  });
+
+  let previousThicknessSum = 0;
+  for (const ent of innerCoatings) {
+    const entThickness = (ent.bimWidth || ent.width || 2) / 100;
+    previousThicknessSum += entThickness;
+  }
+
+  const thisThickness = (e.bimWidth || e.width || 2) / 100;
+  const baseWallMeters = e.isFaceAligned ? 0 : (baseWallWidth / 100);
+
+  const offsetZ = (baseWallMeters / 2 + previousThicknessSum + thisThickness / 2 + 0.002) * sideSign;
+
+  return { offsetZ, baseWallWidth: e.isFaceAligned ? 0 : baseWallWidth };
+};
+
+const getCoincidentWallThickness = (e: any, entities: any[]): number => {
+  const isPlaster = isCoatingElement(e);
+  if (!isPlaster) return 0;
+
+  const ePoints = e.bimPoints || e.points || [];
+  if (ePoints.length < 2) return 0;
+
+  const firstPt = ePoints[0];
+  const lastPt = ePoints[ePoints.length - 1];
+
+  for (const w of entities) {
+    if (w.id === e.id) continue;
+    const isWall = w.bimType === 'wall' || w.bimAreaType === 'muro' || (w.bimFamily || '').toLowerCase().includes('muro') || (w.bimFamily || '').toLowerCase().includes('parete');
+    if (!isWall) continue;
+    if (isCoatingElement(w)) continue; // skip other coatings
+
+    let wPoints = w.bimPoints || w.points || [];
+    if (wPoints.length === 0 && w.type === 'line' && w.start && w.end) {
+      wPoints = [w.start, w.end];
+    }
+    if (wPoints.length < 2) continue;
+
+    const wFirst = wPoints[0];
+    const wLast = wPoints[wPoints.length - 1];
+
+    // Check if they are substantially the same line/segment
+    const d1 = Math.hypot(firstPt.x - wFirst.x, firstPt.y - wFirst.y);
+    const d2 = Math.hypot(lastPt.x - wLast.x, lastPt.y - wLast.y);
+    const d3 = Math.hypot(firstPt.x - wLast.x, firstPt.y - wLast.y);
+    const d4 = Math.hypot(lastPt.x - wFirst.x, lastPt.y - wFirst.y);
+
+    const tolerance = 10.0; // 10 cm tolerance
+    if ((d1 < tolerance && d2 < tolerance) || (d3 < tolerance && d4 < tolerance)) {
+      return w.bimWidth || w.width || 15;
+    }
+  }
+
+  for (const w of entities) {
+    if (w.id === e.id) continue;
+    const isWall = w.bimType === 'wall' || w.bimAreaType === 'muro' || (w.bimFamily || '').toLowerCase().includes('muro') || (w.bimFamily || '').toLowerCase().includes('parete');
+    if (!isWall) continue;
+    if (isCoatingElement(w)) continue;
+
+    let wPoints = w.bimPoints || w.points || [];
+    if (wPoints.length === 0 && w.type === 'line' && w.start && w.end) {
+      wPoints = [w.start, w.end];
+    }
+    if (wPoints.length < 2) continue;
+
+    const eMid = { x: (firstPt.x + lastPt.x) / 2, y: (firstPt.y + lastPt.y) / 2 };
+    const wMid = { x: (wPoints[0].x + wPoints[wPoints.length - 1].x) / 2, y: (wPoints[0].y + wPoints[wPoints.length - 1].y) / 2 };
+    const dist = Math.hypot(eMid.x - wMid.x, eMid.y - wMid.y);
+    if (dist < 15.0) {
+      return w.bimWidth || w.width || 15;
+    }
+  }
+
+  return 0;
 };
 
 const translateEntityPoints = (ent: any, dx: number, dy: number, dz: number = 0): any => {
@@ -582,6 +821,206 @@ const HatchCappingShapeMesh = ({
   );
 };
 
+const WallSegmentMesh = React.memo(({
+  seg, 
+  realisticTextures, 
+  color, 
+  renderMode, 
+  finalOpacity, 
+  bimFamilyId, 
+  clippingPlanes 
+}: {
+  seg: any,
+  realisticTextures: any,
+  color: string,
+  renderMode: string,
+  finalOpacity: number,
+  bimFamilyId?: string,
+  clippingPlanes: THREE.Plane[]
+}) => {
+  const materials = useMemo(() => {
+    const matProps = {
+      color: color,
+      transparent: renderMode === 'transparent' || finalOpacity < 1,
+      wireframe: renderMode === 'transparent',
+      opacity: renderMode === 'transparent' ? 0.3 : finalOpacity,
+      metalness: 0.1,
+      roughness: 0.8,
+      envMapIntensity: 0.5,
+      clippingPlanes: clippingPlanes,
+      clipShadows: true,
+      side: THREE.DoubleSide
+    };
+
+    if (!realisticTextures) {
+      return new THREE.MeshStandardMaterial({
+        ...matProps,
+        metalness: 0.15,
+        roughness: 0.4,
+        envMapIntensity: 1
+      });
+    }
+
+    const sideTex = realisticTextures.side.clone();
+    const topTex = realisticTextures.top.clone();
+    const endTex = realisticTextures.side.clone();
+    
+    const wallWidthCm = Math.round(seg.args[2] * 100);
+
+    // Side Scaling
+    const sideScaleX = realisticTextures?.type === 'tiles' ? 1.0 : (bimFamilyId === 'tramezzature' ? 0.25 : 0.40);
+    const sideScaleY = realisticTextures?.type === 'tiles' ? 1.0 : 0.25;
+    const sideRepeatX = seg.args[0] / sideScaleX;
+    const sideRepeatY = seg.args[1] / sideScaleY;
+    sideTex.repeat.set(sideRepeatX, sideRepeatY);
+    sideTex.needsUpdate = true;
+
+    // End Scaling
+    const endScaleX = realisticTextures?.type === 'tiles' ? 1.0 : 0.30;
+    const endRepeatX = realisticTextures?.type === 'tiles' ? Math.max(1, seg.args[2] / endScaleX) : (wallWidthCm <= 42 ? 1 : (wallWidthCm <= 82 ? 2 : Math.max(1, seg.args[2] / endScaleX)));
+    endTex.repeat.set(endRepeatX, sideRepeatY);
+    endTex.needsUpdate = true;
+
+    // Top Scaling (Brick holes)
+    const topScaleX = realisticTextures?.type === 'tiles' ? 1.0 : 0.25;
+    const topScaleY = realisticTextures?.type === 'tiles' ? 1.0 : 0.30;
+    const topRepeatX = seg.args[0] / topScaleX;
+    const topRepeatY = realisticTextures?.type === 'tiles' ? Math.max(1, seg.args[2] / topScaleY) : (wallWidthCm <= 42 ? 1 : (wallWidthCm <= 82 ? 2 : Math.max(1, seg.args[2] / topScaleY)));
+    topTex.repeat.set(topRepeatX, topRepeatY);
+    topTex.needsUpdate = true;
+
+    return [
+      new THREE.MeshStandardMaterial({ ...matProps, map: endTex }), // +X (END)
+      new THREE.MeshStandardMaterial({ ...matProps, map: endTex }), // -X (END)
+      new THREE.MeshStandardMaterial({ ...matProps, map: topTex }),  // +Y (TOP)
+      new THREE.MeshStandardMaterial({ ...matProps, map: sideTex }), // -Y (BOTTOM)
+      new THREE.MeshStandardMaterial({ ...matProps, map: sideTex }), // +Z (SIDE)
+      new THREE.MeshStandardMaterial({ ...matProps, map: sideTex }), // -Z (SIDE)
+    ];
+  }, [seg.args, realisticTextures, color, renderMode, finalOpacity, bimFamilyId, clippingPlanes]);
+
+  // Clean up materials and textures on unmount
+  useEffect(() => {
+    return () => {
+      if (materials) {
+        if (Array.isArray(materials)) {
+          materials.forEach((mat) => {
+            if (mat.map) mat.map.dispose();
+            mat.dispose();
+          });
+        } else {
+          materials.dispose();
+        }
+      }
+    };
+  }, [materials]);
+
+  return (
+    <mesh position={seg.position} rotation={seg.rotation} material={materials} castShadow receiveShadow>
+      <boxGeometry args={seg.args} />
+    </mesh>
+  );
+});
+
+const RoomSegmentMesh = React.memo(({
+  seg, 
+  realisticTextures, 
+  color, 
+  renderMode, 
+  finalOpacity, 
+  clippingPlanes 
+}: {
+  seg: any,
+  realisticTextures: any,
+  color: string,
+  renderMode: string,
+  finalOpacity: number,
+  clippingPlanes: THREE.Plane[]
+}) => {
+  const materials = useMemo(() => {
+    const matProps = {
+      color: realisticTextures ? '#ffffff' : color,
+      transparent: finalOpacity < 1,
+      opacity: finalOpacity,
+      metalness: 0.1,
+      roughness: 0.8,
+      envMapIntensity: 0.5,
+      clippingPlanes: clippingPlanes,
+      clipShadows: true,
+      side: THREE.DoubleSide
+    };
+
+    if (!realisticTextures) {
+      return new THREE.MeshStandardMaterial({
+        ...matProps,
+        metalness: 0.15,
+        roughness: 0.4,
+        envMapIntensity: 1
+      });
+    }
+
+    const type = realisticTextures.type;
+    const sideTex = realisticTextures.side.clone();
+    const topTex = realisticTextures.top.clone();
+    const endTex = realisticTextures.side.clone();
+    
+    const wallWidthCm = Math.round(seg.args[2] * 100);
+
+    // Side Scaling
+    const sideScaleX = type === 'tiles' ? 1.0 : (type === 'partition' ? 0.25 : 0.40);
+    const sideScaleY = type === 'tiles' ? 1.0 : 0.25;
+    const sideRepeatX = seg.args[0] / sideScaleX;
+    const sideRepeatY = seg.args[1] / sideScaleY;
+    sideTex.repeat.set(sideRepeatX, sideRepeatY);
+    sideTex.needsUpdate = true;
+
+    // End Scaling
+    const endScaleX = type === 'tiles' ? 1.0 : 0.30;
+    const endRepeatX = type === 'tiles' ? Math.max(1, seg.args[2] / endScaleX) : (wallWidthCm <= 42 ? 1 : (wallWidthCm <= 82 ? 2 : Math.max(1, seg.args[2] / endScaleX)));
+    endTex.repeat.set(endRepeatX, sideRepeatY);
+    endTex.needsUpdate = true;
+
+    // Top Scaling
+    const topScaleX = type === 'tiles' ? 1.0 : 0.25;
+    const topScaleY = type === 'tiles' ? 1.0 : 0.30;
+    const topRepeatX = seg.args[0] / topScaleX;
+    const topRepeatY = type === 'tiles' ? Math.max(1, seg.args[2] / topScaleY) : (wallWidthCm <= 42 ? 1 : (wallWidthCm <= 82 ? 2 : Math.max(1, seg.args[2] / topScaleY)));
+    topTex.repeat.set(topRepeatX, topRepeatY);
+    topTex.needsUpdate = true;
+
+    return [
+      new THREE.MeshStandardMaterial({ ...matProps, map: endTex }), // +X (END)
+      new THREE.MeshStandardMaterial({ ...matProps, map: endTex }), // -X (END)
+      new THREE.MeshStandardMaterial({ ...matProps, map: topTex }),  // +Y (TOP)
+      new THREE.MeshStandardMaterial({ ...matProps, map: sideTex }), // -Y (BOTTOM)
+      new THREE.MeshStandardMaterial({ ...matProps, map: sideTex }), // +Z (SIDE)
+      new THREE.MeshStandardMaterial({ ...matProps, map: sideTex }), // -Z (SIDE)
+    ];
+  }, [seg.args, realisticTextures, color, finalOpacity, clippingPlanes]);
+
+  // Clean up materials and textures on unmount
+  useEffect(() => {
+    return () => {
+      if (materials) {
+        if (Array.isArray(materials)) {
+          materials.forEach((mat) => {
+            if (mat.map) mat.map.dispose();
+            mat.dispose();
+          });
+        } else {
+          materials.dispose();
+        }
+      }
+    };
+  }, [materials]);
+
+  return (
+    <mesh position={seg.position} rotation={seg.rotation} material={materials} castShadow receiveShadow>
+      <boxGeometry args={seg.args} />
+    </mesh>
+  );
+});
+
 export const Wall = ({ 
   points, 
   height, 
@@ -668,26 +1107,32 @@ export const Wall = ({
   const realisticTextures = useMemo(() => {
     const id = (bimFamilyId || '').toLowerCase().trim();
     if (!id) return null;
-    let type: 'concrete' | 'masonry' | 'partition' | 'plaster' | null = null;
-    if (id.includes('pilastri') || id.includes('fondazioni') || id.includes('solaio') || id.includes('c.a.')) {
+    let type: 'concrete' | 'masonry' | 'partition' | 'plaster' | 'plaster_rustic' | 'insulation' | 'tiles' | null = null;
+    if (id.includes('pilastri') || id.includes('fondazioni') || id.includes('solaio') || id.includes('c.a.') || id.includes('casseri')) {
       type = 'concrete';
     } else if (id.includes('murature') || id.includes('muro') || id.includes('portant') || id.includes('matton') || id.includes('svizzeri')) {
       type = 'masonry';
     } else if (id.includes('tramezz') || id.includes('divisori')) {
       type = 'partition';
-    } else if (id.includes('intonac') || id.includes('rivest') || id.includes('plaster') || id.includes('finitura')) {
+    } else if (id.includes('rivest') || id.includes('piastrell') || id.includes('tiles') || id.includes('ceramica')) {
+      type = 'tiles';
+    } else if (id.includes('intonaco_rustico') || id.includes('plaster_rustic')) {
+      type = 'plaster_rustic';
+    } else if (id.includes('intonac') || id.includes('plaster') || id.includes('finitura')) {
       type = 'plaster';
+    } else if (id.includes('isolam') || id.includes('cappott') || id.includes('coibent')) {
+      type = 'insulation';
     }
     
     if (type) {
       return {
-        side: createBIMMaterialTexture(type, 'side'),
-        top: createBIMMaterialTexture(type, 'top'),
+        side: createBIMMaterialTexture(type, 'side', color),
+        top: createBIMMaterialTexture(type, 'top', color),
         type
       };
     }
     return null;
-  }, [bimFamilyId]);
+  }, [bimFamilyId, color]);
 
   const finalOpacity = globalOpacityMode === 'SOLID' 
     ? 1.0 
@@ -754,63 +1199,15 @@ export const Wall = ({
         return (
           <group key={i}>
             {/* Solid Clipped Part */}
-            <mesh position={seg.position} rotation={seg.rotation} castShadow receiveShadow>
-              <boxGeometry args={seg.args} />
-              {realisticTextures ? (
-                (() => {
-                  const sideTex = realisticTextures.side.clone();
-                  const topTex = realisticTextures.top.clone();
-                  
-                  // Side Scaling
-                  const sideRepeatX = seg.args[0] / (bimFamilyId === 'tramezzature' ? 0.25 : 0.40);
-                  const sideRepeatY = seg.args[1] / 0.25;
-                  sideTex.repeat.set(sideRepeatX, sideRepeatY);
-                  sideTex.needsUpdate = true;
-
-                  // Top Scaling (Brick holes)
-                  // Typical Poroton block is 30x25 or 25x25
-                  const topRepeatX = seg.args[0] / 0.25;
-                  const topRepeatY = seg.args[2] / 0.30;
-                  topTex.repeat.set(topRepeatX, topRepeatY);
-                  topTex.needsUpdate = true;
-
-                  const matProps = {
-                    color: realisticTextures ? '#ffffff' : color,
-                    transparent: renderMode === 'transparent' || finalOpacity < 1,
-                    wireframe: renderMode === 'transparent',
-                    opacity: renderMode === 'transparent' ? 0.3 : finalOpacity,
-                    metalness: 0.1,
-                    roughness: 0.8,
-                    envMapIntensity: 0.5,
-                    clippingPlanes: clippingPlanes,
-                    clipShadows: true,
-                    side: THREE.DoubleSide
-                  };
-
-                  return [
-                    <meshStandardMaterial key="0" attach="material-0" map={sideTex} {...matProps} />, // +X
-                    <meshStandardMaterial key="1" attach="material-1" map={sideTex} {...matProps} />, // -X
-                    <meshStandardMaterial key="2" attach="material-2" map={topTex} {...matProps} />,  // +Y (TOP)
-                    <meshStandardMaterial key="3" attach="material-3" map={sideTex} {...matProps} />, // -Y (BOTTOM)
-                    <meshStandardMaterial key="4" attach="material-4" map={sideTex} {...matProps} />, // +Z
-                    <meshStandardMaterial key="5" attach="material-5" map={sideTex} {...matProps} />, // -Z
-                  ];
-                })()
-              ) : (
-                <meshStandardMaterial 
-                  color={color} 
-                  transparent={renderMode === 'transparent' || finalOpacity < 1}
-                  wireframe={renderMode === 'transparent'}
-                  opacity={renderMode === 'transparent' ? 0.3 : finalOpacity}
-                  metalness={0.155} 
-                  roughness={0.4} 
-                  envMapIntensity={1}
-                  clippingPlanes={clippingPlanes}
-                  clipShadows={true}
-                  side={THREE.DoubleSide}
-                />
-              )}
-            </mesh>
+            <WallSegmentMesh 
+              seg={seg}
+              realisticTextures={realisticTextures}
+              color={color}
+              renderMode={renderMode}
+              finalOpacity={finalOpacity}
+              bimFamilyId={bimFamilyId}
+              clippingPlanes={clippingPlanes}
+            />
             {/* Flat horizontal cap matching the cut exactly so there's no visual hollow space */}
             {segShowCapBottom && (
               <SmartCappingWrapper
@@ -915,7 +1312,11 @@ export const Room = ({
   hatchBgColorCustom = '#ffffff',
   hatchPatternMode = 'diagonal',
   parentPivot = [0, 0, 0],
-  parentRotation = [0, 0, 0]
+  parentRotation = [0, 0, 0],
+  coincidentWallWidth,
+  sideSign = 1,
+  coincidentOffset,
+  isFaceAligned = false
 }: { 
   points: Point[], 
   holes?: Point[][], 
@@ -946,7 +1347,11 @@ export const Room = ({
   hatchBgColorCustom?: string,
   hatchPatternMode?: 'diagonal' | 'horizontal' | 'vertical' | 'cross',
   parentPivot?: [number, number, number],
-  parentRotation?: [number, number, number]
+  parentRotation?: [number, number, number],
+  coincidentWallWidth?: number,
+  sideSign?: number,
+  coincidentOffset?: number,
+  isFaceAligned?: boolean
 }) => {
   const h = renderMode === 'parete_orizzontale' ? 0.03 : height / 100; // Convert to meters: 3cm symbolic thickness for horizontal walls
   const zBase = baseZ / 100;
@@ -954,26 +1359,32 @@ export const Room = ({
   const realisticTextures = useMemo(() => {
     const id = (bimFamilyId || '').toLowerCase().trim();
     if (!id) return null;
-    let type: 'concrete' | 'masonry' | 'partition' | 'plaster' | null = null;
-    if (id.includes('pilastri') || id.includes('fondazioni') || id.includes('solaio') || id.includes('c.a.')) {
+    let type: 'concrete' | 'masonry' | 'partition' | 'plaster' | 'plaster_rustic' | 'insulation' | 'tiles' | null = null;
+    if (id.includes('pilastri') || id.includes('fondazioni') || id.includes('solaio') || id.includes('c.a.') || id.includes('casseri')) {
       type = 'concrete';
     } else if (id.includes('murature') || id.includes('muro') || id.includes('portant') || id.includes('matton') || id.includes('svizzeri')) {
       type = 'masonry';
     } else if (id.includes('tramezz') || id.includes('divisori')) {
       type = 'partition';
-    } else if (id.includes('intonac') || id.includes('rivest') || id.includes('plaster') || id.includes('finitura')) {
+    } else if (id.includes('rivest') || id.includes('piastrell') || id.includes('tiles') || id.includes('ceramica')) {
+      type = 'tiles';
+    } else if (id.includes('intonaco_rustico') || id.includes('plaster_rustic')) {
+      type = 'plaster_rustic';
+    } else if (id.includes('intonac') || id.includes('plaster') || id.includes('finitura')) {
       type = 'plaster';
+    } else if (id.includes('isolam') || id.includes('cappott') || id.includes('coibent')) {
+      type = 'insulation';
     }
     
     if (type) {
       return {
-        side: createBIMMaterialTexture(type, 'side'),
-        top: createBIMMaterialTexture(type, 'top'),
+        side: createBIMMaterialTexture(type, 'side', color),
+        top: createBIMMaterialTexture(type, 'top', color),
         type
       };
     }
     return null;
-  }, [bimFamilyId]);
+  }, [bimFamilyId, color]);
 
   const shape = useMemo(() => {
     if (!points || points.length < 3) return null;
@@ -1007,8 +1418,6 @@ export const Room = ({
     return { x: sx / (points.length * 100), y: sy / (points.length * 100) };
   }, [points]);
 
-  if (!shape) return null;
-
   const extrudeSettings = {
     steps: 1,
     depth: h,
@@ -1021,7 +1430,27 @@ export const Room = ({
     return [sx / (points.length * 100), zBase + h + 0.05, -sy / (points.length * 100)] as [number, number, number];
   }, [points, h, zBase]);
 
-  const isWall = areaType === 'muro' || renderMode === 'parete_verticale';
+  const isPlaster = useMemo(() => {
+    const familyLower = (bimFamilyId || '').toLowerCase();
+    const nameLower = (name || '').toLowerCase();
+    return familyLower.includes('intonac') || 
+           familyLower.includes('rivest') ||
+           familyLower.includes('pittur') ||
+           familyLower.includes('tinteg') ||
+           familyLower.includes('isolam') ||
+           familyLower.includes('cappott') ||
+           familyLower.includes('finitur') ||
+           familyLower.includes('plaster') ||
+           nameLower.includes('intonac') ||
+           nameLower.includes('rivest') ||
+           nameLower.includes('pittur') ||
+           nameLower.includes('tinteg') ||
+           nameLower.includes('cappott') ||
+           nameLower.includes('isolam');
+  }, [bimFamilyId, name]);
+
+  const shouldRenderAsVerticalWalls = renderMode === 'parete_verticale' || isPlaster;
+  const isWall = areaType === 'muro' || shouldRenderAsVerticalWalls;
   
   let finalOpacity;
   let finalFloorOpacity;
@@ -1079,17 +1508,26 @@ export const Room = ({
   }
 
   const verticalWallSegments = useMemo(() => {
-    if (renderMode !== 'parete_verticale' || !points || points.length < 2) return [];
+    if (!shouldRenderAsVerticalWalls || !points || points.length < 2) return [];
     const result = [];
     const h = height / 100;
     const zBase = baseZ / 100;
     const symbolicThickness = (width || 4) / 100; // Use object width if provided, otherwise default to symbolic 4cm
     
-    const isPlaster = (bimFamilyId || '').toLowerCase().includes('intonac') || 
-                      (bimFamilyId || '').toLowerCase().includes('rivest');
+    const plasterThickness = (width || 2) / 100;
+    const wallThick = coincidentWallWidth ? (coincidentWallWidth / 100) : 0.15;
     
-    // Small offset for plaster to avoid Z-fighting with walls
-    const offsetZ = isPlaster ? 0.01 : 0; 
+    // Offset is half of the wall thickness + half of plaster thickness + tiny gap (2mm) to avoid Z-fighting, multiplied by sideSign (direction)
+    const finalSideSign = sideSign !== undefined ? sideSign : 1;
+    let offsetZ = 0;
+    if (coincidentOffset !== undefined) {
+      offsetZ = coincidentOffset;
+    } else if (isFaceAligned) {
+      // If it's face aligned (traced from edge), offset it by half its own thickness
+      offsetZ = (symbolicThickness / 2 + 0.001) * finalSideSign;
+    } else {
+      offsetZ = isPlaster ? (wallThick / 2 + plasterThickness / 2 + 0.002) * finalSideSign : 0; 
+    }
 
     // Close the loop for perimeter walls only if not linear
     const len = points.length;
@@ -1110,7 +1548,7 @@ export const Room = ({
       // Calculate normal for offset if it's a coating
       let ox = 0;
       let oy = 0;
-      if (offsetZ > 0) {
+      if (Math.abs(offsetZ) > 0) {
           // Normal is (-dy, dx)
           const nx = -dy / length;
           const ny = dx / length;
@@ -1130,69 +1568,22 @@ export const Room = ({
       });
     }
     return result;
-  }, [points, height, baseZ, renderMode, isLinear, width, bimFamilyId]);
+  }, [points, height, baseZ, shouldRenderAsVerticalWalls, isLinear, width, isPlaster, coincidentWallWidth, sideSign, coincidentOffset]);
 
-  if (renderMode === 'parete_verticale') {
+  if (shouldRenderAsVerticalWalls) {
     return (
       <group>
         {verticalWallSegments.map((seg, idx) => (
           <group key={idx}>
             {/* Solid Clipped part */}
-            <mesh position={seg.position} rotation={seg.rotation} castShadow receiveShadow>
-              <boxGeometry args={seg.args} />
-              {realisticTextures ? (
-                (() => {
-                  const type = realisticTextures.type;
-                  const sideTex = realisticTextures.side.clone();
-                  const topTex = realisticTextures.top.clone();
-                  
-                  // Side Scaling
-                  const sideRepeatX = seg.args[0] / (type === 'partition' ? 0.25 : 0.40);
-                  const sideRepeatY = seg.args[1] / 0.25;
-                  sideTex.repeat.set(sideRepeatX, sideRepeatY);
-                  sideTex.needsUpdate = true;
-
-                  // Top Scaling
-                  const topRepeatX = seg.args[0] / 0.25;
-                  const topRepeatY = seg.args[2] / 0.30;
-                  topTex.repeat.set(topRepeatX, topRepeatY);
-                  topTex.needsUpdate = true;
-
-                  const matProps = {
-                    color: realisticTextures ? '#ffffff' : color,
-                    transparent: finalOpacity < 1,
-                    opacity: finalOpacity,
-                    metalness: 0.05,
-                    roughness: 0.9,
-                    envMapIntensity: 0.2,
-                    clippingPlanes: clippingPlanes,
-                    clipShadows: true,
-                    side: THREE.DoubleSide
-                  };
-
-                  return [
-                    <meshStandardMaterial key="0" attach="material-0" map={sideTex} {...matProps} />, // +X
-                    <meshStandardMaterial key="1" attach="material-1" map={sideTex} {...matProps} />, // -X
-                    <meshStandardMaterial key="2" attach="material-2" map={topTex} {...matProps} />,  // +Y (TOP)
-                    <meshStandardMaterial key="3" attach="material-3" map={sideTex} {...matProps} />, // -Y (BOTTOM)
-                    <meshStandardMaterial key="4" attach="material-4" map={sideTex} {...matProps} />, // +Z
-                    <meshStandardMaterial key="5" attach="material-5" map={sideTex} {...matProps} />, // -Z
-                  ];
-                })()
-              ) : (
-                <meshStandardMaterial 
-                  color={color} 
-                  transparent={finalOpacity < 1} 
-                  opacity={finalOpacity} 
-                  metalness={0.25}
-                  roughness={0.4}
-                  envMapIntensity={1.2}
-                  clippingPlanes={clippingPlanes}
-                  clipShadows={true}
-                  side={THREE.DoubleSide}
-                />
-              )}
-            </mesh>
+            <RoomSegmentMesh 
+              seg={seg}
+              realisticTextures={realisticTextures}
+              color={color}
+              renderMode={renderMode}
+              finalOpacity={finalOpacity}
+              clippingPlanes={clippingPlanes}
+            />
 
             {/* Wireframe Reference - Unclipped */}
             <mesh position={seg.position} rotation={seg.rotation}>
@@ -1221,6 +1612,8 @@ export const Room = ({
     );
   }
 
+  if (!shape) return null;
+
   return (
     <group>
       <group position={[0, zBase, 0]}>
@@ -1231,18 +1624,19 @@ export const Room = ({
             (() => {
                 const topTex = realisticTextures.top.clone();
                 const sideTex = realisticTextures.side.clone();
-                topTex.repeat.set(2.5, 2.5);
+                const repeatFactor = realisticTextures.type === 'tiles' ? 1.0 : 2.5;
+                topTex.repeat.set(repeatFactor, repeatFactor);
                 topTex.wrapS = topTex.wrapT = THREE.RepeatWrapping;
-                sideTex.repeat.set(2.5, 0.5);
+                sideTex.repeat.set(repeatFactor, realisticTextures.type === 'tiles' ? 1.0 : 0.5);
                 sideTex.wrapS = sideTex.wrapT = THREE.RepeatWrapping;
                 
                 const matProps = {
                   color: realisticTextures ? '#ffffff' : color,
                   transparent: renderMode === 'transparent' || finalOpacity < 1, 
                   opacity: renderMode === 'transparent' ? 0.3 : finalOpacity, 
-                  metalness: 0.05,
-                  roughness: 0.9,
-                  envMapIntensity: 0.2,
+                  metalness: 0.1,
+                  roughness: 0.7,
+                  envMapIntensity: 1.0,
                   clippingPlanes: clippingPlanes,
                   clipShadows: true,
                   side: THREE.DoubleSide
@@ -1259,9 +1653,9 @@ export const Room = ({
                 transparent={renderMode === 'transparent' || finalOpacity < 1} 
                 wireframe={renderMode === 'transparent'}
                 opacity={renderMode === 'transparent' ? 0.3 : finalOpacity} 
-                metalness={isWall ? 0.25 : 0.15}
-                roughness={isWall ? 0.4 : 0.3}
-                envMapIntensity={1.2}
+                metalness={isWall ? 0.35 : 0.15}
+                roughness={isWall ? 0.35 : 0.3}
+                envMapIntensity={1.5}
                 clippingPlanes={clippingPlanes}
                 clipShadows={true}
                 side={THREE.DoubleSide}
@@ -1638,7 +2032,8 @@ export const CSGMeshRender = ({
   hatchBgColorCustom = '#ffffff',
   hatchPatternMode = 'diagonal',
   parentPivot = [0, 0, 0],
-  parentRotation = [0, 0, 0]
+  parentRotation = [0, 0, 0],
+  isStratifiedView = false
 }: { 
   entity: any, 
   color: string, 
@@ -1660,22 +2055,84 @@ export const CSGMeshRender = ({
   hatchBgColorCustom?: string,
   hatchPatternMode?: 'diagonal' | 'horizontal' | 'vertical' | 'cross',
   parentPivot?: [number, number, number],
-  parentRotation?: [number, number, number]
+  parentRotation?: [number, number, number],
+  isStratifiedView?: boolean
 }) => {
   const geom = useMemo(() => {
     const geo = new THREE.BufferGeometry();
-    if (entity.geometryData?.positions) {
-      geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(entity.geometryData.positions), 3));
+    if (!entity.geometryData?.positions) return geo;
+
+    const positions = new Float32Array(entity.geometryData.positions);
+    geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+
+    const normals = entity.geometryData.normals ? new Float32Array(entity.geometryData.normals) : null;
+    if (normals) {
+      geo.setAttribute('normal', new THREE.BufferAttribute(normals, 3));
     }
-    if (entity.geometryData?.normals) {
-      geo.setAttribute('normal', new THREE.BufferAttribute(new Float32Array(entity.geometryData.normals), 3));
-    }
-    if (entity.geometryData?.uvs && entity.geometryData.uvs.length > 0) {
+
+    if (entity.geometryData.uvs && entity.geometryData.uvs.length > 0) {
       geo.setAttribute('uv', new THREE.BufferAttribute(new Float32Array(entity.geometryData.uvs), 2));
     }
-    if (entity.geometryData?.indices && entity.geometryData.indices.length > 0) {
-      geo.setIndex(new THREE.BufferAttribute(new Uint32Array(entity.geometryData.indices), 1));
+
+    const indicesAttr = entity.geometryData.indices;
+    if (indicesAttr && indicesAttr.length > 0) {
+      const indices = Array.from(indicesAttr) as number[];
+      const sideIndices: number[] = [];
+      const topIndices: number[] = [];
+      const bottomIndices: number[] = [];
+
+      for (let i = 0; i < indices.length; i += 3) {
+        const idx1 = indices[i];
+        const idx2 = indices[i + 1];
+        const idx3 = indices[i + 2];
+
+        let ny = 0;
+        if (normals) {
+          const n1y = normals[idx1 * 3 + 1];
+          const n2y = normals[idx2 * 3 + 1];
+          const n3y = normals[idx3 * 3 + 1];
+          ny = (n1y + n2y + n3y) / 3;
+        } else {
+          const p1 = new THREE.Vector3(positions[idx1 * 3], positions[idx1 * 3 + 1], positions[idx1 * 3 + 2]);
+          const p2 = new THREE.Vector3(positions[idx2 * 3], positions[idx2 * 3 + 1], positions[idx2 * 3 + 2]);
+          const p3 = new THREE.Vector3(positions[idx3 * 3], positions[idx3 * 3 + 1], positions[idx3 * 3 + 2]);
+          const cb = new THREE.Vector3().subVectors(p3, p2);
+          const ab = new THREE.Vector3().subVectors(p1, p2);
+          cb.cross(ab).normalize();
+          ny = cb.y;
+        }
+
+        if (ny >= 0.7) {
+          topIndices.push(idx1, idx2, idx3);
+        } else if (ny <= -0.7) {
+          bottomIndices.push(idx1, idx2, idx3);
+        } else {
+          sideIndices.push(idx1, idx2, idx3);
+        }
+      }
+
+      const sortedIndices = [...sideIndices, ...topIndices, ...bottomIndices];
+      geo.setIndex(new THREE.BufferAttribute(new Uint32Array(sortedIndices), 1));
+
+      geo.clearGroups();
+      let start = 0;
+      if (sideIndices.length > 0) {
+        geo.addGroup(start, sideIndices.length, 0); // Side (horizontal brick bonding)
+        start += sideIndices.length;
+      }
+      if (topIndices.length > 0) {
+        geo.addGroup(start, topIndices.length, 1); // Top (brick holes)
+        start += topIndices.length;
+      }
+      if (bottomIndices.length > 0) {
+        geo.addGroup(start, bottomIndices.length, 2); // Bottom (side)
+        start += bottomIndices.length;
+      }
+    } else {
+      geo.clearGroups();
+      geo.addGroup(0, positions.length / 3, 0);
     }
+
     geo.computeBoundingSphere();
     return geo;
   }, [entity]);
@@ -1797,20 +2254,28 @@ export const CSGMeshRender = ({
   const realisticTextures = useMemo(() => {
     const bimFamilyId = (entity.bimFamilyId || entity.bimAreaType || '').toLowerCase().trim();
     if (!bimFamilyId) return null;
-    let type: 'concrete' | 'masonry' | 'partition' | 'plaster' | null = null;
-    if (bimFamilyId.includes('pilastri') || bimFamilyId.includes('fondazioni') || bimFamilyId.includes('solaio') || bimFamilyId.includes('c.a.')) {
+    let type: 'concrete' | 'masonry' | 'partition' | 'plaster' | 'plaster_rustic' | 'insulation' | 'tiles' | 'casseri' | null = null;
+    if (bimFamilyId.includes('casseri')) {
+      type = 'casseri';
+    } else if (bimFamilyId.includes('pilastri') || bimFamilyId.includes('fondazioni') || bimFamilyId.includes('solaio') || bimFamilyId.includes('c.a.')) {
       type = 'concrete';
     } else if (bimFamilyId.includes('murature') || bimFamilyId.includes('muro') || bimFamilyId.includes('portant') || bimFamilyId.includes('matton') || bimFamilyId.includes('svizzeri')) {
       type = 'masonry';
     } else if (bimFamilyId.includes('tramezz') || bimFamilyId.includes('divisori')) {
       type = 'partition';
-    } else if (bimFamilyId.includes('intonac') || bimFamilyId.includes('rivest') || bimFamilyId.includes('plaster') || bimFamilyId.includes('finitura')) {
+    } else if (bimFamilyId.includes('rivest') || bimFamilyId.includes('piastrell') || bimFamilyId.includes('tiles') || bimFamilyId.includes('ceramica') || bimFamilyId.includes('pavimenti_50x100')) {
+      type = 'tiles';
+    } else if (bimFamilyId.includes('intonaco_rustico') || bimFamilyId.includes('plaster_rustic')) {
+      type = 'plaster_rustic';
+    } else if (bimFamilyId.includes('intonac') || bimFamilyId.includes('plaster') || bimFamilyId.includes('finitura')) {
       type = 'plaster';
+    } else if (bimFamilyId.includes('isolam') || bimFamilyId.includes('cappott') || bimFamilyId.includes('coibent')) {
+      type = 'insulation';
     }
     
     if (type) {
-      const topTex = createBIMMaterialTexture(type, 'top');
-      const sideTex = createBIMMaterialTexture(type, 'side');
+      const topTex = createBIMMaterialTexture(type, 'top', color);
+      const sideTex = createBIMMaterialTexture(type, 'side', color);
       
       // Improved scaling for generic CSG meshes based on object dimensions
       const totalLength = points.length > 1 ? points.reduce((acc, p, i) => {
@@ -1819,48 +2284,121 @@ export const CSGMeshRender = ({
         return acc + Math.sqrt((p.x - prev.x)**2 + (p.y - prev.y)**2);
       }, 0) / 100 : 4;
 
-      const repeatX = Math.max(1, totalLength / (type === 'masonry' ? 0.30 : 0.50));
-      const repeatY = Math.max(1, h / 0.25);
+      const repeatX = type === 'tiles' ? totalLength / 1.0 : Math.max(1, totalLength / (type === 'masonry' ? 0.30 : 0.50));
+      const repeatY = type === 'tiles' ? h / 1.0 : Math.max(1, h / 0.25);
       
-      topTex.repeat.set(repeatX, Math.max(1, width / 25)); 
+      let topRepeatY;
+      if (type === 'tiles') {
+        topRepeatY = Math.max(1, width / 100);
+      } else if (width <= 42) {
+        topRepeatY = 1;
+      } else if (width <= 82) {
+        topRepeatY = 2;
+      } else {
+        topRepeatY = Math.max(1, width / 25);
+      }
+      
+      topTex.repeat.set(repeatX, topRepeatY); 
       sideTex.repeat.set(repeatX, repeatY);
       topTex.wrapS = topTex.wrapT = THREE.RepeatWrapping;
       sideTex.wrapS = sideTex.wrapT = THREE.RepeatWrapping;
       
-      return { top: topTex, side: sideTex };
+      return { top: topTex, side: sideTex, type: type };
     }
     return null;
-  }, [entity.bimFamilyId, entity.bimAreaType]);
+  }, [entity, color]);
 
   const materials = useMemo(() => {
+    const isPlaster = realisticTextures?.type === 'plaster' || realisticTextures?.type === 'plaster_rustic';
     const matProps = {
-      color: realisticTextures ? '#ffffff' : color,
+      color: isPlaster ? '#d1d5db' : (realisticTextures ? '#ffffff' : color),
       transparent: finalOpacity < 1,
       opacity: finalOpacity,
       metalness: 0.05,
-      roughness: 0.9,
-      envMapIntensity: 0.3,
+      roughness: isPlaster ? 0.3 : 0.9,
+      envMapIntensity: isPlaster ? 0.05 : 0.3,
       clippingPlanes: clippingPlanes,
       clipShadows: true,
-      side: THREE.DoubleSide
+      side: THREE.DoubleSide,
+      polygonOffset: !!entity.isOverlay,
+      polygonOffsetFactor: entity.isOverlay ? -1 : 0,
+      polygonOffsetUnits: entity.isOverlay ? -1 : 0
     };
 
     if (realisticTextures) {
-      // For CSG meshes that might not have material groups, use Side as primary
-      // But we can also use a group array if we want to try (though it only works if groups exist)
       return [
         new THREE.MeshStandardMaterial({ ...matProps, map: realisticTextures.side }), // Index 0: Sides (usually most faces)
         new THREE.MeshStandardMaterial({ ...matProps, map: realisticTextures.top }),  // Index 1: Top
+        new THREE.MeshStandardMaterial({ ...matProps, map: realisticTextures.side }), // Index 2: Bottom (use side texture)
       ];
     }
     return new THREE.MeshStandardMaterial({ ...matProps, metalness: 0.15, roughness: 0.4, envMapIntensity: 1 });
   }, [color, finalOpacity, clippingPlanes, realisticTextures]);
 
   return (
-    <group>
-      <mesh geometry={geom} material={materials} castShadow receiveShadow>
-        <Edges color="#cbd5e1" threshold={5} transparent opacity={globalOpacityMode === 'SOLID' ? 0.2 : 0.1} />
-      </mesh>
+    <group position={isStratifiedView ? [0, 0, 0] : [0, 0, 0]}>
+      {/* If stratified, create multiple meshes for each layer, slightly exploded. 
+          Assuming for now we just show materials in a different way or move them slightly.
+          Actually, simple explosion for layers would involve rendering each layer separately.
+          For now, just visual cue.
+      */}
+      {isStratifiedView ? (
+        <>
+          {/* Base Layer - Wall */}
+          <mesh 
+            geometry={geom} 
+            material={new THREE.MeshStandardMaterial({color: '#b91c1c', side: THREE.DoubleSide, clippingPlanes: clippingPlanes})} 
+            castShadow 
+            receiveShadow
+            position={[0, 0, 0]}
+          >
+            <Edges color="#cbd5e1" threshold={5} transparent opacity={globalOpacityMode === 'SOLID' ? 0.2 : 0.1} />
+          </mesh>
+          {/* Middle Layer - Plaster */}
+          <mesh 
+            geometry={geom} 
+            material={new THREE.MeshStandardMaterial({
+                color: '#94a3b8', 
+                side: THREE.DoubleSide, 
+                clippingPlanes: clippingPlanes,
+                polygonOffset: true,
+                polygonOffsetFactor: -1,
+                polygonOffsetUnits: -1
+            })} 
+            castShadow 
+            receiveShadow
+          >
+            <Edges color="#cbd5e1" threshold={5} transparent opacity={globalOpacityMode === 'SOLID' ? 0.2 : 0.1} />
+          </mesh>
+          {/* Top Layer - Paint/Finish */}
+          <mesh 
+            geometry={geom} 
+            material={new THREE.MeshStandardMaterial({
+                color: '#60a5fa', 
+                side: THREE.DoubleSide, 
+                clippingPlanes: clippingPlanes,
+                polygonOffset: true,
+                polygonOffsetFactor: -2,
+                polygonOffsetUnits: -2
+            })} 
+            castShadow 
+            receiveShadow
+          >
+            <Edges color="#cbd5e1" threshold={5} transparent opacity={globalOpacityMode === 'SOLID' ? 0.2 : 0.1} />
+          </mesh>
+        </>
+      ) : (
+        <mesh 
+          geometry={geom} 
+          material={materials} 
+          castShadow 
+          receiveShadow
+          position={[0, 0, 0]}
+        >
+          <Edges color="#cbd5e1" threshold={5} transparent opacity={globalOpacityMode === 'SOLID' ? 0.2 : 0.1} />
+        </mesh>
+      )}
+
       {/* Capping Plates for CSG wall segments */}
       {segments.map((seg, i) => {
         let segShowCapBottom = false;
@@ -2051,39 +2589,690 @@ export const CSGMeshRender = ({
   );
 };
 
-const ReferencePlan = ({ entities }: { entities: Entity[] }) => {
-  const lineEntities = entities.filter(e => !e.isBIM && (e.type === 'line' || e.type === 'rectangle'));
+const renderLine = (entity: LineEntity) => {
+  if (!entity.start || !entity.end) return null;
+  const pts: [number, number, number][] = [
+    [entity.start.x / 100, 0, -entity.start.y / 100],
+    [entity.end.x / 100, 0, -entity.end.y / 100]
+  ];
+  return (
+    <Line
+      key={entity.id}
+      points={pts}
+      color={entity.color || '#475569'}
+      lineWidth={(entity.lineWidth || 1) * 1.5}
+      dashed={entity.lineType === 'dashed' || entity.dashed}
+      opacity={entity.opacity !== undefined ? entity.opacity : 0.6}
+      transparent
+    />
+  );
+};
+
+const renderRectangle = (entity: RectEntity) => {
+  if (!entity.p1 || !entity.p2) return null;
+  const p1 = entity.p1;
+  const p2 = entity.p2;
+  const pts: [number, number, number][] = [
+    [p1.x / 100, 0, -p1.y / 100],
+    [p2.x / 100, 0, -p1.y / 100],
+    [p2.x / 100, 0, -p2.y / 100],
+    [p1.x / 100, 0, -p2.y / 100],
+    [p1.x / 100, 0, -p1.y / 100]
+  ];
+  return (
+    <Line
+      key={entity.id}
+      points={pts}
+      color={entity.color || '#475569'}
+      lineWidth={(entity.lineWidth || 1) * 1.5}
+      dashed={entity.lineType === 'dashed' || entity.dashed}
+      opacity={entity.opacity !== undefined ? entity.opacity : 0.6}
+      transparent
+    />
+  );
+};
+
+const renderCircle = (entity: CircleEntity) => {
+  if (!entity.center || !entity.radius) return null;
+  const pts: [number, number, number][] = [];
+  const segments = 64;
+  const cx = entity.center.x / 100;
+  const cy = -entity.center.y / 100;
+  const r = entity.radius / 100;
+  for (let i = 0; i <= segments; i++) {
+    const theta = (i / segments) * Math.PI * 2;
+    pts.push([cx + Math.cos(theta) * r, 0, cy + Math.sin(theta) * r]);
+  }
+  return (
+    <Line
+      key={entity.id}
+      points={pts}
+      color={entity.color || '#475569'}
+      lineWidth={(entity.lineWidth || 1) * 1.5}
+      dashed={entity.lineType === 'dashed' || entity.dashed}
+      opacity={entity.opacity !== undefined ? entity.opacity : 0.6}
+      transparent
+    />
+  );
+};
+
+const renderArc = (entity: ArcEntity) => {
+  if (!entity.center || !entity.radius) return null;
+  const pts: [number, number, number][] = [];
+  const segments = 32;
+  const cx = entity.center.x / 100;
+  const cy = -entity.center.y / 100;
+  const r = entity.radius / 100;
+  const startRad = ((entity.startAngle || 0) * Math.PI) / 180;
+  const endRad = ((entity.endAngle || 360) * Math.PI) / 180;
+  let delta = endRad - startRad;
+  if (delta < 0) delta += Math.PI * 2;
+
+  for (let i = 0; i <= segments; i++) {
+    const theta = startRad + (i / segments) * delta;
+    pts.push([cx + Math.cos(theta) * r, 0, cy + Math.sin(theta) * r]);
+  }
+  return (
+    <Line
+      key={entity.id}
+      points={pts}
+      color={entity.color || '#475569'}
+      lineWidth={(entity.lineWidth || 1) * 1.5}
+      dashed={entity.lineType === 'dashed' || entity.dashed}
+      opacity={entity.opacity !== undefined ? entity.opacity : 0.6}
+      transparent
+    />
+  );
+};
+
+const renderText = (entity: TextEntity) => {
+  if (!entity.point || !entity.text) return null;
+  return (
+    <Text
+      key={entity.id}
+      position={[entity.point.x / 100, 0.005, -entity.point.y / 100]}
+      rotation={[-Math.PI / 2, 0, 0]}
+      fontSize={(entity.fontSize || 14) / 75}
+      color={entity.color || '#000000'}
+      anchorX={entity.textAlign === 'center' ? 'center' : (entity.textAlign === 'right' ? 'right' : 'left')}
+      anchorY="middle"
+      fillOpacity={entity.opacity !== undefined ? entity.opacity : 0.9}
+    >
+      {entity.text}
+    </Text>
+  );
+};
+
+const renderDimension = (entity: DimensionEntity) => {
+  if (!entity.start || !entity.end) return null;
+  const start = entity.start;
+  const end = entity.end;
+  const dx = end.x - start.x;
+  const dy = end.y - start.y;
+  const distCm = Math.sqrt(dx * dx + dy * dy);
   
-  if (lineEntities.length === 0) return null;
+  let valStr = entity.customText;
+  if (!valStr) {
+    valStr = `${(distCm / 100).toFixed(2)} m`;
+  }
+
+  const pts: [number, number, number][] = [
+    [start.x / 100, 0.002, -start.y / 100],
+    [end.x / 100, 0.002, -end.y / 100]
+  ];
+
+  const tickSize = 0.04;
+  const angle = Math.atan2(dy, dx);
+  const tickAngle1 = angle + Math.PI / 4;
+
+  const t1s: [number, number, number] = [
+    (start.x + Math.cos(tickAngle1) * tickSize * 100) / 100,
+    0.002,
+    -(start.y + Math.sin(tickAngle1) * tickSize * 100) / 100
+  ];
+  const t1e: [number, number, number] = [
+    (start.x - Math.cos(tickAngle1) * tickSize * 100) / 100,
+    0.002,
+    -(start.y - Math.sin(tickAngle1) * tickSize * 100) / 100
+  ];
+
+  const t2s: [number, number, number] = [
+    (end.x + Math.cos(tickAngle1) * tickSize * 100) / 100,
+    0.002,
+    -(end.y + Math.sin(tickAngle1) * tickSize * 100) / 100
+  ];
+  const t2e: [number, number, number] = [
+    (end.x - Math.cos(tickAngle1) * tickSize * 100) / 100,
+    0.002,
+    -(end.y - Math.sin(tickAngle1) * tickSize * 100) / 100
+  ];
+
+  const midX = (start.x + end.x) / 2 / 100;
+  const midY = -(start.y + end.y) / 2 / 100;
+
+  return (
+    <group key={entity.id}>
+      <Line points={pts} color={entity.color || '#475569'} lineWidth={1} opacity={0.6} transparent />
+      <Line points={[t1s, t1e]} color={entity.color || '#475569'} lineWidth={1.5} opacity={0.6} transparent />
+      <Line points={[t2s, t2e]} color={entity.color || '#475569'} lineWidth={1.5} opacity={0.6} transparent />
+      <Text
+        position={[midX, 0.008, midY]}
+        rotation={[-Math.PI / 2, 0, -angle]}
+        fontSize={0.11}
+        color={entity.color || '#475569'}
+        anchorX="center"
+        anchorY="middle"
+        fillOpacity={0.8}
+      >
+        {valStr}
+      </Text>
+    </group>
+  );
+};
+
+const renderPoint = (entity: PointEntity) => {
+  const p = entity.point;
+  if (!p) return null;
+  const px = p.x / 100;
+  const py = -p.y / 100;
+  const crossSize = 0.03;
+  return (
+    <group key={entity.id}>
+      <Line points={[[px - crossSize, 0.002, py], [px + crossSize, 0.002, py]]} color={entity.color || '#ef4444'} lineWidth={1.5} />
+      <Line points={[[px, 0.002, py - crossSize], [px, 0.002, py + crossSize]]} color={entity.color || '#ef4444'} lineWidth={1.5} />
+    </group>
+  );
+};
+
+const CADHatch3D = ({ entity }: { entity: HatchEntity }) => {
+  const [textureObj, setTextureObj] = useState<{ tex: THREE.CanvasTexture } | null>(null);
+
+  useEffect(() => {
+    if (!entity.points || entity.points.length < 3) return;
+
+    // Calculate bounding box in centimeters (CAD units)
+    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+    for (const p of entity.points) {
+      if (p.x < minX) minX = p.x;
+      if (p.x > maxX) maxX = p.x;
+      if (p.y < minY) minY = p.y;
+      if (p.y > maxY) maxY = p.y;
+    }
+
+    const widthCm = Math.max(10, maxX - minX);
+    const heightCm = Math.max(10, maxY - minY);
+
+    // We want a high resolution texture, say 2 pixels per cm
+    // Capped at 2048 to prevent memory/performance issues
+    const resolution = 2;
+    const canvasWidth = Math.min(2048, Math.ceil(widthCm * resolution));
+    const canvasHeight = Math.min(2048, Math.ceil(heightCm * resolution));
+
+    const canvas = document.createElement('canvas');
+    canvas.width = canvasWidth;
+    canvas.height = canvasHeight;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    const scaleX = canvasWidth / widthCm;
+    const scaleY = canvasHeight / heightCm;
+
+    ctx.save();
+    ctx.beginPath();
+    ctx.moveTo((entity.points[0].x - minX) * scaleX, (entity.points[0].y - minY) * scaleY);
+    for (let i = 1; i < entity.points.length; i++) {
+      ctx.lineTo((entity.points[i].x - minX) * scaleX, (entity.points[i].y - minY) * scaleY);
+    }
+    ctx.closePath();
+
+    if (entity.holes) {
+      entity.holes.forEach((hole: Point[]) => {
+        if (hole.length < 3) return;
+        ctx.moveTo((hole[0].x - minX) * scaleX, (hole[0].y - minY) * scaleY);
+        for (let i = 1; i < hole.length; i++) {
+          ctx.lineTo((hole[i].x - minX) * scaleX, (hole[i].y - minY) * scaleY);
+        }
+        ctx.closePath();
+      });
+    }
+
+    ctx.clip('evenodd');
+
+    // Draw background color if present
+    if (entity.backgroundColor) {
+      ctx.fillStyle = entity.backgroundColor;
+      ctx.fillRect(0, 0, canvasWidth, canvasHeight);
+    } else {
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.015)';
+      ctx.fillRect(0, 0, canvasWidth, canvasHeight);
+    }
+
+    const pat = (entity.pattern || 'ansi31').toLowerCase();
+    if (pat !== 'none' && pat !== 'solid') {
+      const cxLocal = canvasWidth / 2;
+      const cyLocal = canvasHeight / 2;
+      const diag = Math.sqrt(canvasWidth * canvasWidth + canvasHeight * canvasHeight);
+      const halfDiag = diag / 2;
+
+      ctx.save();
+      ctx.translate(cxLocal, cyLocal);
+      ctx.rotate((entity.angle || 0) * Math.PI / 180);
+
+      ctx.strokeStyle = entity.color || '#3b82f6';
+      ctx.lineWidth = Math.max(1, (entity.lineWidth || 1) * resolution * 0.75);
+      ctx.fillStyle = entity.color || '#3b82f6';
+      ctx.setLineDash([]);
+
+      const step = Math.max(4, (entity.scale || 14) * resolution);
+
+      try {
+        if (pat === 'ansi31') {
+          ctx.rotate(Math.PI / 4);
+          ctx.beginPath();
+          for (let x = -halfDiag; x <= halfDiag; x += step) {
+            ctx.moveTo(x, -halfDiag);
+            ctx.lineTo(x, halfDiag);
+          }
+          ctx.stroke();
+        } else if (pat === 'ansi32') {
+          ctx.rotate(Math.PI / 4);
+          ctx.beginPath();
+          for (let x = -halfDiag; x <= halfDiag; x += step) {
+            ctx.moveTo(x, -halfDiag);
+            ctx.lineTo(x, halfDiag);
+            ctx.moveTo(x + step * 0.25, -halfDiag);
+            ctx.lineTo(x + step * 0.25, halfDiag);
+          }
+          ctx.stroke();
+        } else if (pat === 'ansi33') {
+          ctx.rotate(Math.PI / 4);
+          for (let x = -halfDiag, idx = 0; x <= halfDiag; x += step / 2, idx++) {
+            ctx.beginPath();
+            if (idx % 2 === 0) {
+              ctx.setLineDash([]);
+            } else {
+              ctx.setLineDash([Math.max(1, step * 0.15), Math.max(1, step * 0.15)]);
+            }
+            ctx.moveTo(x, -halfDiag);
+            ctx.lineTo(x, halfDiag);
+            ctx.stroke();
+          }
+        } else if (pat === 'ansi34') {
+          ctx.rotate(Math.PI / 4);
+          ctx.setLineDash([Math.max(1, step * 0.2), Math.max(1, step * 0.2)]);
+          ctx.beginPath();
+          for (let x = -halfDiag; x <= halfDiag; x += step) {
+            ctx.moveTo(x, -halfDiag);
+            ctx.lineTo(x, halfDiag);
+          }
+          ctx.stroke();
+        } else if (pat === 'grid') {
+          ctx.beginPath();
+          for (let x = -halfDiag; x <= halfDiag; x += step) {
+            ctx.moveTo(x, -halfDiag);
+            ctx.lineTo(x, halfDiag);
+          }
+          for (let y = -halfDiag; y <= halfDiag; y += step) {
+            ctx.moveTo(-halfDiag, y);
+            ctx.lineTo(halfDiag, y);
+          }
+          ctx.stroke();
+        } else if (pat === 'cross') {
+          ctx.rotate(Math.PI / 4);
+          ctx.beginPath();
+          for (let x = -halfDiag; x <= halfDiag; x += step) {
+            ctx.moveTo(x, -halfDiag);
+            ctx.lineTo(x, halfDiag);
+          }
+          for (let y = -halfDiag; y <= halfDiag; y += step) {
+            ctx.moveTo(-halfDiag, y);
+            ctx.lineTo(halfDiag, y);
+          }
+          ctx.stroke();
+        } else if (pat === 'dots') {
+          const r = Math.max(0.7, step / 14);
+          for (let x = -halfDiag; x <= halfDiag; x += step) {
+            for (let y = -halfDiag; y <= halfDiag; y += step) {
+              ctx.beginPath();
+              ctx.arc(x, y, r, 0, Math.PI * 2);
+              ctx.fill();
+            }
+          }
+        } else if (pat === 'stripe') {
+          ctx.beginPath();
+          for (let x = -halfDiag; x <= halfDiag; x += step) {
+            ctx.moveTo(x, -halfDiag);
+            ctx.lineTo(x, halfDiag);
+          }
+          ctx.stroke();
+        } else if (pat === 'horizontal') {
+          ctx.beginPath();
+          for (let y = -halfDiag; y <= halfDiag; y += step) {
+            ctx.moveTo(-halfDiag, y);
+            ctx.lineTo(halfDiag, y);
+          }
+          ctx.stroke();
+        } else if (pat === 'zigzag') {
+          ctx.beginPath();
+          const wl = step * 0.9;
+          for (let y = -halfDiag; y <= halfDiag; y += step) {
+            ctx.moveTo(-halfDiag, y);
+            let up = true;
+            for (let x = -halfDiag; x <= halfDiag; x += wl) {
+              ctx.lineTo(x, up ? y + step * 0.25 : y - step * 0.25);
+              up = !up;
+            }
+          }
+          ctx.stroke();
+        } else if (pat === 'waves') {
+          ctx.beginPath();
+          const wl = step;
+          for (let y = -halfDiag; y <= halfDiag; y += step) {
+            ctx.moveTo(-halfDiag, y);
+            for (let x = -halfDiag; x <= halfDiag; x += 4) {
+              const sineY = y + Math.sin(x / (wl / 4.5)) * (step * 0.2);
+              ctx.lineTo(x, sineY);
+            }
+          }
+          ctx.stroke();
+        } else if (pat === 'brick') {
+          const bHeight = step;
+          const bWidth = step * 2.2;
+          ctx.beginPath();
+          for (let y = -halfDiag; y <= halfDiag; y += bHeight) {
+            ctx.moveTo(-halfDiag, y);
+            ctx.lineTo(halfDiag, y);
+          }
+          let rowIndex = 0;
+          for (let y = -halfDiag; y <= halfDiag; y += bHeight) {
+            const offsetX = (rowIndex % 2 === 0) ? 0 : bWidth / 2;
+            for (let x = -halfDiag + offsetX - bWidth; x <= halfDiag + bWidth; x += bWidth) {
+              ctx.moveTo(x, y);
+              ctx.lineTo(x, y + bHeight);
+            }
+            rowIndex++;
+          }
+          ctx.stroke();
+        } else if (pat === 'checker') {
+          for (let x = -halfDiag, i = 0; x <= halfDiag; x += step, i++) {
+            for (let y = -halfDiag, j = 0; y <= halfDiag; y += step, j++) {
+              if ((i + j) % 2 === 0) {
+                ctx.fillRect(x, y, step, step);
+              }
+            }
+          }
+        } else if (pat === 'triangles') {
+          const hTri = step * Math.sin(Math.PI / 3);
+          for (let y = -halfDiag; y <= halfDiag; y += hTri) {
+            for (let x = -halfDiag; x <= halfDiag; x += step) {
+              ctx.beginPath();
+              ctx.moveTo(x, y);
+              ctx.lineTo(x + step / 2, y + hTri);
+              ctx.lineTo(x - step / 2, y + hTri);
+              ctx.closePath();
+              ctx.stroke();
+            }
+          }
+        } else if (pat === 'honey' || pat === 'hexagon') {
+          const rHex = step / 1.73;
+          const hHex = rHex * Math.sin(Math.PI / 3);
+          for (let y = -halfDiag - rHex; y <= halfDiag + rHex; y += hHex * 2) {
+            let isAlt = false;
+            for (let x = -halfDiag - rHex; x <= halfDiag + rHex; x += rHex * 1.5) {
+              ctx.beginPath();
+              const startOffset = isAlt ? hHex : 0;
+              for (let side = 0; side < 6; side++) {
+                const rad = (side * Math.PI) / 3;
+                const px = x + rHex * Math.cos(rad);
+                const py = y + startOffset + rHex * Math.sin(rad);
+                if (side === 0) ctx.moveTo(px, py);
+                else ctx.lineTo(px, py);
+              }
+              ctx.closePath();
+              ctx.stroke();
+              isAlt = !isAlt;
+            }
+          }
+        } else if (pat.startsWith('tile_')) {
+          const dims = pat.split('_')[1].split('x');
+          const tileW = (parseInt(dims[0]) || 50) * resolution;
+          const tileH = (parseInt(dims[1]) || 40) * resolution;
+          ctx.beginPath();
+          for (let x = -halfDiag; x <= halfDiag; x += tileW) {
+            ctx.moveTo(x, -halfDiag);
+            ctx.lineTo(x, halfDiag);
+          }
+          for (let y = -halfDiag; y <= halfDiag; y += tileH) {
+            ctx.moveTo(-halfDiag, y);
+            ctx.lineTo(halfDiag, y);
+          }
+          ctx.stroke();
+        } else if (pat === 'parquet_strip') {
+          const stripW = step * 4;
+          const stripH = step;
+          ctx.beginPath();
+          for (let y = -halfDiag; y <= halfDiag; y += stripH) {
+            ctx.moveTo(-halfDiag, y);
+            ctx.lineTo(halfDiag, y);
+            const rowOffset = (Math.floor(y / stripH) % 3) * (stripW / 3);
+            for (let x = -halfDiag + rowOffset - stripW; x <= halfDiag; x += stripW) {
+              ctx.moveTo(x, y);
+              ctx.lineTo(x, y + stripH);
+            }
+          }
+          ctx.stroke();
+        } else if (pat === 'parquet_herringbone') {
+          const wP = step * 1.5;
+          const hP = step * 4;
+          for (let y = -halfDiag - hP; y <= halfDiag + hP; y += wP * 2) {
+            for (let x = -halfDiag - hP; x <= halfDiag + hP; x += hP) {
+              ctx.save();
+              ctx.translate(x, y);
+              ctx.rotate(Math.PI / 4);
+              ctx.strokeRect(0, 0, wP, hP);
+              ctx.restore();
+              ctx.save();
+              ctx.translate(x + hP/2, y + wP);
+              ctx.rotate(-Math.PI / 4);
+              ctx.strokeRect(0, 0, wP, hP);
+              ctx.restore();
+            }
+          }
+        } else if (pat === 'brick_stretcher' || pat === 'brick_bond') {
+          const bW = step * 2.5;
+          const bH = step;
+          ctx.beginPath();
+          for (let y = -halfDiag; y <= halfDiag; y += bH) {
+            ctx.moveTo(-halfDiag, y);
+            ctx.lineTo(halfDiag, y);
+          }
+          for (let y = -halfDiag; y <= halfDiag; y += bH) {
+            const rowOffset = (Math.floor(y / bH) % 2 === 0) ? 0 : bW / 2;
+            for (let x = -halfDiag + rowOffset - bW; x <= halfDiag; x += bW) {
+              ctx.moveTo(x, y);
+              ctx.lineTo(x, y + bH);
+            }
+          }
+          ctx.stroke();
+        }
+      } catch (e) {
+        console.warn("Error drawing hatch pattern in 3D: ", e);
+      }
+
+      ctx.restore();
+    }
+
+    ctx.restore();
+
+    const tex = new THREE.CanvasTexture(canvas);
+    tex.anisotropy = 16;
+    tex.generateMipmaps = true;
+    tex.minFilter = THREE.LinearMipmapLinearFilter;
+    tex.magFilter = THREE.LinearFilter;
+    tex.wrapS = THREE.ClampToEdgeWrapping;
+    tex.wrapT = THREE.ClampToEdgeWrapping;
+    tex.needsUpdate = true;
+
+    setTextureObj({ tex });
+
+    return () => {
+      tex.dispose();
+    };
+  }, [entity.points, entity.holes, entity.pattern, entity.scale, entity.angle, entity.color, entity.backgroundColor, entity.lineWidth]);
+
+  const shape = useMemo(() => {
+    if (!entity.points || entity.points.length < 3) return null;
+    try {
+      const s = new THREE.Shape();
+      s.moveTo(entity.points[0].x / 100, -entity.points[0].y / 100);
+      for (let i = 1; i < entity.points.length; i++) {
+        s.lineTo(entity.points[i].x / 100, -entity.points[i].y / 100);
+      }
+      s.closePath();
+
+      if (entity.holes) {
+        entity.holes.forEach((hole: Point[]) => {
+          if (hole.length < 3) return;
+          const path = new THREE.Path();
+          path.moveTo(hole[0].x / 100, -hole[0].y / 100);
+          for (let i = 1; i < hole.length; i++) {
+            path.lineTo(hole[i].x / 100, -hole[i].y / 100);
+          }
+          path.closePath();
+          s.holes.push(path);
+        });
+      }
+      return s;
+    } catch (err) {
+      console.warn("Failed to create shape for Hatch in 3D: ", err);
+      return null;
+    }
+  }, [entity.points, entity.holes]);
+
+  const outlinePts = useMemo(() => {
+    if (!entity.points || entity.points.length < 2) return null;
+    const pts = entity.points.map(p => new THREE.Vector3(p.x / 100, 0.002, -p.y / 100));
+    pts.push(new THREE.Vector3(entity.points[0].x / 100, 0.002, -entity.points[0].y / 100));
+    return pts;
+  }, [entity.points]);
+
+  return (
+    <group key={entity.id}>
+      {shape && (
+        <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.001, 0]}>
+          <shapeGeometry args={[shape]} />
+          {textureObj ? (
+            <meshBasicMaterial
+              map={textureObj.tex}
+              color="#ffffff"
+              transparent
+              opacity={entity.opacity !== undefined ? entity.opacity : 1.0}
+              side={THREE.DoubleSide}
+              depthWrite={false}
+            />
+          ) : (
+            <meshBasicMaterial
+              color={entity.backgroundColor || entity.color || '#cbd5e1'}
+              opacity={entity.opacity !== undefined ? entity.opacity * 0.35 : 0.3}
+              transparent
+              side={THREE.DoubleSide}
+              depthWrite={false}
+            />
+          )}
+        </mesh>
+      )}
+      {outlinePts && (
+        <Line
+          points={outlinePts}
+          color={entity.color || '#475569'}
+          lineWidth={entity.lineWidth || 1}
+          opacity={0.5}
+          transparent
+        />
+      )}
+    </group>
+  );
+};
+
+const CADImage3D = ({ entity }: { entity: ImageEntity }) => {
+  const [texture, setTexture] = useState<THREE.Texture | null>(null);
+
+  useEffect(() => {
+    if (entity.src) {
+      const loader = new THREE.TextureLoader();
+      loader.load(
+        entity.src,
+        (tex) => {
+          tex.colorSpace = THREE.SRGBColorSpace;
+          setTexture(tex);
+        },
+        undefined,
+        (err) => {
+          console.error("Error loading texture in 3D: ", err);
+        }
+      );
+    }
+  }, [entity.src]);
+
+  if (!texture) return null;
+
+  const w = (entity.width || 100) / 100;
+  const h = (entity.height || 100) / 100;
+  const angle = (entity.angle || 0) * Math.PI / 180;
+
+  const cx = (entity.point.x + entity.width / 2) / 100;
+  const cy = -(entity.point.y + entity.height / 2) / 100;
+
+  return (
+    <mesh
+      key={entity.id}
+      position={[cx, 0.001, cy]}
+      rotation={[-Math.PI / 2, 0, -angle]}
+    >
+      <planeGeometry args={[w, h]} />
+      <meshBasicMaterial 
+        map={texture} 
+        transparent 
+        opacity={entity.opacity !== undefined ? entity.opacity : 0.8} 
+        side={THREE.DoubleSide} 
+        depthWrite={false}
+      />
+    </mesh>
+  );
+};
+
+const ReferencePlan = ({ entities }: { entities: Entity[] }) => {
+  const cadEntities = useMemo(() => {
+    return entities.filter(e => !e.isBIM && e.isVisible !== false && e.isFrozen !== true);
+  }, [entities]);
+
+  if (cadEntities.length === 0) return null;
 
   return (
     <group position={[0, -0.01, 0]}>
-      {lineEntities.map(entity => {
-        let points: Point[] = [];
-        if (entity.type === 'line') {
-          points = [(entity as LineEntity).start, (entity as LineEntity).end];
-        } else if (entity.type === 'rectangle') {
-          const r = entity as RectEntity;
-          points = [
-            r.p1,
-            { x: r.p2.x, y: r.p1.y },
-            r.p2,
-            { x: r.p1.x, y: r.p2.y },
-            r.p1
-          ];
+      {cadEntities.map(entity => {
+        switch (entity.type) {
+          case 'line':
+            return renderLine(entity as LineEntity);
+          case 'rectangle':
+            return renderRectangle(entity as RectEntity);
+          case 'circle':
+            return renderCircle(entity as CircleEntity);
+          case 'arc':
+            return renderArc(entity as ArcEntity);
+          case 'text':
+            return renderText(entity as TextEntity);
+          case 'dimension':
+            return renderDimension(entity as DimensionEntity);
+          case 'point':
+            return renderPoint(entity as PointEntity);
+          case 'hatch':
+            return <CADHatch3D key={entity.id} entity={entity as HatchEntity} />;
+          case 'image':
+            return <CADImage3D key={entity.id} entity={entity as ImageEntity} />;
+          default:
+            return null;
         }
-
-        if (points.length < 2) return null;
-
-        const pts = points.map(p => new THREE.Vector3(p.x / 100, 0, -p.y / 100));
-        const geometry = new THREE.BufferGeometry().setFromPoints(pts);
-
-        return (
-          <line key={entity.id}>
-            <primitive object={geometry} attach="geometry" />
-            <lineBasicMaterial attach="material" color={entity.color || '#94a3b8'} opacity={0.4} transparent linewidth={1} />
-          </line>
-        );
       })}
     </group>
   );
@@ -2347,7 +3536,7 @@ const SectionPlaneHelper = ({ height, active, mode, entities }: { height: number
   );
 };
 
-export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, setEntities, floors = [] }) => {
+export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, setEntities, floors = [], isStratifiedView, setIsStratifiedView, onCreateFaceFinish, onShowToast, isFaceSurveyMode }) => {
   const [resetTrigger, setResetTrigger] = useState(0);
   const [focusTrigger, setFocusTrigger] = useState(0);
   const [viewMode, setViewMode] = useState<'PERSPECTIVE' | 'TOP'>('PERSPECTIVE');
@@ -2990,6 +4179,54 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
     }
   };
 
+  const handleConfirmFaceCreation = (data: {
+    familyId: string;
+    subFamily: string;
+    name: string;
+    color: string;
+    zPlane: number;
+    zElevation: number;
+    objectHeight: number;
+    hatch: 'SOLID' | 'ANSI31' | 'CROSS' | 'NONE';
+    bimRenderMode?: 'solid' | 'transparent' | 'parete_verticale' | 'parete_orizzontale';
+    sideSign?: number;
+  }) => {
+    if (!pendingFace) return;
+    
+    const newEntity: any = {
+      id: `bim-elem-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+      points: pendingFace.points,
+      isLinear: pendingFace.isLinear,
+      bimFamily: data.subFamily || data.familyId,
+      bimFamilyId: data.familyId,
+      bimAreaType: data.familyId,
+      bimSubFamily: data.subFamily || data.familyId,
+      bimData: undefined,
+      bimName: data.name,
+      backgroundColor: data.color,
+      color: data.color,
+      bimHatchPattern: data.hatch,
+      pattern: data.hatch === 'NONE' ? 'SOLID' : data.hatch,
+      bimHeight: data.objectHeight,
+      height: data.objectHeight,
+      bimZPlane: data.zPlane,
+      bimZElevation: data.zElevation,
+      bimRenderMode: data.bimRenderMode || 'solid',
+      sideSign: data.sideSign || 1,
+      bimType: 'element',
+      from3DFace: true,
+      isFaceAligned: true,
+      isBIM: true,
+      timestamp: Date.now()
+    };
+    
+    setEntities(prev => [...prev, newEntity]);
+    setSelectedEntity(newEntity);
+    setIsAreaEditOpen(false);
+    setPendingFace(null);
+    setIsPickFaceMode('OFF');
+  };
+
   const handleConfirmAreaEdit = (data: {
     familyId: string;
     subFamily: string;
@@ -3013,7 +4250,10 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
           ...original,
           id: `bim-elem-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
           bimFamily: data.subFamily || data.familyId,
+          bimFamilyId: data.familyId,
           bimAreaType: data.familyId,
+          bimSubFamily: data.subFamily || data.familyId,
+          bimData: undefined,
           bimName: data.name,
           backgroundColor: data.color,
           color: data.color,
@@ -3036,7 +4276,10 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
           return {
             ...e,
             bimFamily: data.subFamily || data.familyId,
+            bimFamilyId: data.familyId,
             bimAreaType: data.familyId,
+            bimSubFamily: data.subFamily || data.familyId,
+            bimData: undefined,
             bimName: data.name,
             backgroundColor: data.color,
             color: data.color,
@@ -3055,7 +4298,10 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
       setSelectedEntity(prev => prev && prev.id === editingEntityId ? {
         ...prev,
         bimFamily: data.subFamily || data.familyId,
+        bimFamilyId: data.familyId,
         bimAreaType: data.familyId,
+        bimSubFamily: data.subFamily || data.familyId,
+        bimData: undefined,
         bimName: data.name,
         backgroundColor: data.color,
         color: data.color,
@@ -3180,6 +4426,8 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
   }, []);
 
   // Slicing States
+  const [isPickFaceMode, setIsPickFaceMode] = useState<'OFF' | 'PICKING' | 'PENDING'>('OFF');
+  const [pendingFace, setPendingFace] = useState<any>(null);
   const [isSlicing, setIsSlicing] = useState(false);
   const maxModelHeight = useMemo(() => {
     let max = 0.5;
@@ -3340,6 +4588,31 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
           <Compass size={22} />
         </button>
         
+        <button 
+          onClick={() => {
+            if (isPickFaceMode === 'OFF') {
+              setIsPickFaceMode('PICKING');
+              setSelectedEntity(null);
+              setIsRotationMode(false);
+              onShowToast?.("Seleziona Faccia attiva: clicca su una superficie 3D per creare una finitura.");
+            } else {
+              setIsPickFaceMode('OFF');
+              setPendingFace(null);
+            }
+          }}
+          className={`p-3 rounded-xl transition-all active:scale-95 flex items-center gap-1.5 cursor-pointer border ${
+            isPickFaceMode !== 'OFF' 
+              ? 'bg-blue-500 border-blue-600 text-white shadow-lg shadow-blue-200 animate-pulse font-black text-xs px-4' 
+              : 'hover:bg-slate-50 text-slate-400 border-transparent hover:text-blue-500'
+          }`}
+          title="Seleziona Faccia per Finiture"
+        >
+          <Sparkles size={22} />
+          {isPickFaceMode !== 'OFF' && <span className="text-[10px] font-black uppercase tracking-wider hidden sm:inline">
+            {isPickFaceMode === 'PICKING' ? 'Seleziona Faccia' : 'Conferma Faccia'}
+          </span>}
+        </button>
+
         <button 
           onClick={() => {
             if (!selectedEntity) {
@@ -5092,6 +6365,23 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
             <div className={`absolute top-1 w-3.5 h-3.5 bg-white rounded-full shadow-sm transition-all duration-300 ${isRealistic ? 'left-5.5' : 'left-1'}`} />
           </button>
         </div>
+
+        {/* Stratified View Toggle */}
+        <div className="flex items-center justify-between pt-2.5 border-t border-slate-100 mt-1">
+          <div className="flex items-center gap-2">
+            <Layers3 size={14} className={isStratifiedView ? "text-rose-500 fill-rose-500/20" : "text-slate-400"} />
+            <span className="text-[10px] font-black text-slate-600 uppercase tracking-wider">Visione Stratificata</span>
+          </div>
+          <button
+            onClick={() => {
+              console.log("Toggling stratified view. Current:", isStratifiedView);
+              setIsStratifiedView(!isStratifiedView);
+            }}
+            className={`w-10 h-5.5 rounded-full transition-all relative cursor-pointer outline-none border-none ${isStratifiedView ? 'bg-rose-600 shadow-[0_0_10px_rgba(225,29,72,0.3)]' : 'bg-slate-200 shadow-inner'}`}
+          >
+            <div className={`absolute top-1 w-3.5 h-3.5 bg-white rounded-full shadow-sm transition-all duration-300 ${isStratifiedView ? 'left-5.5' : 'left-1'}`} />
+          </button>
+        </div>
       </div>
 
       {/* Navigation Help */}
@@ -5103,6 +6393,10 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
         <div className="flex items-center gap-2 text-[10px] font-bold text-slate-500">
           <div className="bg-slate-100 px-2 py-1 rounded border-b-2 border-slate-300">Destro</div> PAN
         </div>
+        <div className="w-px h-4 bg-slate-200" />
+        <div className="flex items-center gap-2 text-[10px] font-bold text-indigo-500">
+          <div className="bg-indigo-50 px-2 py-1 rounded border-b-2 border-indigo-200">CTRL</div> + Click FACCIA FINITURA
+        </div>
       </div>
 
       {/* 3D SCENE CANVAS */}
@@ -5113,6 +6407,46 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
           ) : (
              <Environment preset="city" />
           )}
+
+          {pendingFace && (
+            <group>
+              {/* Bottom contour */}
+              <Line
+                points={pendingFace.points.map((p: any) => [
+                  p.x / 100,
+                  (pendingFace.zPlane / 100),
+                  -p.y / 100
+                ])}
+                color="green"
+                lineWidth={4}
+                closed={!pendingFace.isLinear}
+              />
+              {/* Top contour */}
+              <Line
+                points={pendingFace.points.map((p: any) => [
+                  p.x / 100,
+                  (pendingFace.zPlane / 100) + (pendingFace.objectHeight / 100),
+                  -p.y / 100
+                ])}
+                color="green"
+                lineWidth={4}
+                closed={!pendingFace.isLinear}
+              />
+              {/* Vertical connectors */}
+              {pendingFace.points.map((p: any, i: number) => (
+                <Line
+                  key={i}
+                  points={[
+                    [p.x / 100, (pendingFace.zPlane / 100), -p.y / 100],
+                    [p.x / 100, (pendingFace.zPlane / 100) + (pendingFace.objectHeight / 100), -p.y / 100]
+                  ]}
+                  color="green"
+                  lineWidth={4}
+                />
+              ))}
+            </group>
+          )}
+
           {cameraViewMode === 'ISO' ? (
             <PerspectiveCamera 
               key="perspective-cam"
@@ -5267,7 +6601,204 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
                   key={entity.id} 
                     onClick={(e) => {
                       e.stopPropagation();
-                      if (e.shiftKey) {
+                      const isBlocOrModifier = isPickFaceMode !== 'OFF' || e.ctrlKey || e.altKey || (e.nativeEvent && e.nativeEvent.getModifierState && e.nativeEvent.getModifierState('CapsLock'));
+                      
+                      if (isBlocOrModifier) {
+                        if (!e.object || !e.face || !onCreateFaceFinish) {
+                           onShowToast?.("Errore: impossibile rilevare la faccia.");
+                           return;
+                        }
+                        
+                        const mesh = e.object as THREE.Mesh;
+                        if (!mesh.geometry || !mesh.geometry.attributes.position) {
+                           onShowToast?.("Errore: la geometria non è compatibile.");
+                           return;
+                        }
+                        
+                        const normalMatrix = new THREE.Matrix3().getNormalMatrix(mesh.matrixWorld);
+                        const clickedNormal = e.face.normal.clone().applyMatrix3(normalMatrix).normalize();
+                        
+                        const isHorizontal = Math.abs(clickedNormal.y) > 0.9;
+                        const isVertical = Math.abs(clickedNormal.y) < 0.1;
+                        
+                        if (!isVertical && !isHorizontal) {
+                           onShowToast?.("Faccia ignorata (non è perfettamente orizzontale o verticale).");
+                           return;
+                        }
+                        
+                        const geom = mesh.geometry as THREE.BufferGeometry;
+                        const pos = geom.attributes.position;
+                        const idx = geom.index;
+                        
+                        const targetPoint = new THREE.Vector3().fromBufferAttribute(pos, e.face.a).applyMatrix4(mesh.matrixWorld);
+                        const worldVertices: THREE.Vector3[] = [];
+                        
+                        const checkTriangle = (a: number, b: number, c: number) => {
+                            const vA = new THREE.Vector3().fromBufferAttribute(pos, a).applyMatrix4(mesh.matrixWorld);
+                            const vB = new THREE.Vector3().fromBufferAttribute(pos, b).applyMatrix4(mesh.matrixWorld);
+                            const vC = new THREE.Vector3().fromBufferAttribute(pos, c).applyMatrix4(mesh.matrixWorld);
+                            
+                            const edge1 = new THREE.Vector3().subVectors(vB, vA);
+                            const edge2 = new THREE.Vector3().subVectors(vC, vA);
+                            const triNormal = new THREE.Vector3().crossVectors(edge1, edge2).normalize();
+                            
+                            if (triNormal.dot(clickedNormal) > 0.99) {
+                                const dist = Math.abs(clickedNormal.dot(new THREE.Vector3().subVectors(vA, targetPoint)));
+                                if (dist < 0.05) {
+                                    worldVertices.push(vA, vB, vC);
+                                }
+                            }
+                        };
+                        
+                        if (idx) {
+                            for (let i=0; i<idx.count; i+=3) {
+                                checkTriangle(idx.getX(i), idx.getX(i+1), idx.getX(i+2));
+                            }
+                        } else {
+                            for (let i=0; i<pos.count; i+=3) {
+                                checkTriangle(i, i+1, i+2);
+                            }
+                        }
+                        
+                        if (worldVertices.length === 0) {
+                            onShowToast?.("Nessun vertice complanare trovato.");
+                            return;
+                        }
+
+                        const handleDetectedFace = (data: any) => {
+                          if (isPickFaceMode === 'PICKING') {
+                            setPendingFace(data);
+                            setIsPickFaceMode('PENDING');
+                            onShowToast?.("Contorno rilevato. Clicca di nuovo per confermare.");
+                          } else if (isPickFaceMode === 'PENDING') {
+                             onCreateFaceFinish(pendingFace.points, pendingFace.isLinear, pendingFace.zPlane, pendingFace.objectHeight);
+                             // setPendingFace(null); // Keep pending face for preview
+                             // setIsPickFaceMode('PICKING'); // Keep mode active
+                          } else {
+                            // Direct call (Shift/Ctrl/Alt keys)
+                            onCreateFaceFinish(data.points, data.isLinear, data.zPlane, data.objectHeight);
+                          }
+                        };
+                        
+                        if (isVertical) {
+                            let minZ = Infinity, maxZ = -Infinity;
+                            
+                            for (const v of worldVertices) {
+                                if (v.y < minZ) minZ = v.y;
+                                if (v.y > maxZ) maxZ = v.y;
+                            }
+                            
+                            if (e.shiftKey) {
+                                // "Bloc FN" behavior: select entire contour
+                                let minXY = worldVertices[0], maxXY = worldVertices[0];
+                                let maxDistSq = 0;
+                                for (let i = 0; i < worldVertices.length; i++) {
+                                    for (let j = i + 1; j < worldVertices.length; j++) {
+                                        const distSq = Math.pow(worldVertices[i].x - worldVertices[j].x, 2) + Math.pow(worldVertices[i].z - worldVertices[j].z, 2);
+                                        if (distSq > maxDistSq) {
+                                            maxDistSq = distSq;
+                                            minXY = worldVertices[i];
+                                            maxXY = worldVertices[j];
+                                        }
+                                    }
+                                }
+                                let p1 = { x: minXY.x * 100, y: -minXY.z * 100 };
+                                let p2 = { x: maxXY.x * 100, y: -maxXY.z * 100 };
+                                
+                                const dx = p2.x - p1.x;
+                                const dy = p2.y - p1.y;
+                                const dot = (-dy) * clickedNormal.x + (dx) * (-clickedNormal.z);
+                                if (dot < 0) {
+                                    const temp = p1;
+                                    p1 = p2;
+                                    p2 = temp;
+                                }
+                                
+                                handleDetectedFace({ points: [p1, p2], isLinear: true, zPlane: minZ * 100, objectHeight: (maxZ - minZ) * 100 });
+                            } else {
+                                // Default: merge contiguous edges on the base and find the one clicked
+                                type Edge = { p1: THREE.Vector3, p2: THREE.Vector3 };
+                                const edges: Edge[] = [];
+                                for (let i = 0; i < worldVertices.length; i += 3) {
+                                    const vA = worldVertices[i];
+                                    const vB = worldVertices[i+1];
+                                    const vC = worldVertices[i+2];
+                                    edges.push({ p1: vA, p2: vB }, { p1: vB, p2: vC }, { p1: vC, p2: vA });
+                                }
+
+                                const uniqueEdges: Edge[] = [];
+                                const edgeKeys = new Set<string>();
+                                for (const edge of edges) {
+                                    const p1 = edge.p1.x < edge.p2.x || (edge.p1.x === edge.p2.x && edge.p1.z < edge.p2.z) ? edge.p1 : edge.p2;
+                                    const p2 = p1 === edge.p1 ? edge.p2 : edge.p1;
+                                    const key = `${p1.x.toFixed(2)},${p1.z.toFixed(2)}-${p2.x.toFixed(2)},${p2.z.toFixed(2)}`;
+                                    if (!edgeKeys.has(key)) {
+                                        edgeKeys.add(key);
+                                        uniqueEdges.push({ p1: p1, p2: p2 });
+                                    }
+                                }
+
+                                // Filter to base edges only
+                                const baseEdges = uniqueEdges.filter(edge =>
+                                    Math.abs(edge.p1.y - minZ) < 0.1 && Math.abs(edge.p2.y - minZ) < 0.1
+                                );
+                                const edgesToSearch = baseEdges.length > 0 ? baseEdges : uniqueEdges;
+
+                                let minDistance = Infinity;
+                                let closestSegment = edgesToSearch[0];
+
+                                const distToSegment = (p: THREE.Vector3, a: THREE.Vector3, b: THREE.Vector3) => {
+                                    const pa = new THREE.Vector3().subVectors(p, a);
+                                    const ba = new THREE.Vector3().subVectors(b, a);
+                                    if (ba.lengthSq() === 0) return p.distanceTo(a);
+                                    const t = Math.max(0, Math.min(1, pa.dot(ba) / ba.lengthSq()));
+                                    const closest = new THREE.Vector3().addVectors(a, ba.multiplyScalar(t));
+                                    return p.distanceTo(closest);
+                                };
+
+                                for (const seg of edgesToSearch) {
+                                    const d = distToSegment(e.point, seg.p1, seg.p2);
+                                    if (d < minDistance) {
+                                        minDistance = d;
+                                        closestSegment = seg;
+                                    }
+                                }
+
+                                let p1 = { x: closestSegment.p1.x * 100, y: -closestSegment.p1.z * 100 };
+                                let p2 = { x: closestSegment.p2.x * 100, y: -closestSegment.p2.z * 100 };
+                                
+                                const dx = p2.x - p1.x;
+                                const dy = p2.y - p1.y;
+                                const dot = (-dy) * clickedNormal.x + (dx) * (-clickedNormal.z);
+                                if (dot < 0) {
+                                    const temp = p1;
+                                    p1 = p2;
+                                    p2 = temp;
+                                }
+                                
+                                handleDetectedFace({ points: [p1, p2], isLinear: true, zPlane: minZ * 100, objectHeight: (maxZ - minZ) * 100 });
+                            }
+                        } else {
+                            const pts = worldVertices.map(v => ({ x: v.x * 100, y: -v.z * 100 }));
+                            
+                            // Use all unique points to form the contour instead of just convex hull
+                            const unique: {x: number, y: number}[] = [];
+                            const seen = new Set<string>();
+                            for (const p of pts) {
+                                const k = `${Math.round(p.x/5)},${Math.round(p.y/5)}`; // tolerance
+                                if (!seen.has(k)) {
+                                    seen.add(k);
+                                    unique.push(p);
+                                }
+                            }
+                            
+                            // Sort points to form a polygon path
+                            const center = unique.reduce((acc, p) => ({x: acc.x + p.x/unique.length, y: acc.y + p.y/unique.length}), {x:0, y:0});
+                            unique.sort((a, b) => Math.atan2(a.y - center.y, a.x - center.x) - Math.atan2(b.y - center.y, b.x - center.x));
+
+                            handleDetectedFace({ points: unique, isLinear: false, zPlane: targetPoint.y * 100, objectHeight: 5 });
+                        }
+                      } else if (e.shiftKey) {
                         handleSelectSecondary(entity);
                       } else {
                         handleSelect(entity);
@@ -5278,14 +6809,13 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
                     handleSelect(entity);
                     handleOpenClickDialog(entity);
                   }}
-                  onPointerOver={(e) => { e.stopPropagation(); setHoveredId(entity.id); }}
-                  onPointerOut={(e) => { e.stopPropagation(); setHoveredId(null); }}
                 >
                   <group position={[px, py, pz]} rotation={[rx, ry, rz]}>
                     <group position={[-px, -py, -pz]}>
                       {(() => {
                         const baseZ = (e.bimZPlane || 0) + (e.bimZElevation || 0);
                         const heightValue = e.bimHeight || e.height || 270;
+                        const stackedOffsetInfo = getCoincidentStackedOffset(entity, entities);
                         
                         if (entity.type === 'bim-csg') {
                           return (
@@ -5311,6 +6841,7 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
                               hatchPatternMode={hatchPatternMode}
                               parentPivot={[px, py, pz]}
                               parentRotation={[rx, ry, rz]}
+                              isStratifiedView={isStratifiedView}
                             />
                           );
                         } else if (isMuro) {
@@ -5324,7 +6855,7 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
                               width={e.bimWidth || e.width}
                               color={color} 
                               name={e.bimName}
-                              areaType="muro" 
+                              areaType={e.bimAreaType || "muro"} 
                               baseZ={baseZ} 
                               bimFamilyId={e.bimFamilyId || e.bimAreaType || e.bimFamily}
                               clippingPlanes={clippingPlanes} 
@@ -5346,6 +6877,10 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
                               hatchPatternMode={hatchPatternMode}
                               parentPivot={[px, py, pz]}
                               parentRotation={[rx, ry, rz]}
+                              coincidentWallWidth={stackedOffsetInfo.baseWallWidth}
+                              coincidentOffset={stackedOffsetInfo.offsetZ}
+                              sideSign={(e as any).sideSign}
+                              isFaceAligned={(e as any).isFaceAligned}
                             />
                           ) : (
                             <Wall 
@@ -5354,7 +6889,7 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
                               width={e.bimWidth} 
                               color={color} 
                               baseZ={baseZ} 
-                              bimFamilyId={e.bimFamilyId || e.bimAreaType}
+                              bimFamilyId={e.bimFamilyId || e.bimAreaType || e.bimFamily || e.bimName || ''}
                               clippingPlanes={clippingPlanes} 
                               opacity={entityOpacity} 
                               globalOpacityMode={globalOpacityMode}
@@ -5384,10 +6919,11 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
                               points={points} 
                               holes={e.holes}
                               height={heightValue} 
+                              width={e.bimWidth || e.width}
                               color={color} 
                               name={e.bimName}
                               baseZ={baseZ}
-                              bimFamilyId={e.bimFamilyId || e.bimAreaType}
+                              bimFamilyId={e.bimFamilyId || e.bimAreaType || e.bimFamily || e.bimName || ''}
                               clippingPlanes={clippingPlanes}
                               opacity={entityOpacity}
                               globalOpacityMode={globalOpacityMode}
@@ -5407,6 +6943,10 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
                               hatchPatternMode={hatchPatternMode}
                               parentPivot={[px, py, pz]}
                               parentRotation={[rx, ry, rz]}
+                              coincidentWallWidth={stackedOffsetInfo.baseWallWidth}
+                              coincidentOffset={stackedOffsetInfo.offsetZ}
+                              sideSign={(e as any).sideSign}
+                              isFaceAligned={(e as any).isFaceAligned}
                             />
                           );
                         } else if (entity.bimType === 'door' || entity.bimType === 'window') {
@@ -5416,7 +6956,7 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
                       })()}
                     </group>
                   </group>
-                  {isHovered && <Edges color="cyan" />}
+                  {/* isHovered && <Edges color="cyan" /> */}
                 </group>
               );
             })}
@@ -5432,8 +6972,9 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
             setIsAreaEditOpen(false);
             setEditingEntityId(null);
           }}
-          onConfirm={handleConfirmAreaEdit}
-          initialData={{
+          onConfirm={isFaceSurveyMode ? handleConfirmFaceCreation : handleConfirmAreaEdit}
+          isFaceSurveyMode={isFaceSurveyMode}
+          initialData={isFaceSurveyMode ? undefined : {
             familyId: (selectedEntity as any).bimFamilyId || (selectedEntity as any).bimAreaType || 'Fondazioni',
             subFamily: (selectedEntity as any).bimFamily || (selectedEntity as any).bimSubFamily || '',
             name: (selectedEntity as any).bimName || '',
@@ -5441,8 +6982,10 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
             zPlane: (selectedEntity as any).bimZPlane || 0,
             zElevation: (selectedEntity as any).bimZElevation || 0,
             objectHeight: (selectedEntity as any).bimHeight || (selectedEntity as any).height || 270,
+            objectWidth: (selectedEntity as any).bimWidth || (selectedEntity as any).width,
             hatch: (selectedEntity as any).bimHatchPattern || 'SOLID',
-            bimRenderMode: (selectedEntity as any).bimRenderMode || 'solid'
+            bimRenderMode: (selectedEntity as any).bimRenderMode || 'solid',
+            sideSign: (selectedEntity as any).sideSign
           }}
           onDelete={() => handleDeleteEntity(selectedEntity.id)}
           floors={floors}

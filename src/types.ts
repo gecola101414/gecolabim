@@ -80,7 +80,7 @@ export interface CADEntity {
   /** @deprecated Use bimData instead */
   backgroundColor?: string;
   /** @deprecated Use bimData instead */
-  bimHatchPattern?: 'SOLID' | 'ANSI31' | 'CROSS' | 'NONE'; 
+  bimHatchPattern?: string; 
   /** @deprecated Use bimData instead */
   bimRenderMode?: 'solid' | 'transparent' | 'parete_verticale' | 'parete_orizzontale';
   /** @deprecated Use bimData instead */
@@ -91,6 +91,8 @@ export interface CADEntity {
   bimTrasmittanza?: number;
   /** @deprecated Use bimData instead */
   hideIn2D?: boolean;
+  isLinear?: boolean;
+  isFaceAligned?: boolean;
 }
 
 export interface LineEntity extends CADEntity {
@@ -239,4 +241,5 @@ export interface Floor {
   name: string;
   elevation: number; // in centimeters (Z Base)
   type: 'fuori_terra' | 'interrato';
+  visibleInPlan?: boolean;
 }

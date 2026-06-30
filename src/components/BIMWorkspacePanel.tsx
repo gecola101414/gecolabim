@@ -639,6 +639,16 @@ export function BIMWorkspacePanel({
         if (e.id === selectedId) {
           let updated = { ...e, [field]: value } as any;
           
+          // Clear bimData so it's regenerated from updated legacy fields
+          if (field.startsWith('bim') || field === 'color' || field === 'backgroundColor') {
+            updated.bimData = undefined;
+          }
+
+          if (field === 'bimFamily' || field === 'bimAreaType') {
+             updated.bimSubFamily = value;
+             updated.bimFamilyId = value;
+          }
+          
           if (field === 'bimWidth' && (e.bimType === 'door' || e.bimType === 'window')) {
             const start = (e as any).start;
             const end = (e as any).end;
@@ -954,7 +964,19 @@ export function BIMWorkspacePanel({
                               <span className={`text-[10.5px] truncate max-w-[105px] ${
                                 isSelected ? "font-black text-cyan-950" : "text-slate-650 font-medium"
                               } ${isHidden ? "opacity-45 line-through decoration-slate-400" : ""}`}>
-                                {(member as any).bimName || "Elemento senza nome"}
+                                <div className="flex items-center gap-1.5 flex-wrap">
+                                  {(member as any).bimName || "Elemento senza nome"}
+                                  {((member as any).objectWidth || (member as any).bimWidth) && (
+                                    <span className="px-1.5 py-0.5 rounded-md bg-emerald-500/15 text-[9px] text-emerald-400 font-mono font-black border border-emerald-500/20 shadow-sm">
+                                      S: {(member as any).objectWidth || (member as any).bimWidth}cm
+                                    </span>
+                                  )}
+                                  {((member as any).pattern && (member as any).pattern !== 'SOLID' && (member as any).pattern !== 'NONE') && (
+                                    <span className="px-1.5 py-0.5 rounded-md bg-indigo-500/15 text-[9px] text-indigo-400 font-mono font-black border border-indigo-500/20 shadow-sm uppercase">
+                                      {(member as any).pattern.replace('TILE_', '').replace('PARQUET_', '')}
+                                    </span>
+                                  )}
+                                </div>
                               </span>
                             </div>
                             
@@ -1960,7 +1982,25 @@ export function BIMWorkspacePanel({
             entities={entities}
             onClose={() => setShowPropertyDialogId(null)}
             onUpdateField={(id, field, value) => {
-              setEntities((prevUps: Entity[]) => prevUps.map(x => x.id === id ? { ...x, [field]: value } as any : x));
+              setEntities((prevUps: Entity[]) => {
+                const next = prevUps.map(x => {
+                  if (x.id === id) {
+                    const updated = { ...x, [field]: value } as any;
+                    // Clear bimData on any BIM-related field update
+                    if (field.startsWith('bim') || field === 'color' || field === 'backgroundColor') {
+                      updated.bimData = undefined;
+                    }
+                    if (field === 'bimFamily' || field === 'bimAreaType') {
+                      updated.bimSubFamily = value;
+                      updated.bimFamilyId = value;
+                    }
+                    return updated;
+                  }
+                  return x;
+                });
+                onCommitHistory?.(next);
+                return next;
+              });
             }}
           />
         );

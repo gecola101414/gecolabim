@@ -5,8 +5,10 @@ import * as THREE from 'three';
  * Procedural texture generator for realistic BIM materials
  */
 export const createBIMMaterialTexture = (
-  type: 'concrete' | 'masonry' | 'partition' | 'plaster' | 'stone',
-  variant: 'side' | 'top' = 'side'
+  type: 'concrete' | 'masonry' | 'partition' | 'plaster' | 'plaster_rustic' | 'stone' | 'insulation' | 'tiles' | 'casseri',
+  variant: 'side' | 'top' = 'side',
+  color?: string,
+  orientation: 'horizontal' | 'vertical' = 'horizontal'
 ): THREE.CanvasTexture => {
   const size = 512;
   const canvas = document.createElement('canvas');
@@ -15,83 +17,132 @@ export const createBIMMaterialTexture = (
   const ctx = canvas.getContext('2d')!;
 
   if (type === 'concrete') {
-    // Base color (Light Cement gray - natural)
-    ctx.fillStyle = variant === 'top' ? '#cbd5e1' : '#94a3b8';
+    // Base color: Concrete Grey
+    ctx.fillStyle = '#94a3b8';
     ctx.fillRect(0, 0, size, size);
 
-    // Add fine noise
-    for (let i = 0; i < 30000; i++) {
-      const x = Math.random() * size;
-      const y = Math.random() * size;
-      const grey = Math.random() * 40 - 20;
-      ctx.fillStyle = `rgba(${170 + grey}, ${170 + grey}, ${170 + grey}, 0.15)`;
-      ctx.fillRect(x, y, 1, 1);
+    // Subtle grain noise for concrete
+    for (let i = 0; i < 20000; i++) {
+        const x = Math.random() * size;
+        const y = Math.random() * size;
+        const grey = Math.random() * 40 - 20;
+        ctx.fillStyle = `rgba(${100 + grey}, ${100 + grey}, ${100 + grey}, 0.15)`;
+        ctx.fillRect(x, y, 1, 1);
     }
 
     if (variant === 'side') {
-      // Formwork board patterns (tavole di armatura) - typical of construction sites
-      const boardHeight = size / 6;
-      for (let i = 0; i < 6; i++) {
-        const y = i * boardHeight;
+      // Formwork board marks (orme delle tavole) - 50cm spacing
+      const boardSize = 85; 
+      const numBoards = Math.ceil(size / boardSize);
+      
+      for (let i = 0; i <= numBoards; i++) {
+        const pos = i * boardSize;
         
-        // Board joints (darker and more defined)
-        ctx.strokeStyle = 'rgba(0,0,0,0.25)';
+        // Board joints (Subtle gray for marks on concrete)
+        ctx.strokeStyle = 'rgba(0, 0, 0, 0.15)'; 
         ctx.lineWidth = 2;
         ctx.beginPath();
-        ctx.moveTo(0, y);
-        ctx.lineTo(size, y);
-        ctx.stroke();
-
-        // Wood grain simulation within board (more visible)
-        ctx.strokeStyle = 'rgba(0,0,0,0.06)';
-        ctx.lineWidth = 1;
-        for (let j = 0; j < 18; j++) {
-          const gy = y + Math.random() * boardHeight;
-          ctx.beginPath();
-          ctx.moveTo(0, gy);
-          ctx.bezierCurveTo(size/3, gy + 12, size*2/3, gy - 12, size, gy);
+        
+        if (orientation === 'horizontal') {
+          ctx.moveTo(0, pos);
+          ctx.lineTo(size, pos);
           ctx.stroke();
-        }
-
-        // Bolt holes (distanziatori/casseri) - characteristic holes in concrete walls
-        const holes = 3;
-        for (let h = 0; h < holes; h++) {
-          const hx = (size / holes) * h + size / (holes * 2);
-          const hy = y + boardHeight / 2;
           
-          // Outer hole shadow
-          ctx.fillStyle = 'rgba(0,0,0,0.4)';
-          ctx.beginPath();
-          ctx.arc(hx, hy, 6, 0, Math.PI * 2);
-          ctx.fill();
-          
-          // Inner detail (the bolt itself)
-          ctx.fillStyle = 'rgba(0,0,0,0.6)';
-          ctx.beginPath();
-          ctx.arc(hx, hy, 2, 0, Math.PI * 2);
-          ctx.fill();
-
-          // Subtle circular ring highlight
-          ctx.strokeStyle = 'rgba(255,255,255,0.1)';
+          // Subtle wood grain impressions
+          ctx.strokeStyle = 'rgba(0, 0, 0, 0.05)';
           ctx.lineWidth = 1;
-          ctx.beginPath();
-          ctx.arc(hx, hy, 6, 0, Math.PI * 2);
+          for (let j = 0; j < 3; j++) {
+            const gy = pos + Math.random() * boardSize;
+            ctx.beginPath();
+            ctx.moveTo(0, gy);
+            ctx.bezierCurveTo(size/3, gy + 5, size*2/3, gy - 5, size, gy);
+            ctx.stroke();
+          }
+        } else {
+          ctx.moveTo(pos, 0);
+          ctx.lineTo(pos, size);
           ctx.stroke();
+          
+          ctx.strokeStyle = 'rgba(0, 0, 0, 0.05)';
+          ctx.lineWidth = 1;
+          for (let j = 0; j < 3; j++) {
+            const gx = pos + Math.random() * boardSize;
+            ctx.beginPath();
+            ctx.moveTo(gx, 0);
+            ctx.bezierCurveTo(gx + 5, size/3, gx - 5, size*2/3, gx, size);
+            ctx.stroke();
+          }
         }
       }
     } else {
-        // Top view: more aggregates for a rough construction look
+        // Top view: rough concrete look
         for (let i = 0; i < 400; i++) {
           const x = Math.random() * size;
           const y = Math.random() * size;
           const r = Math.random() * 2 + 0.5;
-          ctx.fillStyle = `rgba(60, 60, 60, 0.2)`;
+          ctx.fillStyle = `rgba(80, 80, 80, 0.2)`;
           ctx.beginPath();
           ctx.arc(x, y, r, 0, Math.PI * 2);
           ctx.fill();
         }
     }
   } 
+  else if (type === 'casseri') {
+    // Base color: Bright Yellow/Orange for formwork boards (casseri)
+    ctx.fillStyle = '#eab308'; // yellow-600
+    ctx.fillRect(0, 0, size, size);
+
+    // Wood grain for boards
+    for (let i = 0; i < 15000; i++) {
+        const x = Math.random() * size;
+        const y = Math.random() * size;
+        const noise = Math.random() * 30 - 15;
+        ctx.fillStyle = `rgba(${234 + noise}, ${179 + noise}, ${8 + noise}, 0.2)`;
+        ctx.fillRect(x, y, 1, 1);
+    }
+
+    const boardSize = 85; 
+    const numBoards = Math.ceil(size / boardSize);
+    
+    for (let i = 0; i <= numBoards; i++) {
+      const pos = i * boardSize;
+      
+      // Board joints (Defined yellow-orange)
+      ctx.strokeStyle = 'rgba(180, 83, 9, 0.8)'; // amber-700
+      ctx.lineWidth = 4;
+      ctx.beginPath();
+      
+      if (orientation === 'horizontal') {
+        ctx.moveTo(0, pos);
+        ctx.lineTo(size, pos);
+        ctx.stroke();
+        
+        ctx.strokeStyle = 'rgba(180, 83, 9, 0.3)';
+        ctx.lineWidth = 1.5;
+        for (let j = 0; j < 8; j++) {
+          const gy = pos + Math.random() * boardSize;
+          ctx.beginPath();
+          ctx.moveTo(0, gy);
+          ctx.bezierCurveTo(size/3, gy + 12, size*2/3, gy - 12, size, gy);
+          ctx.stroke();
+        }
+      } else {
+        ctx.moveTo(pos, 0);
+        ctx.lineTo(pos, size);
+        ctx.stroke();
+        
+        ctx.strokeStyle = 'rgba(180, 83, 9, 0.3)';
+        ctx.lineWidth = 1.5;
+        for (let j = 0; j < 8; j++) {
+          const gx = pos + Math.random() * boardSize;
+          ctx.beginPath();
+          ctx.moveTo(gx, 0);
+          ctx.bezierCurveTo(gx + 12, size/3, gx - 12, size*2/3, gx, size);
+          ctx.stroke();
+        }
+      }
+    }
+  }
   else if (type === 'plaster') {
     // Plaster (Intonaco): Off-white/light gray with fine mineral grain
     ctx.fillStyle = '#f8f9fa';
@@ -117,6 +168,64 @@ export const createBIMMaterialTexture = (
       ctx.moveTo(startX, startY);
       ctx.quadraticCurveTo(startX + 50, startY + 50, startX + 100, startY);
       ctx.stroke();
+    }
+  }
+  else if (type === 'plaster_rustic') {
+    // Plaster Rustic (Intonaco Rustico): rough, sandy base with pronounced trowel marks
+    ctx.fillStyle = color || '#a8a29e'; 
+    ctx.fillRect(0, 0, size, size);
+
+    // Large trowel marks / Spatolate to give it a wavy, highly textured look
+    for (let i = 0; i < 40; i++) {
+      ctx.beginPath();
+      const x = Math.random() * size;
+      const y = Math.random() * size;
+      const w = 40 + Math.random() * 60;
+      const h = 20 + Math.random() * 40;
+      const angle = Math.random() * Math.PI;
+      
+      ctx.translate(x, y);
+      ctx.rotate(angle);
+      
+      // Shadow of the trowel mark
+      ctx.fillStyle = 'rgba(0,0,0,0.15)';
+      ctx.beginPath();
+      ctx.ellipse(5, 5, w, h, 0, 0, Math.PI * 2);
+      ctx.fill();
+      
+      // Highlight of the trowel mark
+      ctx.fillStyle = 'rgba(255,255,255,0.15)';
+      ctx.beginPath();
+      ctx.ellipse(-2, -2, w, h, 0, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Base of the trowel mark
+      ctx.fillStyle = 'rgba(150, 140, 130, 0.1)';
+      ctx.beginPath();
+      ctx.ellipse(0, 0, w, h, 0, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.rotate(-angle);
+      ctx.translate(-x, -y);
+    }
+
+    // Heavy grain and stones
+    for (let i = 0; i < 20000; i++) {
+      const x = Math.random() * size;
+      const y = Math.random() * size;
+      const isStone = Math.random() > 0.98;
+      if (isStone) {
+        // Small stones/gravel exposed
+        const r = 1 + Math.random() * 3;
+        ctx.fillStyle = Math.random() > 0.5 ? 'rgba(50,40,30,0.4)' : 'rgba(220,210,200,0.4)';
+        ctx.beginPath();
+        ctx.arc(x, y, r, 0, Math.PI*2);
+        ctx.fill();
+      } else {
+        // Sand / gritty noise
+        ctx.fillStyle = Math.random() > 0.5 ? 'rgba(0,0,0,0.1)' : 'rgba(255,255,255,0.1)';
+        ctx.fillRect(x, y, 1, 1);
+      }
     }
   }
   else if (type === 'masonry' || type === 'partition') {
@@ -239,10 +348,103 @@ export const createBIMMaterialTexture = (
       }
     }
   }
+  else if (type === 'insulation') {
+    // Soft pastel mint green / light insulation blue-green characteristic of EPS/XPS thermal boards
+    ctx.fillStyle = '#e0f2fe'; // Sky/water light blue or pastel insulation foam color
+    ctx.fillRect(0, 0, size, size);
+
+    // Fine cell/bubbly insulation noise (Styrofoam texture)
+    for (let i = 0; i < 25000; i++) {
+      const x = Math.random() * size;
+      const y = Math.random() * size;
+      const noise = Math.random() * 30 - 15;
+      const alpha = Math.random() * 0.12;
+      ctx.fillStyle = `rgba(${56 + noise}, ${189 + noise}, ${248 + noise}, ${alpha})`; // light cyan spots
+      ctx.fillRect(x, y, 1, 1);
+    }
+
+    // Classic wave/squiggle pattern representing thermal insulation/cappotto
+    ctx.strokeStyle = 'rgba(14, 165, 233, 0.45)'; // sky blue strokes
+    ctx.lineWidth = 3.5;
+    
+    // Draw repeating wavy lines (squiggly sine wave insulation pattern)
+    const waveCount = 10;
+    const waveLength = size / waveCount;
+    for (let j = 0; j < waveCount; j++) {
+      const xOffset = j * waveLength;
+      ctx.beginPath();
+      for (let y = 0; y <= size; y += 4) {
+        // Sine wave squiggle
+        const x = xOffset + waveLength/2 + Math.sin(y * 0.05) * (waveLength / 3);
+        if (y === 0) {
+          ctx.moveTo(x, y);
+        } else {
+          ctx.lineTo(x, y);
+        }
+      }
+      ctx.stroke();
+    }
+  }
+  else if (type === 'tiles') {
+    // Modern rectangular tiles (e.g. 50x80 cm)
+    // Use the color parameter if provided, otherwise default to a light grey
+    const baseColor = color || (variant === 'top' ? '#f1f5f9' : '#e2e8f0');
+    ctx.fillStyle = baseColor;
+    ctx.fillRect(0, 0, size, size);
+
+    // Subtle noise for stoneware texture
+    for (let i = 0; i < 20000; i++) {
+      const x = Math.random() * size;
+      const y = Math.random() * size;
+      const noise = Math.random() * 20 - 10;
+      const alpha = Math.random() * 0.05;
+      ctx.fillStyle = `rgba(${150 + noise}, ${150 + noise}, ${150 + noise}, ${alpha})`;
+      ctx.fillRect(x, y, 2, 2);
+    }
+
+    // Draw tile joints (fughe) - rectangular format 50x100
+    // Width = 50cm, Height = 100cm. The texture represents a 100x100cm area.
+    const tileWidth = size / 2; // 50cm
+    const tileHeight = size; // 100cm
+    
+    const jointColor = 'rgba(255, 255, 255, 1)'; // bright white joints (fughe bianche)
+    const shadowColor = 'rgba(0, 0, 0, 0.15)';
+
+    ctx.lineWidth = 4; // thicker grout lines
+    
+    // Draw tiles with alternating/staggered grid pattern (sfalsato)
+    for (let y = 0; y <= size; y += tileHeight) {
+      const rowOffset = (y / tileHeight) % 2 === 0 ? 0 : tileWidth / 2;
+      for (let x = -tileWidth; x <= size; x += tileWidth) {
+        const drawX = x + rowOffset;
+        
+        // Tile background subtle gradient
+        const grad = ctx.createLinearGradient(drawX, y, drawX + tileWidth, y + tileHeight);
+        grad.addColorStop(0, 'rgba(255,255,255,0.15)');
+        grad.addColorStop(1, 'rgba(0,0,0,0.08)');
+        ctx.fillStyle = grad;
+        ctx.fillRect(drawX, y, tileWidth, tileHeight);
+
+        // Tile joints
+        ctx.strokeStyle = jointColor;
+        ctx.strokeRect(drawX, y, tileWidth, tileHeight);
+
+        // Subtle shadow/bevel
+        ctx.strokeStyle = shadowColor;
+        ctx.beginPath();
+        ctx.moveTo(drawX + tileWidth - 2, y + 2);
+        ctx.lineTo(drawX + tileWidth - 2, y + tileHeight - 2);
+        ctx.lineTo(drawX + 2, y + tileHeight - 2);
+        ctx.stroke();
+      }
+    }
+  }
 
   const texture = new THREE.CanvasTexture(canvas);
   texture.wrapS = THREE.RepeatWrapping;
   texture.wrapT = THREE.RepeatWrapping;
   texture.anisotropy = 16;
+  texture.minFilter = THREE.LinearFilter;
+  texture.magFilter = THREE.LinearFilter;
   return texture;
 };

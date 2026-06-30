@@ -13,6 +13,7 @@ import {
   ChevronRight,
   Maximize2,
   Lightbulb,
+  LightbulbOff,
   Plug,
   Power,
   Repeat,
@@ -45,6 +46,7 @@ import { Point, Entity, Floor } from '../types';
 import { TEMPLATES, Template } from '../data/templates';
 import { TemplatePreview } from './TemplatePreview';
 import { BIM_FAMILIES, BIMFamily } from '../data/bimFamilies';
+import { BIM_HATCH_PATTERNS } from '../data/hatchPatterns';
 
 // --- DRAGGABLE WRAPPER HELPERS ---
 function useDraggableDialog(isOpen: boolean, defaultPos: { x: number; y: number }) {
@@ -958,13 +960,7 @@ export const FinitureDialog: React.FC<FinitureDialogProps> = ({
     onActivateFlooringHatch();
   };
 
-  const patternOptions = [
-    { id: 'ANSI31', name: 'Parquet trasversale' },
-    { id: 'GRID', name: 'Piastrella Ceramica (Griglia)' },
-    { id: 'BRICK', name: 'Gres Porcellanato Brick' },
-    { id: 'ANSI32', name: 'Spina di Pesce (Chevron)' },
-    { id: 'SOLID', name: 'Tinta unita (Massetto)' },
-  ];
+  const patternOptions = BIM_HATCH_PATTERNS.map(p => ({ id: p.id, name: p.name }));
 
   return (
     <div 
@@ -1070,9 +1066,11 @@ interface BIMElementDialogProps {
     zElevation: number;
     objectHeight: number;
     objectWidth?: number;
-    hatch: 'SOLID' | 'ANSI31' | 'CROSS' | 'NONE';
+    hatch: string;
     bimRenderMode?: 'solid' | 'transparent' | 'parete_verticale' | 'parete_orizzontale';
     duplicate?: boolean;
+    overlay?: boolean;
+    sideSign?: number;
   }) => void;
   points?: Point[] | { points: Point[], holes?: Point[][] };
   initialData?: {
@@ -1084,13 +1082,15 @@ interface BIMElementDialogProps {
     zElevation: number;
     objectHeight: number;
     objectWidth?: number;
-    hatch: 'SOLID' | 'ANSI31' | 'CROSS' | 'NONE';
+    hatch: string;
     bimRenderMode?: 'solid' | 'transparent' | 'parete_verticale' | 'parete_orizzontale';
+    sideSign?: number;
   };
   onDelete?: () => void;
   floors: Floor[];
   isMultiAreaMode?: boolean;
   onToggleMultiAreaMode?: (checked: boolean) => void;
+  isFaceSurveyMode?: boolean;
 }
 
 export const BIMElementDialog: React.FC<BIMElementDialogProps> = ({
@@ -1102,7 +1102,8 @@ export const BIMElementDialog: React.FC<BIMElementDialogProps> = ({
   onDelete,
   floors,
   isMultiAreaMode,
-  onToggleMultiAreaMode
+  onToggleMultiAreaMode,
+  isFaceSurveyMode
 }) => {
   const { position, handlePointerDown, handlePointerMove, handlePointerUp } = useDraggableDialog(isOpen, { x: 300, y: 130 });
   
@@ -1115,12 +1116,33 @@ export const BIMElementDialog: React.FC<BIMElementDialogProps> = ({
   const [zElevationInput, setZElevationInput] = useState<string>('0');
   const [objectHeightInput, setObjectHeightInput] = useState<string>('270');
   const [objectWidthInput, setObjectWidthInput] = useState<string>('15');
-  const [hatch, setHatch] = useState<'SOLID' | 'ANSI31' | 'CROSS' | 'NONE'>('SOLID');
+  const [hatch, setHatch] = useState<string>('SOLID');
   const [bimRenderMode, setBimRenderMode] = useState<'solid' | 'transparent' | 'parete_verticale' | 'parete_orizzontale'>('solid');
+  const [sideSign, setSideSign] = useState<number>(1);
   
   const [customFamilyMode, setCustomFamilyMode] = useState(false);
   const [customFamilyName, setCustomFamilyName] = useState('');
   const [shouldDuplicate, setShouldDuplicate] = useState(false);
+  const [shouldOverlay, setShouldOverlay] = useState(false);
+
+  const isLinear = useMemo(() => {
+    const pts: any = points;
+    if (!pts) {
+      if (initialData) {
+        return initialData.bimRenderMode === 'parete_verticale' || 
+               initialData.familyId === 'intonaco_completo' || 
+               initialData.familyId === 'intonaco_rustico' || 
+               initialData.familyId === 'rivestimenti';
+      }
+      return false;
+    }
+    const ptsArr = Array.isArray(pts) ? pts : [pts];
+    const first = ptsArr[0];
+    if (!first) return false;
+    if (first.isLinear) return true;
+    if (first.points && first.isLinear) return true;
+    return false;
+  }, [points, initialData]);
 
   const currentFamily = useMemo(() => BIM_FAMILIES.find(f => f.id === familyId), [familyId]);
   const hasInitializedRef = useRef(false);
@@ -1158,21 +1180,32 @@ export const BIMElementDialog: React.FC<BIMElementDialogProps> = ({
         setObjectWidthInput((initialData.objectWidth || 15).toString());
         setHatch(initialData.hatch);
         setBimRenderMode(initialData.bimRenderMode || 'solid');
+        setSideSign((initialData as any).sideSign !== undefined ? (initialData as any).sideSign : 1);
       } else {
-        const lastFam = localStorage.getItem('last_bim_family') || BIM_FAMILIES[0].id;
+        const pts: any = points;
+        const isFrom3D = pts && pts.from3DFace;
+        const lastFam = isFrom3D ? 'intonaco_completo' : (localStorage.getItem('last_bim_family') || BIM_FAMILIES[0].id);
         const famObj = BIM_FAMILIES.find(f => f.id === lastFam);
         
         setFamilyId(lastFam);
         setSubFamily('');
         setName(famObj?.name || '');
         setColor(famObj?.defaultColor || '#34d399');
-        setZElevationInput(localStorage.getItem('last_bim_zElevation') || '0');
-        setObjectHeightInput(localStorage.getItem('last_bim_height') || '270');
-        setObjectWidthInput(localStorage.getItem('last_bim_width') || '15');
+        setZElevationInput(isFrom3D && pts.zPlane !== undefined ? pts.zPlane.toString() : (localStorage.getItem('last_bim_zElevation') || '0'));
+        setObjectHeightInput(isFrom3D && pts.objectHeight !== undefined ? pts.objectHeight.toString() : (localStorage.getItem('last_bim_height') || '270'));
+        
+        if (lastFam === 'intonaco_completo' || lastFam === 'intonaco_rustico' || lastFam === 'rivestimenti') {
+          setObjectWidthInput('1');
+        } else {
+          setObjectWidthInput(localStorage.getItem('last_bim_width') || '15');
+        }
         setHatch('SOLID');
         
-        const isLinear = points && !Array.isArray(points) && (points as any).isLinear;
         setBimRenderMode(isLinear ? 'parete_verticale' : 'solid');
+        
+        const ptsArr = Array.isArray(pts) ? pts : [pts];
+        const initialSideSign = ptsArr[0]?.sideSign !== undefined ? ptsArr[0].sideSign : 1;
+        setSideSign(initialSideSign);
       }
     } else {
       hasInitializedRef.current = false;
@@ -1186,6 +1219,11 @@ export const BIMElementDialog: React.FC<BIMElementDialogProps> = ({
     if (fam && !initialData) {
       setName(fam.name);
       setColor(fam.defaultColor);
+      if (id === 'intonaco_completo' || id === 'intonaco_rustico' || id === 'rivestimenti') {
+        setObjectWidthInput('1');
+      } else {
+        setObjectWidthInput(localStorage.getItem('last_bim_width') || '15');
+      }
     }
   };
 
@@ -1199,11 +1237,13 @@ export const BIMElementDialog: React.FC<BIMElementDialogProps> = ({
     localStorage.setItem('last_bim_zPlane', actualZPlane.toString());
     localStorage.setItem('last_bim_zElevation', zElevationInput);
     localStorage.setItem('last_bim_height', objectHeightInput);
-    localStorage.setItem('last_bim_width', objectWidthInput);
+    if (isLinear) {
+      localStorage.setItem('last_bim_width', objectWidthInput);
+    }
     
     const parsedZElevation = parseFloat(zElevationInput.replace(',', '.')) || 0;
     const parsedObjectHeight = parseFloat(objectHeightInput.replace(',', '.')) || 270;
-    const parsedObjectWidth = parseFloat(objectWidthInput.replace(',', '.')) || 15;
+    const parsedObjectWidth = isLinear ? (parseFloat(objectWidthInput.replace(',', '.')) || 15) : undefined;
 
     onConfirm({ 
       familyId: customFamilyMode ? 'custom' : familyId,
@@ -1213,10 +1253,12 @@ export const BIMElementDialog: React.FC<BIMElementDialogProps> = ({
       zPlane: actualZPlane,
       zElevation: parsedZElevation,
       objectHeight: Math.max(0.1, parsedObjectHeight), 
-      objectWidth: Math.max(0.1, parsedObjectWidth),
+      objectWidth: parsedObjectWidth !== undefined ? Math.max(0.1, parsedObjectWidth) : undefined,
       hatch,
       bimRenderMode,
-      duplicate: shouldDuplicate
+      duplicate: shouldDuplicate,
+      overlay: shouldOverlay,
+      sideSign
     });
   };
 
@@ -1235,7 +1277,7 @@ export const BIMElementDialog: React.FC<BIMElementDialogProps> = ({
         <div className="flex flex-col text-left text-ellipsis overflow-hidden">
           <h3 className="text-base font-black uppercase text-indigo-400 tracking-widest font-mono flex items-center gap-2">
             <Building size={16} className="animate-pulse" />
-            <span>{initialData ? 'MODIFICA ELEMENTO BIM' : 'RILEVAMENTO ELEMENTO BIM'}</span>
+            <span>{isFaceSurveyMode ? 'CREAZIONE FACCIA BIM' : (initialData ? 'MODIFICA ELEMENTO BIM' : 'RILEVAMENTO ELEMENTO BIM')}</span>
           </h3>
           <span className="text-[11px] text-slate-500 font-bold font-mono uppercase tracking-tighter">Standard Internazionale BIM</span>
         </div>
@@ -1306,16 +1348,17 @@ export const BIMElementDialog: React.FC<BIMElementDialogProps> = ({
           </div>
 
           <div>
-            <label className="block text-xs text-slate-400 font-black uppercase tracking-widest mb-1.5 font-mono italic">Retino (Hatch)</label>
+            <label className="block text-xs text-slate-400 font-black uppercase tracking-widest mb-1.5 font-mono italic">Retino / Geometria Identificativa</label>
             <select
               value={hatch}
-              onChange={(e) => setHatch(e.target.value as any)}
-              className="w-full bg-slate-900 border border-white/10 text-white rounded-lg p-3 text-xs font-bold focus:outline-none focus:border-indigo-500"
+              onChange={(e) => setHatch(e.target.value)}
+              className="w-full bg-slate-900 border border-white/10 text-white rounded-lg p-3 text-[11px] font-bold focus:outline-none focus:border-indigo-500 max-h-40"
             >
-              <option value="SOLID" className="bg-slate-900">Colore Pieno</option>
-              <option value="ANSI31" className="bg-slate-900">Tratteggio (ANSI31)</option>
-              <option value="CROSS" className="bg-slate-900">Reticolo (Cross)</option>
-              <option value="NONE" className="bg-slate-900">Solo Contorno</option>
+              {BIM_HATCH_PATTERNS.map(p => (
+                <option key={p.id} value={p.id} className="bg-slate-900">
+                  {p.name}
+                </option>
+              ))}
             </select>
           </div>
 
@@ -1358,7 +1401,7 @@ export const BIMElementDialog: React.FC<BIMElementDialogProps> = ({
           <div className="col-span-2 grid grid-cols-2 gap-4 bg-indigo-500/5 p-4 rounded-xl border border-indigo-500/10">
             <div>
               <label className="block text-[10px] text-slate-400 font-black uppercase tracking-widest mb-1 font-mono">
-                Quota di Partenza (2° Dato) (cm)
+                Quota di Partenza (cm)
               </label>
               <input
                 type="text"
@@ -1367,38 +1410,40 @@ export const BIMElementDialog: React.FC<BIMElementDialogProps> = ({
                 className="w-full bg-slate-900 border border-white/10 text-cyan-400 rounded p-2.5 text-sm font-mono font-bold focus:outline-none focus:border-indigo-500"
                 placeholder="Es. -6 o +10"
               />
-              <span className="text-[9px] text-slate-500 italic mt-1 block">Può essere negativo (es. massetto -6)</span>
+              <span className="text-[9px] text-slate-500 italic mt-1 block">Z relativo al piano</span>
             </div>
 
             <div>
               <label className="block text-[10px] text-slate-400 font-black uppercase tracking-widest mb-1 font-mono">
-                Altezza Oggetto (cm)
+                {bimRenderMode === 'parete_orizzontale' ? 'Spessore Solaio (cm)' : 'Altezza Oggetto (cm)'}
               </label>
               <input
                 type="text"
                 value={objectHeightInput}
                 onChange={(e) => setObjectHeightInput(e.target.value)}
                 className="w-full bg-slate-900 border border-white/10 text-white rounded p-2.5 text-sm font-mono font-bold focus:outline-none focus:border-indigo-500"
-                placeholder="Sempre positiva"
+                placeholder="Es. 270"
               />
-              <span className="text-[9px] text-slate-500 italic mt-1 block">Sempre positiva</span>
+              <span className="text-[9px] text-slate-500 italic mt-1 block">Dimensione verticale</span>
             </div>
           </div>
 
-          {/* Width Input for Linear Elements */}
-          {( (points && !Array.isArray(points) && (points as any).isLinear) || (initialData && (initialData as any).isLinear) ) && (
-            <div className="col-span-2 bg-indigo-500/5 p-4 rounded-xl border border-indigo-500/10">
+          {/* Spessore / Larghezza Elemento */}
+          {(isLinear || bimRenderMode === 'parete_verticale' || bimRenderMode === 'parete_orizzontale') && (
+            <div className="col-span-2 bg-emerald-500/5 p-4 rounded-xl border border-emerald-500/10">
                <label className="block text-[10px] text-slate-400 font-black uppercase tracking-widest mb-1 font-mono">
-                Spessore / Larghezza Elemento (cm)
+                {bimRenderMode === 'parete_orizzontale' ? 'Profondità / Larghezza Sezione (cm)' : 'Spessore Parete / Larghezza (cm)'}
               </label>
               <input
                 type="text"
                 value={objectWidthInput}
                 onChange={(e) => setObjectWidthInput(e.target.value)}
                 className="w-full bg-slate-900 border border-white/10 text-emerald-400 rounded p-2.5 text-sm font-mono font-bold focus:outline-none focus:border-indigo-500"
-                placeholder="Es. 2 per intonaco, 10 per tramezzo"
+                placeholder="Es. 15 per muro, 2 per intonaco"
               />
-              <span className="text-[9px] text-slate-500 italic mt-1 block">Utile per intonaci (es. 1.5 cm) o rivestimenti</span>
+              <span className="text-[9px] text-slate-500 italic mt-1 block">
+                {bimRenderMode === 'parete_orizzontale' ? 'Spessore della sezione orizzontale' : 'Spessore orizzontale della sezione'}
+              </span>
             </div>
           )}
 
@@ -1470,21 +1515,38 @@ export const BIMElementDialog: React.FC<BIMElementDialogProps> = ({
         )}
 
         {initialData && (
-          <div className="bg-slate-900 border border-amber-500/30 p-3.5 rounded-xl flex items-start gap-3 mt-4">
-            <input
-              id="bim-duplicate-checkbox"
-              type="checkbox"
-              checked={shouldDuplicate}
-              onChange={(e) => setShouldDuplicate(e.target.checked)}
-              className="w-4 h-4 rounded border-slate-700 text-indigo-600 focus:ring-indigo-500 bg-slate-950 accent-indigo-500 cursor-pointer mt-0.5"
-            />
-            <label htmlFor="bim-duplicate-checkbox" className="text-xs text-amber-400 font-black uppercase tracking-wider cursor-pointer flex-1 select-none">
-              <span>Duplica Elemento ⎘</span>
-              <span className="block text-[10px] text-slate-400 font-medium normal-case tracking-normal mt-0.5 leading-relaxed">
-                Genera un nuovo oggetto pari a quello evidenziato con i parametri modificati invece di aggiornarlo. Molto utile per alzare/copiare elementi identici sui vari piani.
-              </span>
-            </label>
-          </div>
+          <>
+            <div className="bg-slate-900 border border-amber-500/30 p-3.5 rounded-xl flex items-start gap-3 mt-4">
+              <input
+                id="bim-duplicate-checkbox"
+                type="checkbox"
+                checked={shouldDuplicate}
+                onChange={(e) => setShouldDuplicate(e.target.checked)}
+                className="w-4 h-4 rounded border-slate-700 text-indigo-600 focus:ring-indigo-500 bg-slate-950 accent-indigo-500 cursor-pointer mt-0.5"
+              />
+              <label htmlFor="bim-duplicate-checkbox" className="text-xs text-amber-400 font-black uppercase tracking-wider cursor-pointer flex-1 select-none">
+                <span>Duplica Elemento ⎘</span>
+                <span className="block text-[10px] text-slate-400 font-medium normal-case tracking-normal mt-0.5 leading-relaxed">
+                  Genera un nuovo oggetto pari a quello evidenziato con i parametri modificati invece di aggiornarlo.
+                </span>
+              </label>
+            </div>
+            <div className="bg-slate-900 border border-rose-500/30 p-3.5 rounded-xl flex items-start gap-3 mt-4">
+              <input
+                id="bim-overlay-checkbox"
+                type="checkbox"
+                checked={shouldOverlay}
+                onChange={(e) => setShouldOverlay(e.target.checked)}
+                className="w-4 h-4 rounded border-slate-700 text-rose-600 focus:ring-rose-500 bg-slate-950 accent-rose-500 cursor-pointer mt-0.5"
+              />
+              <label htmlFor="bim-overlay-checkbox" className="text-xs text-rose-400 font-black uppercase tracking-wider cursor-pointer flex-1 select-none">
+                <span>Sovrapponi al precedente 🎨</span>
+                <span className="block text-[10px] text-slate-400 font-medium normal-case tracking-normal mt-0.5 leading-relaxed">
+                  Genera un nuovo oggetto identico, posizionato successivamente, perfetto per finiture o pitturazioni sopra l'oggetto esistente.
+                </span>
+              </label>
+            </div>
+          </>
         )}
 
         <div className="p-3.5 bg-indigo-500/10 border border-indigo-500/20 rounded-xl flex items-center justify-between gap-3">
@@ -1525,6 +1587,7 @@ interface FloorManagerDialogProps {
   onClose: () => void;
   floors: Floor[];
   onUpdateFloors: (newFloors: Floor[]) => void;
+  onToggleVisibility?: (floorId: string) => void;
 }
 
 export const FloorManagerDialog: React.FC<FloorManagerDialogProps> = ({
@@ -1532,6 +1595,7 @@ export const FloorManagerDialog: React.FC<FloorManagerDialogProps> = ({
   onClose,
   floors,
   onUpdateFloors,
+  onToggleVisibility,
 }) => {
   const { position, handlePointerDown, handlePointerMove, handlePointerUp } = useDraggableDialog(isOpen, { x: 400, y: 150 });
 
@@ -1678,6 +1742,20 @@ export const FloorManagerDialog: React.FC<FloorManagerDialogProps> = ({
               />
               <span className="text-[10px] text-slate-500 font-mono font-bold">cm</span>
             </div>
+
+            {/* Visibility toggle */}
+            <button
+              type="button"
+              onClick={() => onToggleVisibility && onToggleVisibility(floor.id)}
+              className={`p-1.5 rounded-lg transition-colors ${
+                floor.visibleInPlan === false
+                  ? 'text-slate-500 hover:text-white hover:bg-white/10'
+                  : 'text-yellow-400 hover:text-yellow-300 hover:bg-yellow-400/10'
+              }`}
+              title={floor.visibleInPlan === false ? "Mostra in pianta" : "Nascondi in pianta"}
+            >
+              {floor.visibleInPlan === false ? <LightbulbOff size={14} /> : <Lightbulb size={14} />}
+            </button>
 
             {/* Delete button */}
             <button 
