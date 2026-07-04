@@ -10611,22 +10611,26 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
       const startX = e.clientX - view.pan.x;
       const startY = e.clientY - view.pan.y;
 
-      const handleMouseMove = (me: MouseEvent) => {
+      const handlePointerMove = (me: PointerEvent | MouseEvent) => {
         setView(prev => ({
           ...prev,
           pan: { x: me.clientX - startX, y: me.clientY - startY }
         }));
       };
 
-      const handleMouseUp = () => {
+      const handlePointerUp = () => {
         isPanningRef.current = false;
         if (canvasRef.current) canvasRef.current.style.cursor = ''; // Reset inline style to allow parent cursor to work
-        window.removeEventListener('mousemove', handleMouseMove);
-        window.removeEventListener('mouseup', handleMouseUp);
+        window.removeEventListener('mousemove', handlePointerMove);
+        window.removeEventListener('pointermove', handlePointerMove);
+        window.removeEventListener('mouseup', handlePointerUp);
+        window.removeEventListener('pointerup', handlePointerUp);
       };
 
-      window.addEventListener('mousemove', handleMouseMove);
-      window.addEventListener('mouseup', handleMouseUp);
+      window.addEventListener('mousemove', handlePointerMove);
+      window.addEventListener('pointermove', handlePointerMove);
+      window.addEventListener('mouseup', handlePointerUp);
+      window.addEventListener('pointerup', handlePointerUp);
       return;
     }
 
@@ -14772,6 +14776,7 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
       ref={containerRef} 
       className="w-full h-full relative overflow-hidden" 
       style={{ touchAction: 'none', cursor: isSKeyPressedRef.current ? 'none' : hoveredTavolaPart ? 'pointer' : isMovingTecnigrafo ? 'grabbing' : hoverMoveTecnigrafo ? 'grab' : dragTavolaId ? 'grabbing' : hoverTavolaEdge ? 'grab' : activeTool === 'Testo' ? 'text' : activeTool === 'Eraser' ? 'none' : activeTool === 'Select' ? `url("${crosshairSvg}") 48 48, crosshair` : activeTool === 'Trim' ? `url("${scissorsSvg}") 16 16, crosshair` : defaultLineStyle.mode === 'CAD' ? 'crosshair' : defaultLineStyle.mode === 'ink' ? getKinaCursor(kinaLabel) : defaultLineStyle.mode === 'pencil' ? getPencilCursor(pencilLabel) : rulerStyle === 'crosshair' ? `url("${crosshairSvg}") 48 48, crosshair` : `url("${tecnigrafoSvg}") 20 108, crosshair` }}
+      onMouseDown={(e) => { if (e.button === 1) e.preventDefault(); }}
       onWheel={handleWheel} 
       onPointerDown={handleMouseDown} 
       onPointerMove={handleMouseMove} 

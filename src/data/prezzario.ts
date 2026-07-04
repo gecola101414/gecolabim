@@ -97,5 +97,26 @@ export const PREZZARIO_GECOLA: PrezzarioItem[] = [
     unita: "mq",
     prezzo: 38.00,
     categoria: "Opere a Secco"
+  },
+  {
+    codice: "NP.OP03.002a",
+    descrizione: "Calcestruzzo strutturale per pilastri, travi e solette in cemento armato, classe C25/30, compreso getto, compattazione con vibratore e cura del getto.",
+    unita: "mc",
+    prezzo: 145.00,
+    categoria: "Opere C.A."
+  },
+  {
+    codice: "NP.OP03.010",
+    descrizione: "Acciaio in barre d'armatura B450C tagliato, sagomato e posto in opera per strutture in cemento armato (pilastri, travi, fondazioni).",
+    unita: "kg",
+    prezzo: 1.85,
+    categoria: "Opere C.A."
+  },
+  {
+    codice: "NP.OP03.015",
+    descrizione: "Casseforme in legname o pannelli metallici per getto di pilastri verticali o pareti, compreso disarmante, puntellazione e successivo disarmo.",
+    unita: "mq",
+    prezzo: 32.00,
+    categoria: "Opere C.A."
   }
 ];
