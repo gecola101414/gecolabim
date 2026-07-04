@@ -20,8 +20,10 @@ import { BIMElementDialog, FinestreDialog, FloorManagerDialog } from "./componen
 import { BIMWorkspacePanel } from "./components/BIMWorkspacePanel";
 import { BIMTopBarControls } from "./components/BIMTopBarControls";
 import { BIM3DViewer } from "./components/BIM3DViewer";
+import { GecolaPrezzarioPanel } from "./components/GecolaPrezzarioPanel";
 import { TEMPLATES } from './data/templates';
 import { GUIDE_DATABASE, GuideItem } from './data/guides';
+import { PREZZARIO_GECOLA, PrezzarioItem } from './data/prezzario';
 import { Entity, Point, Layer, Measurement, Tavola, Floor } from "./types";
 import { mergeAllSegments } from "./utils/entityUtils";
 import { trimEntities } from "./utils";
@@ -218,14 +220,15 @@ const rotatePoint = (point: { x: number; y: number }, center: { x: number; y: nu
 
 // Helper function to find a collective center for multiple IDs
 const getSelectionCenter = (ids: string[], allEntities: Entity[]) => {
-  const selection = allEntities.filter(e => ids.includes(e.id));
-  if (selection.length === 0) return { x: 0, y: 0 };
-  if (selection.length === 1) return getEntityCenter(selection[0]);
+  const selection = allEntities.filter(e => ids.includes(e.id) && !e.parentEntityId);
+  const finalSelection = selection.length > 0 ? selection : allEntities.filter(e => ids.includes(e.id));
+  if (finalSelection.length === 0) return { x: 0, y: 0 };
+  if (finalSelection.length === 1) return getEntityCenter(finalSelection[0]);
 
   let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
   let hasGeometry = false;
 
-  selection.forEach(e => {
+  finalSelection.forEach(e => {
     const pts: Point[] = [];
     const entAsAny = e as any;
     if (entAsAny.start) pts.push(entAsAny.start, entAsAny.end);
@@ -376,21 +379,26 @@ export default function App() {
   const [transformSelection, setTransformSelection] = useState<string[]>([]);
   const initialBaseEntitiesRef = useRef<Entity[] | null>(null);
   const [isRotateScaleOpen, setIsRotateScaleOpen] = useState(false);
+  const [rotateFinishes, setRotateFinishes] = useState(true);
   const [entities, setEntities] = useState<Entity[]>([]);
 
   useEffect(() => {
     if (rotationEntityId) {
+      let baseIds: string[] = [];
       if (capturedSelectionIds.includes(rotationEntityId)) {
-          setTransformSelection(capturedSelectionIds);
+          baseIds = [...capturedSelectionIds];
       } else {
           const entity = entities.find(e => e.id === rotationEntityId);
           if (entity && (entity as any).groupId) {
               const groupIds = entities.filter(e => (e as any).groupId === (entity as any).groupId).map(e => e.id);
-              setTransformSelection(groupIds);
+              baseIds = groupIds;
           } else {
-              setTransformSelection([rotationEntityId]);
+              baseIds = [rotationEntityId];
           }
       }
+      // Find all connected finishes that have parentEntityId referencing any of the selected items
+      const connectedFinishes = entities.filter(e => e.parentEntityId && baseIds.includes(e.parentEntityId)).map(e => e.id);
+      setTransformSelection([...baseIds, ...connectedFinishes]);
       initialBaseEntitiesRef.current = entities;
     } else {
       setTransformSelection([]);
@@ -619,6 +627,7 @@ const MASONRY_TYPES = [
   const [parallelTrigger, setParallelTrigger] = useState(0);
   const [showProperties, setShowProperties] = useState(() => localStorage.getItem('showProperties') === 'true');
   const [selectedCategory, setSelectedCategory] = useState(() => localStorage.getItem('selectedCategory') || "Disegno");
+  const [isPrezzarioOpen, setIsPrezzarioOpen] = useState(true);
 
   // File System State
   const [fileHandle, setFileHandle] = useState<any>(null);
@@ -857,6 +866,7 @@ const MASONRY_TYPES = [
     } else {
       setDetectedAreaPoints([result]);
       setEditingEntityId(null);
+      setIsFaceSurveyMode(false);
       setIsBIMElementDialogOpen(true);
     }
   };
@@ -877,6 +887,7 @@ const MASONRY_TYPES = [
         isLinear: (ent as any).isLinear
       });
       setEditingEntityId(id);
+      setIsFaceSurveyMode(false);
       setIsBIMElementDialogOpen(true);
     }
   };
@@ -982,6 +993,7 @@ const MASONRY_TYPES = [
     duplicate?: boolean;
     overlay?: boolean;
     sideSign?: number;
+    duplicateConnectedFinishes?: boolean;
   }) => {
     if (!detectedAreaPoints) return;
 
@@ -1003,8 +1015,8 @@ const MASONRY_TYPES = [
             pattern: data.hatch === 'NONE' ? 'SOLID' : data.hatch as any,
             bimHeight: data.objectHeight,
             height: data.objectHeight,
-            bimWidth: data.objectWidth || e.bimWidth || 15,
-            width: data.objectWidth || e.width || 15,
+            bimWidth: data.objectWidth !== undefined ? data.objectWidth : e.bimWidth || e.width || 15,
+            width: data.objectWidth !== undefined ? data.objectWidth : e.bimWidth || e.width || 15,
             bimZPlane: data.zPlane,
             bimZElevation: data.zElevation,
             bimRenderMode: data.bimRenderMode || 'solid',
@@ -1050,7 +1062,82 @@ const MASONRY_TYPES = [
           ...(data.overlay ? shiftPointsSuccessive(original, prev, originalWidth) : {})
         } as any;
         console.log("New element created, original:", original.id, "newElement:", newElement.id, "Overlay:", data.overlay);
-        return [...prev, newElement];
+        
+        let extraElements: any[] = [];
+        if (data.duplicate && data.duplicateConnectedFinishes) {
+          const isCoating = (e: any): boolean => {
+            const nL = (e.bimName || e.name || '').toLowerCase();
+            const fL = (e.bimFamily || e.bimAreaType || e.bimFamilyId || '').toLowerCase();
+            const lL = (e.layer || '').toLowerCase();
+            return fL.includes('intonac') || fL.includes('rivest') || fL.includes('pittur') || fL.includes('tinteg') || fL.includes('isolam') || fL.includes('cappott') || fL.includes('finitur') || fL.includes('plaster') ||
+                   nL.includes('intonac') || nL.includes('rivest') || nL.includes('pittur') || nL.includes('tinteg') || nL.includes('isolam') || nL.includes('cappott') || nL.includes('finitur') || nL.includes('plaster') ||
+                   lL.includes('finitur');
+          };
+          const distToSeg = (p: { x: number, y: number }, a: { x: number, y: number }, b: { x: number, y: number }): number => {
+            const dx = b.x - a.x;
+            const dy = b.y - a.y;
+            if (dx === 0 && dy === 0) return Math.hypot(p.x - a.x, p.y - a.y);
+            const t = ((p.x - a.x) * dx + (p.y - a.y) * dy) / (dx * dx + dy * dy);
+            const clampedT = Math.max(0, Math.min(1, t));
+            const projX = a.x + clampedT * dx;
+            const projY = a.y + clampedT * dy;
+            return Math.hypot(p.x - projX, p.y - projY);
+          };
+          const originalAny = original as any;
+          const pts1 = originalAny.bimPoints || originalAny.points || [];
+          if (pts1.length > 0) {
+            const deltaZPlane = data.zPlane - (originalAny.bimZPlane || 0);
+            const deltaZElevation = data.zElevation - (originalAny.bimZElevation || 0);
+            const connected = prev.filter(e => {
+              if (e.id === original.id) return false;
+              if (!isCoating(e)) return false;
+              const eAny = e as any;
+              const pts2 = eAny.bimPoints || eAny.points || [];
+              if (pts2.length === 0) return false;
+
+              // Check Z proximity
+              const z1 = originalAny.bimZPlane || originalAny.zPlane || 0;
+              const z2 = eAny.bimZPlane || eAny.zPlane || 0;
+              if (Math.abs(z1 - z2) > 50) return false;
+
+              // 2D proximity checking
+              const tolerance = 25; // 25 cm tolerance
+              let isClose = false;
+              for (const p2 of pts2) {
+                const closeToPoint = pts1.some((p1: any) => 
+                  Math.hypot(p2.x - p1.x, p2.y - p1.y) < tolerance
+                );
+                if (closeToPoint) {
+                  isClose = true;
+                  break;
+                }
+                for (let i = 0; i < pts1.length; i++) {
+                  const p1A = pts1[i];
+                  const p1B = pts1[(i + 1) % pts1.length];
+                  if (p1A && p1B) {
+                    if (distToSeg(p2, p1A, p1B) < tolerance) {
+                      isClose = true;
+                      break;
+                    }
+                  }
+                }
+                if (isClose) break;
+              }
+              return isClose;
+            });
+            extraElements = connected.map((finish, idx) => {
+              const finishAny = finish as any;
+              return {
+                ...finish,
+                id: `bim-elem-cloned-finish-${Date.now()}-${idx}-${Math.floor(Math.random() * 1000)}`,
+                bimZPlane: (finishAny.bimZPlane || 0) + deltaZPlane,
+                bimZElevation: (finishAny.bimZElevation || 0) + deltaZElevation,
+                timestamp: Date.now()
+              };
+            });
+          }
+        }
+        return [...prev, newElement, ...extraElements];
       });
       setSelectedId(null);
       setShortcutToast(data.overlay ? `Elemento ${data.name} successiva 🎨` : `Elemento ${data.name} duplicato ⎘`);
@@ -1088,13 +1175,17 @@ const MASONRY_TYPES = [
         pattern: data.hatch === 'NONE' ? 'SOLID' : data.hatch as any,
         bimHeight: data.objectHeight,
         height: data.objectHeight,
-        bimWidth: data.objectWidth || 15,
-        width: data.objectWidth || 15,
+        bimWidth: data.objectWidth !== undefined ? data.objectWidth : 15,
+        width: data.objectWidth !== undefined ? data.objectWidth : 15,
         bimZPlane: data.zPlane,
         bimZElevation: data.zElevation,
         bimRenderMode: data.bimRenderMode || 'solid',
         sideSign: data.sideSign !== undefined ? data.sideSign : (poly.sideSign !== undefined ? poly.sideSign : 1),
         isFaceAligned: poly.isFaceAligned,
+        rotationX: poly.rotationX !== undefined ? poly.rotationX : 0,
+        rotationY: poly.rotationY !== undefined ? poly.rotationY : 0,
+        rotationZ: poly.rotationZ !== undefined ? poly.rotationZ : 0,
+        parentEntityId: poly.parentEntityId,
         timestamp: Date.now(),
         isVisible: true,
         isFrozen: false
@@ -1106,6 +1197,7 @@ const MASONRY_TYPES = [
     
     setTimeout(() => setShortcutToast(null), 4000);
     setIsBIMElementDialogOpen(false);
+    setIsFaceSurveyMode(false);
     setDetectedAreaPoints(null);
     setEditingEntityId(null);
   };
@@ -2246,6 +2338,16 @@ const MASONRY_TYPES = [
           <Building size={16} className={showProperties && activeSidebarTab === 'bim' ? "text-cyan-600 animate-pulse" : "text-cyan-600"} />
           <span className="text-[10px] font-bold">BIM</span>
         </button>
+        <button
+          onClick={() => {
+            setIsPrezzarioOpen(!isPrezzarioOpen);
+          }}
+          className={`px-4 flex flex-col items-center justify-center gap-0.5 border-l border-neutral-300 ${isPrezzarioOpen ? "bg-amber-50 text-amber-950 font-bold border-x border-amber-200" : "hover:bg-neutral-200 text-neutral-600"}`}
+          title="Apri Prezzario & Computo Metrico Gecola"
+        >
+          <Clipboard size={16} className={isPrezzarioOpen ? "text-amber-500 animate-pulse" : "text-amber-500"} />
+          <span className="text-[10px] font-bold">Computo Gecola</span>
+        </button>
         <div className="flex-1"></div>
         <button
           onClick={() => {
@@ -2880,145 +2982,379 @@ const MASONRY_TYPES = [
             }}
           />
 
-          {isRotateScaleOpen && (
-            <div className="absolute top-24 right-4 bg-white rounded-xl shadow-[0_20px_50px_rgba(0,0,0,0.1)] border border-neutral-200 p-4 z-50 flex flex-col gap-4 w-72 animate-in fade-in slide-in-from-right-4 duration-200">
-                <div className="flex items-center justify-between border-b border-neutral-100 pb-3">
-                    <div className="flex items-center gap-2">
-                        <div className="bg-indigo-50 p-2 rounded-lg">
-                            <RotateScaleIcon size={18} />
-                        </div>
-                        <h3 className="text-[13px] font-bold text-neutral-800 tracking-tight">
-                            Trasforma Oggetto
-                        </h3>
-                    </div>
-                    <button onClick={() => { setIsRotateScaleOpen(false); setSelectedTool('Select'); }} className="text-neutral-400 hover:text-neutral-600 transition-colors p-1 hover:bg-neutral-100 rounded-md">✕</button>
-                </div>
+          {(() => {
+            const rotationTargetEntity = entities.find(e => e.id === rotationEntityId);
+            const isBIMRotationTarget = rotationTargetEntity && (rotationTargetEntity.isBIM || (rotationTargetEntity as any).bimType || (rotationTargetEntity as any).bimFamily);
+            const connectedFinishesCount = rotationEntityId ? entities.filter(e => e.parentEntityId === rotationEntityId).length : 0;
+            
+            const activeTransformIds = (() => {
+              if (!rotationEntityId) return [];
+              const baseIds = [rotationEntityId];
+              const entity = entities.find(e => e.id === rotationEntityId);
+              if (entity && (entity as any).groupId) {
+                const groupIds = entities.filter(e => (e as any).groupId === (entity as any).groupId).map(e => e.id);
+                baseIds.push(...groupIds);
+              }
+              const uniqueBaseIds = Array.from(new Set(baseIds));
+              if (rotateFinishes) {
+                const connectedFinishes = entities.filter(e => e.parentEntityId && uniqueBaseIds.includes(e.parentEntityId)).map(e => e.id);
+                return [...uniqueBaseIds, ...connectedFinishes];
+              }
+              return uniqueBaseIds;
+            })();
 
-                {!rotationEntityId ? (
-                    <div className="py-8 text-center px-4 bg-neutral-50 rounded-lg border border-dashed border-neutral-200">
-                        <RefreshCw size={24} className="text-neutral-300 mx-auto mb-2 animate-spin-slow" />
-                        <p className="text-[11px] text-neutral-500 font-medium leading-relaxed">Seleziona un elemento nel disegno per visualizzare le opzioni di rotazione e scala</p>
+            if (isRotateScaleOpen && isBIMRotationTarget) {
+              return (
+                <div className="fixed inset-0 bg-neutral-900/60 backdrop-blur-sm flex items-center justify-center p-4 z-[9999] animate-in fade-in duration-200">
+                  <div className="bg-white rounded-2xl shadow-[0_25px_60px_-15px_rgba(0,0,0,0.3)] border border-neutral-100 max-w-md w-full p-6 relative flex flex-col gap-5 animate-in zoom-in-95 duration-200">
+                    
+                    {/* Header */}
+                    <div className="flex items-center justify-between border-b border-neutral-100 pb-4">
+                      <div className="flex items-center gap-3">
+                        <div className="bg-amber-100 p-2.5 rounded-xl text-amber-600">
+                          <RefreshCw size={20} className="animate-spin-slow" />
+                        </div>
+                        <div>
+                          <h3 className="text-sm font-black text-neutral-800 tracking-tight">
+                            Rotazione Oggetto BIM
+                          </h3>
+                          <p className="text-[10px] text-neutral-400 font-bold uppercase tracking-wider">
+                            {rotationTargetEntity?.bimName || "Oggetto senza nome"}
+                          </p>
+                        </div>
+                      </div>
+                      <button 
+                        onClick={() => { 
+                          if (initialBaseEntitiesRef.current) {
+                            setEntities(initialBaseEntitiesRef.current);
+                          }
+                          setIsRotateScaleOpen(false); 
+                          setRotationEntityId(null); 
+                        }} 
+                        className="text-neutral-400 hover:text-neutral-600 transition-colors p-1.5 hover:bg-neutral-100 rounded-lg"
+                      >
+                        ✕
+                      </button>
                     </div>
-                ) : (
-                    <div className="space-y-6">
-                        {/* ROTAZIONE */}
-                        <div className="space-y-3">
-                            <label className="text-[10px] font-bold text-neutral-400 uppercase tracking-widest flex items-center gap-1.5">
-                                <RefreshCw size={10} /> Rotazione
-                            </label>
+
+                    {/* Info and finishes detection */}
+                    <div className="bg-neutral-50 rounded-xl p-4 border border-neutral-200/60 space-y-2">
+                      <div className="flex justify-between text-xs font-medium text-neutral-600">
+                        <span>Tipo Oggetto:</span>
+                        <span className="font-bold text-neutral-800 uppercase text-[11px] bg-neutral-200/60 px-2 py-0.5 rounded">
+                          {(rotationTargetEntity as any)?.bimFamilyId || (rotationTargetEntity as any)?.bimFamily || "Elemento"}
+                        </span>
+                      </div>
+                      
+                      {connectedFinishesCount > 0 ? (
+                        <div className="pt-2 border-t border-neutral-200/60 flex flex-col gap-2">
+                          <div className="flex items-center justify-between">
+                            <div className="flex items-center gap-1.5 text-xs text-indigo-600 font-bold">
+                              <span className="w-2 h-2 rounded-full bg-indigo-500 animate-ping" />
+                              Finiture Collegate:
+                            </div>
+                            <span className="text-xs font-black text-indigo-600 bg-indigo-50 px-2.5 py-0.5 rounded-full border border-indigo-100">
+                              {connectedFinishesCount} {connectedFinishesCount === 1 ? 'Faccia / Intonaco' : 'Facce / Intonaci'}
+                            </span>
+                          </div>
+                          
+                          <label className="flex items-center gap-2 cursor-pointer mt-1.5 select-none bg-indigo-50/50 p-2.5 rounded-lg border border-indigo-100/60 hover:bg-indigo-50 transition-colors">
+                            <input 
+                              type="checkbox"
+                              checked={rotateFinishes}
+                              onChange={(e) => setRotateFinishes(e.target.checked)}
+                              className="w-4 h-4 rounded border-neutral-300 text-indigo-600 focus:ring-indigo-500 cursor-pointer"
+                            />
+                            <span className="text-[11px] font-bold text-indigo-800">
+                              Ruota anche le finiture collegate ad esso
+                            </span>
+                          </label>
+                        </div>
+                      ) : (
+                        <div className="text-[10px] text-neutral-400 italic pt-2 border-t border-neutral-200/60">
+                          Nessuna finitura o intonaco collegato rilevato per questo oggetto.
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Preset angles */}
+                    <div className="space-y-2">
+                      <span className="text-[10px] font-black text-neutral-400 uppercase tracking-widest block">
+                        Angoli Rapidi
+                      </span>
+                      <div className="grid grid-cols-4 gap-2">
+                        {[-90, 90, 180, 270].map(angle => (
+                          <button
+                            key={angle}
+                            onClick={() => {
+                              if (!initialBaseEntitiesRef.current) return;
+                              
+                              const baseEntity = initialBaseEntitiesRef.current.find(be => be.id === rotationEntityId);
+                              const currentBaseAngle = (baseEntity as any)?.angle || 0;
+                              const delta = angle - currentBaseAngle;
+                              
+                              const baseCenter = getSelectionCenter(activeTransformIds, initialBaseEntitiesRef.current);
+                              
+                              updateEntitiesWithHistory(prev => prev.map(ent => {
+                                if (activeTransformIds.includes(ent.id)) {
+                                  const bEnt = initialBaseEntitiesRef.current!.find(be => be.id === ent.id);
+                                  return rotateEntityFixed(bEnt || ent, delta, baseCenter);
+                                }
+                                return ent;
+                              }));
+                            }}
+                            className="py-2.5 bg-neutral-50 hover:bg-indigo-50 hover:border-indigo-200 hover:text-indigo-600 transition-all rounded-xl text-xs font-extrabold border border-neutral-200 text-neutral-600 shadow-sm"
+                          >
+                            {angle > 0 ? `+${angle}` : angle}°
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* Manual Rotation Slider / Exact Input */}
+                    <div className="space-y-3">
+                      <div className="flex justify-between items-center">
+                        <span className="text-[10px] font-black text-neutral-400 uppercase tracking-widest">
+                          Rotazione Manuale
+                        </span>
+                        <div className="flex items-center gap-1.5">
+                          <input 
+                            type="number"
+                            value={Math.round((entities.find(e => e.id === rotationEntityId) as any)?.angle || 0)}
+                            onChange={(e) => {
+                              const val = parseInt(e.target.value) || 0;
+                              if (!initialBaseEntitiesRef.current) return;
+                              
+                              const baseEntity = initialBaseEntitiesRef.current.find(be => be.id === rotationEntityId);
+                              const currentBaseAngle = (baseEntity as any)?.angle || 0;
+                              const delta = val - currentBaseAngle;
+                              
+                              const baseCenter = getSelectionCenter(activeTransformIds, initialBaseEntitiesRef.current);
+                              updateEntitiesSilent(prev => prev.map(ent => {
+                                if (activeTransformIds.includes(ent.id)) {
+                                  const bEnt = initialBaseEntitiesRef.current!.find(be => be.id === ent.id);
+                                  return rotateEntityFixed(bEnt || ent, delta, baseCenter);
+                                }
+                                return ent;
+                              }));
+                            }}
+                            className="w-16 text-center font-mono font-bold text-xs border border-neutral-200 rounded-lg py-1 px-1.5 text-indigo-600 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                          />
+                          <span className="text-xs font-black text-neutral-400">°</span>
+                        </div>
+                      </div>
+
+                      <div className="space-y-1">
+                        <input 
+                          type="range"
+                          min="-180"
+                          max="180"
+                          step="1"
+                          value={Math.round((entities.find(e => e.id === rotationEntityId) as any)?.angle || 0)}
+                          onChange={(e) => {
+                            const nextAngle = parseInt(e.target.value);
+                            if (!initialBaseEntitiesRef.current) return;
                             
-                            <div className="grid grid-cols-4 gap-1.5">
-                                {[0, 90, 180, 270].map(angle => (
-                                    <button
-                                        key={angle}
-                                        onClick={() => {
+                            const baseEntity = initialBaseEntitiesRef.current.find(be => be.id === rotationEntityId);
+                            const currentBaseAngle = (baseEntity as any)?.angle || 0;
+                            const delta = nextAngle - currentBaseAngle;
+                            
+                            const baseCenter = getSelectionCenter(activeTransformIds, initialBaseEntitiesRef.current);
+                            updateEntitiesSilent(prev => prev.map(ent => {
+                              if (activeTransformIds.includes(ent.id)) {
+                                const bEnt = initialBaseEntitiesRef.current!.find(be => be.id === ent.id);
+                                return rotateEntityFixed(bEnt || ent, delta, baseCenter);
+                              }
+                              return ent;
+                            }));
+                          }}
+                          onMouseUp={() => commitToHistory()}
+                          className="w-full h-1.5 bg-neutral-100 rounded-lg appearance-none cursor-pointer accent-indigo-600 border border-neutral-200"
+                        />
+                        <div className="flex justify-between text-[9px] text-neutral-400 font-bold px-0.5">
+                          <span>-180°</span>
+                          <span>0°</span>
+                          <span>180°</span>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Footer Buttons */}
+                    <div className="flex gap-2 border-t border-neutral-100 pt-4 mt-1">
+                      <button
+                        onClick={() => {
+                          if (initialBaseEntitiesRef.current) {
+                            setEntities(initialBaseEntitiesRef.current);
+                          }
+                          setIsRotateScaleOpen(false);
+                          setRotationEntityId(null);
+                        }}
+                        className="flex-1 py-2.5 border border-neutral-200 text-neutral-600 font-bold text-xs rounded-xl hover:bg-neutral-50 transition-colors"
+                      >
+                        Annulla
+                      </button>
+                      <button
+                        onClick={() => {
+                          commitToHistory();
+                          setIsRotateScaleOpen(false);
+                          setRotationEntityId(null);
+                          setShortcutToast("Rotazione applicata con successo! ✅");
+                          setTimeout(() => setShortcutToast(null), 3000);
+                        }}
+                        className="flex-1 py-2.5 bg-indigo-600 text-white font-bold text-xs rounded-xl hover:bg-indigo-700 shadow-md shadow-indigo-100 hover:shadow-indigo-200 transition-all active:scale-95"
+                      >
+                        Conferma
+                      </button>
+                    </div>
+                    
+                  </div>
+                </div>
+              );
+            }
+
+            if (isRotateScaleOpen) {
+              return (
+                <div className="absolute top-24 right-4 bg-white rounded-xl shadow-[0_20px_50px_rgba(0,0,0,0.1)] border border-neutral-200 p-4 z-50 flex flex-col gap-4 w-72 animate-in fade-in slide-in-from-right-4 duration-200">
+                    <div className="flex items-center justify-between border-b border-neutral-100 pb-3">
+                        <div className="flex items-center gap-2">
+                            <div className="bg-indigo-50 p-2 rounded-lg">
+                                <RotateScaleIcon size={18} />
+                            </div>
+                            <h3 className="text-[13px] font-bold text-neutral-800 tracking-tight">
+                                Trasforma Oggetto
+                            </h3>
+                        </div>
+                        <button onClick={() => { setIsRotateScaleOpen(false); setSelectedTool('Select'); }} className="text-neutral-400 hover:text-neutral-600 transition-colors p-1 hover:bg-neutral-100 rounded-md">✕</button>
+                    </div>
+
+                    {!rotationEntityId ? (
+                        <div className="py-8 text-center px-4 bg-neutral-50 rounded-lg border border-dashed border-neutral-200">
+                            <RefreshCw size={24} className="text-neutral-300 mx-auto mb-2 animate-spin-slow" />
+                            <p className="text-[11px] text-neutral-500 font-medium leading-relaxed">Seleziona un elemento nel disegno per visualizzare le opzioni di rotazione e scala</p>
+                        </div>
+                    ) : (
+                        <div className="space-y-6">
+                            {/* ROTAZIONE */}
+                            <div className="space-y-3">
+                                <label className="text-[10px] font-bold text-neutral-400 uppercase tracking-widest flex items-center gap-1.5">
+                                    <RefreshCw size={10} /> Rotazione
+                                </label>
+                                
+                                <div className="grid grid-cols-4 gap-1.5">
+                                    {[0, 90, 180, 270].map(angle => (
+                                        <button
+                                            key={angle}
+                                            onClick={() => {
+                                                if (!initialBaseEntitiesRef.current) return;
+                                                const baseCenter = getSelectionCenter(transformSelection, initialBaseEntitiesRef.current);
+                                                
+                                                updateEntitiesWithHistory(prev => {
+                                                    const currentEntities = [...prev];
+                                                    return currentEntities.map(e => {
+                                                        if (transformSelection.includes(e.id)) {
+                                                            const baseEntity = initialBaseEntitiesRef.current!.find(be => be.id === e.id);
+                                                            const currentEntAngle = (baseEntity as any)?.angle || 0;
+                                                            const delta = angle - currentEntAngle;
+                                                            return rotateEntityFixed(baseEntity || e, delta, baseCenter);
+                                                        }
+                                                        return e;
+                                                    });
+                                                });
+                                            }}
+                                            className="py-2 bg-white hover:bg-indigo-50 hover:border-indigo-200 transition-all rounded-md text-[10px] font-bold border border-neutral-200 text-neutral-600 hover:text-indigo-600 shadow-sm"
+                                        >
+                                            {angle}°
+                                        </button>
+                                    ))}
+                                </div>
+
+                                <div className="pt-1">
+                                    <div className="flex justify-between items-center mb-2">
+                                        <span className="text-[10px] font-medium text-neutral-500 italic">Angolo Libero</span>
+                                        <span className="text-[11px] font-mono font-bold text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded border border-indigo-100">
+                                            {(entities.find(e => e.id === rotationEntityId) as any)?.angle || 0}°
+                                        </span>
+                                    </div>
+                                    <input 
+                                        type="range"
+                                        min="-180"
+                                        max="180"
+                                        step="1"
+                                        value={(entities.find(e => e.id === rotationEntityId) as any)?.angle || 0}
+                                        onChange={(e) => {
+                                            const nextAngle = parseInt(e.target.value);
                                             if (!initialBaseEntitiesRef.current) return;
                                             const baseCenter = getSelectionCenter(transformSelection, initialBaseEntitiesRef.current);
-                                            
-                                            updateEntitiesWithHistory(prev => {
-                                                const currentEntities = [...prev];
-                                                return currentEntities.map(e => {
-                                                    if (transformSelection.includes(e.id)) {
-                                                        const baseEntity = initialBaseEntitiesRef.current!.find(be => be.id === e.id);
-                                                        const currentEntAngle = (baseEntity as any)?.angle || 0;
-                                                        const delta = angle - currentEntAngle;
-                                                        return rotateEntityFixed(baseEntity || e, delta, baseCenter);
-                                                    }
-                                                    return e;
-                                                });
-                                            });
+
+                                            updateEntitiesSilent(prev => prev.map(ent => {
+                                                if (transformSelection.includes(ent.id)) {
+                                                    const baseEntity = initialBaseEntitiesRef.current!.find(be => be.id === ent.id);
+                                                    const entity = baseEntity || ent;
+                                                    const currentAngle = (entity as any).angle || 0;
+                                                    const delta = nextAngle - currentAngle;
+                                                    return rotateEntityFixed(entity, delta, baseCenter);
+                                                }
+                                                return ent;
+                                            }));
                                         }}
-                                        className="py-2 bg-white hover:bg-indigo-50 hover:border-indigo-200 transition-all rounded-md text-[10px] font-bold border border-neutral-200 text-neutral-600 hover:text-indigo-600 shadow-sm"
-                                    >
-                                        {angle}°
-                                    </button>
-                                ))}
+                                        onMouseUp={() => commitToHistory()}
+                                        className="w-full h-1.5 bg-neutral-100 rounded-lg appearance-none cursor-pointer accent-indigo-600 border border-neutral-200"
+                                    />
+                                </div>
                             </div>
 
-                            <div className="pt-1">
-                                <div className="flex justify-between items-center mb-2">
-                                    <span className="text-[10px] font-medium text-neutral-500 italic">Angolo Libero</span>
-                                    <span className="text-[11px] font-mono font-bold text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded border border-indigo-100">
-                                        {(entities.find(e => e.id === rotationEntityId) as any)?.angle || 0}°
-                                    </span>
-                                </div>
-                                <input 
-                                    type="range"
-                                    min="-180"
-                                    max="180"
-                                    step="1"
-                                    value={(entities.find(e => e.id === rotationEntityId) as any)?.angle || 0}
-                                    onChange={(e) => {
-                                        const nextAngle = parseInt(e.target.value);
-                                        if (!initialBaseEntitiesRef.current) return;
-                                        const baseCenter = getSelectionCenter(transformSelection, initialBaseEntitiesRef.current);
+                            {/* SCALA / INGRANDIMENTO */}
+                            <div className="space-y-3 pt-2 border-t border-neutral-100">
+                                <label className="text-[10px] font-bold text-neutral-400 uppercase tracking-widest flex items-center gap-1.5">
+                                    <Maximize size={10} /> Ingrandimento
+                                </label>
 
-                                        updateEntitiesSilent(prev => prev.map(ent => {
-                                            if (transformSelection.includes(ent.id)) {
-                                                const baseEntity = initialBaseEntitiesRef.current!.find(be => be.id === ent.id);
-                                                const entity = baseEntity || ent;
-                                                const currentAngle = (entity as any).angle || 0;
-                                                const delta = nextAngle - currentAngle;
-                                                return rotateEntityFixed(entity, delta, baseCenter);
-                                            }
-                                            return ent;
-                                        }));
-                                    }}
-                                    onMouseUp={() => commitToHistory()}
-                                    className="w-full h-1.5 bg-neutral-100 rounded-lg appearance-none cursor-pointer accent-indigo-600 border border-neutral-200"
-                                />
-                            </div>
-                        </div>
+                                <div className="space-y-1">
+                                    <div className="flex justify-between items-center mb-2">
+                                        <span className="text-[10px] font-medium text-neutral-500 italic">Fattore di Scala</span>
+                                        <span className="text-[11px] font-mono font-bold text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-100">
+                                            x{((entities.find(e => e.id === rotationEntityId) as any)?.scale || 1).toFixed(2)}
+                                        </span>
+                                    </div>
+                                    <input 
+                                        type="range"
+                                        min="0.1"
+                                        max="5"
+                                        step="0.05"
+                                        value={(entities.find(e => e.id === rotationEntityId) as any)?.scale || 1}
+                                        onChange={(e) => {
+                                            const nextScale = parseFloat(e.target.value);
+                                            if (!initialBaseEntitiesRef.current) return;
+                                            const baseCenter = getSelectionCenter(transformSelection, initialBaseEntitiesRef.current);
 
-                        {/* SCALA / INGRANDIMENTO */}
-                        <div className="space-y-3 pt-2 border-t border-neutral-100">
-                            <label className="text-[10px] font-bold text-neutral-400 uppercase tracking-widest flex items-center gap-1.5">
-                                <Maximize size={10} /> Ingrandimento
-                            </label>
-
-                            <div className="space-y-1">
-                                <div className="flex justify-between items-center mb-2">
-                                    <span className="text-[10px] font-medium text-neutral-500 italic">Fattore di Scala</span>
-                                    <span className="text-[11px] font-mono font-bold text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-100">
-                                        x{((entities.find(e => e.id === rotationEntityId) as any)?.scale || 1).toFixed(2)}
-                                    </span>
-                                </div>
-                                <input 
-                                    type="range"
-                                    min="0.1"
-                                    max="5"
-                                    step="0.05"
-                                    value={(entities.find(e => e.id === rotationEntityId) as any)?.scale || 1}
-                                    onChange={(e) => {
-                                        const nextScale = parseFloat(e.target.value);
-                                        if (!initialBaseEntitiesRef.current) return;
-                                        const baseCenter = getSelectionCenter(transformSelection, initialBaseEntitiesRef.current);
-
-                                        updateEntitiesSilent(prev => prev.map(ent => {
-                                            if (transformSelection.includes(ent.id)) {
-                                                const baseEntity = initialBaseEntitiesRef.current!.find(be => be.id === ent.id);
-                                                const entity = baseEntity || ent;
-                                                const currentBaseScale = (entity as any).scale || 1;
-                                                const factor = nextScale / currentBaseScale;
-                                                return scaleEntity(entity, factor, nextScale, baseCenter);
-                                            }
-                                            return ent;
-                                        }));
-                                    }}
-                                    onMouseUp={() => commitToHistory()}
-                                    className="w-full h-1.5 bg-neutral-100 rounded-lg appearance-none cursor-pointer accent-emerald-500 border border-neutral-200"
-                                />
-                                <div className="flex justify-between text-[8px] text-neutral-300 font-bold px-0.5 pt-1 uppercase">
-                                    <span>Ridotto</span>
-                                    <span>Normale (x1)</span>
-                                    <span>Ingrandito</span>
+                                            updateEntitiesSilent(prev => prev.map(ent => {
+                                                if (transformSelection.includes(ent.id)) {
+                                                    const baseEntity = initialBaseEntitiesRef.current!.find(be => be.id === ent.id);
+                                                    const entity = baseEntity || ent;
+                                                    const currentBaseScale = (entity as any).scale || 1;
+                                                    const factor = nextScale / currentBaseScale;
+                                                    return scaleEntity(entity, factor, nextScale, baseCenter);
+                                                }
+                                                return ent;
+                                            }));
+                                        }}
+                                        onMouseUp={() => commitToHistory()}
+                                        className="w-full h-1.5 bg-neutral-100 rounded-lg appearance-none cursor-pointer accent-emerald-500 border border-neutral-200"
+                                    />
+                                    <div className="flex justify-between text-[8px] text-neutral-300 font-bold px-0.5 pt-1 uppercase">
+                                        <span>Ridotto</span>
+                                        <span>Normale (x1)</span>
+                                        <span>Ingrandito</span>
+                                    </div>
                                 </div>
                             </div>
                         </div>
-                    </div>
-                )}
-            </div>
-          )}
+                    )}
+                </div>
+              );
+            }
+            return null;
+          })()}
 
           {isBIMElementDialogOpen && (
             <BIMElementDialog
@@ -3050,7 +3386,7 @@ const MASONRY_TYPES = [
                   sideSign: (e as any).sideSign
                 };
               })() : (detectedAreaPoints?.from3DFace ? {
-                familyId: 'Finiture',
+                familyId: 'intonaco_completo',
                 subFamily: 'Intonaco',
                 name: 'Finitura',
                 color: '#e5e7eb',
@@ -3064,6 +3400,8 @@ const MASONRY_TYPES = [
               floors={floors}
               isMultiAreaMode={isMultiAreaMode}
               onToggleMultiAreaMode={setIsMultiAreaMode}
+              entities={entities}
+              editingEntityId={editingEntityId}
             />
           )}
 
@@ -3192,15 +3530,29 @@ const MASONRY_TYPES = [
               isStratifiedView={isStratifiedView}
               setIsStratifiedView={setIsStratifiedView}
               isFaceSurveyMode={isFaceSurveyMode}
-              onCreateFaceFinish={(points, isLinear, zPlane, objectHeight) => {
+              onCreateFaceFinish={(points, isLinear, zPlane, objectHeight, faceData) => {
                 setEditingEntityId(null);
                 setIsFaceSurveyMode(true);
-                setDetectedAreaPoints({ points, isLinear, zPlane, objectHeight, from3DFace: true, isFaceAligned: true });
+                setDetectedAreaPoints({ 
+                  points, 
+                  isLinear, 
+                  zPlane, 
+                  objectHeight, 
+                  from3DFace: true, 
+                  isFaceAligned: true,
+                  rotationX: faceData?.rotationX,
+                  rotationY: faceData?.rotationY,
+                  rotationZ: faceData?.rotationZ
+                });
                 setIsBIMElementDialogOpen(true);
               }}
               onShowToast={(msg) => {
                 setShortcutToast(msg);
                 setTimeout(() => setShortcutToast(null), 3000);
+              }}
+              onSelectForRotation={(id) => {
+                setRotationEntityId(id);
+                setIsRotateScaleOpen(true);
               }}
             />
           )}
@@ -4976,6 +5328,157 @@ const MASONRY_TYPES = [
                               <option value={5}>Auto Orto</option>
                             </select>
                           </div>
+
+                          {/* COMPUTO METRICO GECOLA INTEGRATION */}
+                          <div 
+                            onDragOver={(e) => {
+                              e.preventDefault();
+                              e.dataTransfer.dropEffect = "copy";
+                            }}
+                            onDrop={(e) => {
+                              e.preventDefault();
+                              try {
+                                const raw = e.dataTransfer.getData("text/plain");
+                                const item = JSON.parse(raw);
+                                if (item && item.codice) {
+                                  updateEntity(selectedEntity.id, {
+                                    prezzarioCodice: item.codice,
+                                    prezzarioDescrizione: item.descrizione,
+                                    prezzarioUnita: item.unita || "m",
+                                    prezzarioPrezzo: item.prezzo || 0,
+                                    includeInComputo: true,
+                                  });
+                                  setShortcutToast("Voce associata a questa misura! 📋");
+                                  setTimeout(() => setShortcutToast(null), 2500);
+                                }
+                              } catch(err){}
+                            }}
+                            className="bg-amber-50/70 border-2 border-dashed border-amber-300 rounded-xl p-3 space-y-3 mt-4 text-neutral-800"
+                          >
+                            <div className="flex items-center justify-between">
+                              <span className="text-[11px] font-black text-amber-900 uppercase tracking-wider flex items-center gap-1">
+                                📋 Computo Gecola
+                              </span>
+                              <label className="flex items-center gap-1.5 cursor-pointer text-[10px] font-bold text-amber-950">
+                                <input
+                                  type="checkbox"
+                                  checked={!!(selectedEntity as any).includeInComputo}
+                                  onChange={(e) => updateEntity(selectedEntity.id, { includeInComputo: e.target.checked })}
+                                  className="accent-amber-600 rounded"
+                                />
+                                Computa
+                              </label>
+                            </div>
+
+                            {/* DRAG FEEDBACK AREA */}
+                            {!(selectedEntity as any).prezzarioCodice && (
+                              <div className="bg-white/80 border border-amber-200 rounded-lg p-2.5 text-center text-[10px] text-amber-800 font-bold animate-pulse">
+                                📑 Trascina qui una voce dal Prezzario per caricarla automaticamente!
+                              </div>
+                            )}
+
+                            {/* CODICE PREZZARIO */}
+                            <div className="space-y-1">
+                              <label className="text-[9px] font-extrabold uppercase text-amber-900 tracking-widest block">
+                                Codice Voce
+                              </label>
+                              <input
+                                type="text"
+                                placeholder="es: NP.OP08.015b"
+                                value={(selectedEntity as any).prezzarioCodice || ""}
+                                onChange={(e) => updateEntity(selectedEntity.id, { prezzarioCodice: e.target.value })}
+                                className="w-full bg-white border border-amber-200 text-xs rounded p-2 focus:ring-1 focus:ring-amber-500 focus:outline-none font-semibold"
+                              />
+                            </div>
+
+                            {/* DESCRIZIONE */}
+                            <div className="space-y-1">
+                              <label className="text-[9px] font-extrabold uppercase text-amber-900 tracking-widest block">
+                                Descrizione Voce
+                              </label>
+                              <textarea
+                                rows={2}
+                                placeholder="Trascina la voce qui o scrivi una descrizione..."
+                                value={(selectedEntity as any).prezzarioDescrizione || ""}
+                                onChange={(e) => updateEntity(selectedEntity.id, { prezzarioDescrizione: e.target.value })}
+                                className="w-full bg-white border border-amber-200 text-xs rounded p-2 focus:ring-1 focus:ring-amber-500 focus:outline-none font-semibold leading-relaxed resize-none"
+                              />
+                            </div>
+
+                            {/* ROW: UNITA & PREZZO */}
+                            <div className="grid grid-cols-2 gap-2">
+                              <div className="space-y-1">
+                                <label className="text-[9px] font-extrabold uppercase text-amber-900 tracking-widest block">
+                                  Unità Misura
+                                  </label>
+                                <input
+                                  type="text"
+                                  placeholder="es: m, mq, cad"
+                                  value={(selectedEntity as any).prezzarioUnita || ""}
+                                  onChange={(e) => updateEntity(selectedEntity.id, { prezzarioUnita: e.target.value })}
+                                  className="w-full bg-white border border-amber-200 text-xs rounded p-2 focus:ring-1 focus:ring-amber-500 focus:outline-none font-semibold text-center"
+                                />
+                              </div>
+                              <div className="space-y-1">
+                                <label className="text-[9px] font-extrabold uppercase text-amber-900 tracking-widest block">
+                                  Prezzo (€)
+                                </label>
+                                <input
+                                  type="number"
+                                  step="0.01"
+                                  placeholder="0.00"
+                                  value={(selectedEntity as any).prezzarioPrezzo ?? ""}
+                                  onChange={(e) => updateEntity(selectedEntity.id, { prezzarioPrezzo: e.target.value === "" ? 0 : parseFloat(e.target.value) })}
+                                  className="w-full bg-white border border-amber-200 text-xs rounded p-2 focus:ring-1 focus:ring-amber-500 focus:outline-none font-semibold text-center"
+                                />
+                              </div>
+                            </div>
+
+                            {/* MOLTIPLICATORE */}
+                            <div className="space-y-1">
+                              <label className="text-[9px] font-extrabold uppercase text-amber-900 tracking-widest flex justify-between items-center">
+                                <span>Fattore / Moltiplicatore (es: Altezza)</span>
+                                <span className="font-mono text-amber-850">{(selectedEntity as any).moltiplicatore ?? 1.0}x</span>
+                              </label>
+                              <input
+                                type="number"
+                                step="0.1"
+                                min="0.1"
+                                value={(selectedEntity as any).moltiplicatore ?? 1.0}
+                                onChange={(e) => updateEntity(selectedEntity.id, { moltiplicatore: e.target.value === "" ? 1.0 : parseFloat(e.target.value) })}
+                                className="w-full bg-white border border-amber-200 text-xs rounded p-2 focus:ring-1 focus:ring-amber-500 focus:outline-none font-semibold"
+                              />
+                            </div>
+
+                            {/* CALCOLO DELLE MISURE ESTIMATIVE */}
+                            {(() => {
+                              const dx = selectedEntity.end.x - selectedEntity.start.x;
+                              const dy = selectedEntity.end.y - selectedEntity.start.y;
+                              const lengthM = Math.hypot(dx, dy) / 100;
+                              const mult = (selectedEntity as any).moltiplicatore ?? 1.0;
+                              const qty = lengthM * mult;
+                              const price = (selectedEntity as any).prezzarioPrezzo ?? 0.0;
+                              const tot = qty * price;
+                              const um = (selectedEntity as any).prezzarioUnita || "m";
+
+                              return (
+                                <div className="bg-amber-950/10 border border-amber-200 p-2 rounded-lg space-y-1 font-sans text-[10.5px]">
+                                  <div className="flex justify-between">
+                                    <span className="text-amber-900 font-bold">Lunghezza Rilevata:</span>
+                                    <span className="font-mono font-black">{lengthM.toFixed(2)} m</span>
+                                  </div>
+                                  <div className="flex justify-between">
+                                    <span className="text-amber-900 font-bold">Quantità Computata:</span>
+                                    <span className="font-mono font-black">{qty.toFixed(2)} {um}</span>
+                                  </div>
+                                  <div className="flex justify-between border-t border-amber-200/50 pt-1 mt-1 text-[11px]">
+                                    <span className="text-amber-950 font-black">Importo Estimato:</span>
+                                    <span className="font-mono font-black text-amber-950 bg-amber-200/50 px-1.5 py-0.5 rounded">€ {tot.toFixed(2)}</span>
+                                  </div>
+                                </div>
+                              );
+                            })()}
+                          </div>
                         </div>
                       )}
                     </>
@@ -6176,6 +6679,16 @@ const MASONRY_TYPES = [
           </motion.div>
         )}
       </AnimatePresence>
+
+      <GecolaPrezzarioPanel
+        entities={entities}
+        updateEntity={updateEntity}
+        selectedId={selectedId}
+        setSelectedId={setSelectedId}
+        isOpen={isPrezzarioOpen}
+        onClose={() => setIsPrezzarioOpen(false)}
+        setShortcutToast={setShortcutToast}
+      />
 
       {/* BIM Dialog Submenus were removed and redesigned in the inline top bars for higher efficiency */}
     </div>

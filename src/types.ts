@@ -56,6 +56,7 @@ export interface CADEntity {
   isFrozen?: boolean;   // BIM-specific frozen state
   width?: number;
   height?: number;
+  parentEntityId?: string;
 
   /** @deprecated Use bimData instead */
   bimType?: 'room' | 'door' | 'window' | 'wall' | 'electrical_symbol' | 'hydraulic_symbol' | 'functional_area' | 'bim_element' | 'element';
@@ -93,6 +94,9 @@ export interface CADEntity {
   hideIn2D?: boolean;
   isLinear?: boolean;
   isFaceAligned?: boolean;
+  rotationX?: number;
+  rotationY?: number;
+  rotationZ?: number;
 }
 
 export interface LineEntity extends CADEntity {
@@ -140,6 +144,12 @@ export interface DimensionEntity extends CADEntity {
   decimals?: number;  // custom decimal digits
   extAhead?: number;  // custom extension line ahead length (beyond dimension line)
   extBehind?: number; // custom extension line behind length (gap from snap points)
+  includeInComputo?: boolean;
+  prezzarioCodice?: string;
+  prezzarioDescrizione?: string;
+  prezzarioUnita?: string;
+  prezzarioPrezzo?: number;
+  moltiplicatore?: number;
 }
 
 export interface TextEntity extends CADEntity {

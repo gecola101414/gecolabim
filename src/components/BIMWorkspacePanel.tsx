@@ -1665,7 +1665,7 @@ export function BIMWorkspacePanel({
                   } else if (isOpening) {
                     const widthCm = (selectedEntity as any).bimWidth || 80;
                     const heightCm = (selectedEntity as any).bimWindowHeight || (selectedEntity as any).bimHeight || ((selectedEntity as any).bimType === 'door' ? 210 : 140);
-                    const thicknessCm = (selectedEntity as any).bimThickness || 10; 
+                    const thicknessCm = (selectedEntity as any).bimThickness || 0; 
                     
                     const baseAreaMq = (widthCm * thicknessCm) / 10000;
                     const soffittoMq = baseAreaMq;

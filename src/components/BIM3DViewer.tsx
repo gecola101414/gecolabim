@@ -18,8 +18,9 @@ interface BIM3DViewerProps {
   isStratifiedView: boolean;
   setIsStratifiedView: (val: boolean) => void;
   isFaceSurveyMode?: boolean;
-  onCreateFaceFinish?: (points: Point[], isLinear: boolean, zPlane: number, objectHeight: number) => void;
+  onCreateFaceFinish?: (points: Point[], isLinear: boolean, zPlane: number, objectHeight: number, faceData?: any) => void;
   onShowToast?: (msg: string) => void;
+  onSelectForRotation?: (id: string | null) => void;
 }
 
 const getRoomAreaMq = (roomPoints: Point[]): number => {
@@ -70,6 +71,15 @@ const getCoincidentStackedOffset = (e: any, entities: any[]): { offsetZ: number,
   const isCoating = isCoatingElement(e);
   if (!isCoating) {
     return { offsetZ: 0, baseWallWidth: 0 };
+  }
+
+  if (e.isFaceAligned) {
+    const thisThickness = (e.bimWidth || e.width || 2) / 100;
+    const sideSign = e.sideSign !== undefined ? e.sideSign : 1;
+    // For face-aligned elements (traced directly in 3D), the points are already at the outer face.
+    // We only need to shift by half its own thickness plus a tiny gap (1.5mm) for Z-fighting in the normal direction.
+    const offsetZ = (thisThickness / 2 + 0.0015) * sideSign;
+    return { offsetZ, baseWallWidth: 0 };
   }
 
   const ePoints = e.bimPoints || e.points || [];
@@ -3536,7 +3546,7 @@ const SectionPlaneHelper = ({ height, active, mode, entities }: { height: number
   );
 };
 
-export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, setEntities, floors = [], isStratifiedView, setIsStratifiedView, onCreateFaceFinish, onShowToast, isFaceSurveyMode }) => {
+export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, setEntities, floors = [], isStratifiedView, setIsStratifiedView, onCreateFaceFinish, onShowToast, isFaceSurveyMode, onSelectForRotation }) => {
   const [resetTrigger, setResetTrigger] = useState(0);
   const [focusTrigger, setFocusTrigger] = useState(0);
   const [viewMode, setViewMode] = useState<'PERSPECTIVE' | 'TOP'>('PERSPECTIVE');
@@ -3578,6 +3588,7 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
   const [originalAngle, setOriginalAngle] = useState(0);
   
   // Dialog States
+  const lastFaceConfirmedTime = useRef<number>(0);
   const [isAreaEditOpen, setIsAreaEditOpen] = useState(false);
   const [isDoorEditOpen, setIsDoorEditOpen] = useState(false);
   const [isWindowEditOpen, setIsWindowEditOpen] = useState(false);
@@ -4078,7 +4089,76 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
     
     const shifted = translateEntityPoints(cloned, dx, dy, 0);
     
-    setEntities(prev => [...prev, shifted]);
+    // Also find and duplicate any connected finishes for direct 3D duplication!
+    const isCoating = (e: any): boolean => {
+      const nL = (e.bimName || e.name || '').toLowerCase();
+      const fL = (e.bimFamily || e.bimAreaType || e.bimFamilyId || '').toLowerCase();
+      const lL = (e.layer || '').toLowerCase();
+      return fL.includes('intonac') || fL.includes('rivest') || fL.includes('pittur') || fL.includes('tinteg') || fL.includes('isolam') || fL.includes('cappott') || fL.includes('finitur') || fL.includes('plaster') ||
+             nL.includes('intonac') || nL.includes('rivest') || nL.includes('pittur') || nL.includes('tinteg') || nL.includes('isolam') || nL.includes('cappott') || nL.includes('finitur') || nL.includes('plaster') ||
+             lL.includes('finitur');
+    };
+    const distToSeg = (p: { x: number, y: number }, a: { x: number, y: number }, b: { x: number, y: number }): number => {
+      const dxVal = b.x - a.x;
+      const dyVal = b.y - a.y;
+      if (dxVal === 0 && dyVal === 0) return Math.hypot(p.x - a.x, p.y - a.y);
+      const t = ((p.x - a.x) * dxVal + (p.y - a.y) * dyVal) / (dxVal * dxVal + dyVal * dyVal);
+      const clampedT = Math.max(0, Math.min(1, t));
+      const projX = a.x + clampedT * dxVal;
+      const projY = a.y + clampedT * dyVal;
+      return Math.hypot(p.x - projX, p.y - projY);
+    };
+
+    const pts1 = rawEnt.bimPoints || rawEnt.points || [];
+    let clonedFinishes: any[] = [];
+    if (pts1.length > 0) {
+      const connected = entities.filter(e => {
+        if (e.id === rawEnt.id) return false;
+        if (!isCoating(e)) return false;
+        const eAny = e as any;
+        const pts2 = eAny.bimPoints || eAny.points || [];
+        if (pts2.length === 0) return false;
+
+        // Check Z proximity
+        const z1 = rawEnt.bimZPlane || rawEnt.zPlane || 0;
+        const z2 = eAny.bimZPlane || eAny.zPlane || 0;
+        if (Math.abs(z1 - z2) > 50) return false;
+
+        // 2D proximity checking
+        const tolerance = 25; // 25 cm tolerance
+        let isClose = false;
+        for (const p2 of pts2) {
+          const closeToPoint = pts1.some((p1: any) => 
+            Math.hypot(p2.x - p1.x, p2.y - p1.y) < tolerance
+          );
+          if (closeToPoint) {
+            isClose = true;
+            break;
+          }
+          for (let i = 0; i < pts1.length; i++) {
+            const p1A = pts1[i];
+            const p1B = pts1[(i + 1) % pts1.length];
+            if (p1A && p1B) {
+              if (distToSeg(p2, p1A, p1B) < tolerance) {
+                isClose = true;
+                break;
+              }
+            }
+          }
+          if (isClose) break;
+        }
+        return isClose;
+      });
+
+      clonedFinishes = connected.map((finish, idx) => {
+        const clonedFinish = JSON.parse(JSON.stringify(finish));
+        clonedFinish.id = `bim-elem-cloned-finish-${Date.now()}-${idx}-${Math.floor(Math.random() * 1000)}`;
+        clonedFinish.timestamp = Date.now();
+        return translateEntityPoints(clonedFinish, dx, dy, 0);
+      });
+    }
+    
+    setEntities(prev => [...prev, shifted, ...clonedFinishes]);
     setSelectedEntity(shifted);
   };
 
@@ -4187,12 +4267,14 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
     zPlane: number;
     zElevation: number;
     objectHeight: number;
+    objectWidth?: number;
     hatch: 'SOLID' | 'ANSI31' | 'CROSS' | 'NONE';
     bimRenderMode?: 'solid' | 'transparent' | 'parete_verticale' | 'parete_orizzontale';
     sideSign?: number;
   }) => {
     if (!pendingFace) return;
     
+    const defWidth = data.objectWidth !== undefined ? data.objectWidth : (data.familyId === 'pitture' ? 0.2 : (data.familyId === 'intonaco_completo' ? 1.0 : (data.familyId === 'intonaco_rustico' ? 1.5 : (data.familyId === 'rivestimenti' ? 2.0 : (data.familyId === 'isolamenti_termici' ? 10.0 : 15)))));
     const newEntity: any = {
       id: `bim-elem-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
       points: pendingFace.points,
@@ -4209,6 +4291,8 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
       pattern: data.hatch === 'NONE' ? 'SOLID' : data.hatch,
       bimHeight: data.objectHeight,
       height: data.objectHeight,
+      bimWidth: defWidth,
+      width: defWidth,
       bimZPlane: data.zPlane,
       bimZElevation: data.zElevation,
       bimRenderMode: data.bimRenderMode || 'solid',
@@ -4235,9 +4319,12 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
     zPlane: number;
     zElevation: number;
     objectHeight: number;
+    objectWidth?: number;
     hatch: 'SOLID' | 'ANSI31' | 'CROSS' | 'NONE';
     bimRenderMode?: 'solid' | 'transparent' | 'parete_verticale' | 'parete_orizzontale';
     duplicate?: boolean;
+    sideSign?: number;
+    duplicateConnectedFinishes?: boolean;
   }) => {
     if (!editingEntityId) return;
 
@@ -4261,12 +4348,90 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
           pattern: data.hatch === 'NONE' ? 'SOLID' : data.hatch as any,
           bimHeight: data.objectHeight,
           height: data.objectHeight,
+          bimWidth: data.objectWidth !== undefined ? data.objectWidth : (original as any).bimWidth || (original as any).width || 15,
+          width: data.objectWidth !== undefined ? data.objectWidth : (original as any).bimWidth || (original as any).width || 15,
           bimZPlane: data.zPlane,
           bimZElevation: data.zElevation,
           bimRenderMode: data.bimRenderMode || 'solid',
+          sideSign: data.sideSign !== undefined ? data.sideSign : (original as any).sideSign,
           timestamp: Date.now()
         } as any;
-        return [...prev, newElement];
+        
+        let extraElements: any[] = [];
+        if (data.duplicateConnectedFinishes) {
+          const isCoating = (e: any): boolean => {
+            const nL = (e.bimName || e.name || '').toLowerCase();
+            const fL = (e.bimFamily || e.bimAreaType || e.bimFamilyId || '').toLowerCase();
+            const lL = (e.layer || '').toLowerCase();
+            return fL.includes('intonac') || fL.includes('rivest') || fL.includes('pittur') || fL.includes('tinteg') || fL.includes('isolam') || fL.includes('cappott') || fL.includes('finitur') || fL.includes('plaster') ||
+                   nL.includes('intonac') || nL.includes('rivest') || nL.includes('pittur') || nL.includes('tinteg') || nL.includes('isolam') || nL.includes('cappott') || nL.includes('finitur') || nL.includes('plaster') ||
+                   lL.includes('finitur');
+          };
+          const distToSeg = (p: { x: number, y: number }, a: { x: number, y: number }, b: { x: number, y: number }): number => {
+            const dx = b.x - a.x;
+            const dy = b.y - a.y;
+            if (dx === 0 && dy === 0) return Math.hypot(p.x - a.x, p.y - a.y);
+            const t = ((p.x - a.x) * dx + (p.y - a.y) * dy) / (dx * dx + dy * dy);
+            const clampedT = Math.max(0, Math.min(1, t));
+            const projX = a.x + clampedT * dx;
+            const projY = a.y + clampedT * dy;
+            return Math.hypot(p.x - projX, p.y - projY);
+          };
+          const originalAny = original as any;
+          const pts1 = originalAny.bimPoints || originalAny.points || [];
+          if (pts1.length > 0) {
+            const deltaZPlane = data.zPlane - (originalAny.bimZPlane || 0);
+            const deltaZElevation = data.zElevation - (originalAny.bimZElevation || 0);
+            const connected = prev.filter(e => {
+              if (e.id === original.id) return false;
+              if (!isCoating(e)) return false;
+              const eAny = e as any;
+              const pts2 = eAny.bimPoints || eAny.points || [];
+              if (pts2.length === 0) return false;
+
+              // Check Z proximity
+              const z1 = originalAny.bimZPlane || originalAny.zPlane || 0;
+              const z2 = eAny.bimZPlane || eAny.zPlane || 0;
+              if (Math.abs(z1 - z2) > 50) return false;
+
+              // 2D proximity checking
+              const tolerance = 25; // 25 cm tolerance
+              let isClose = false;
+              for (const p2 of pts2) {
+                const closeToPoint = pts1.some((p1: any) => 
+                  Math.hypot(p2.x - p1.x, p2.y - p1.y) < tolerance
+                );
+                if (closeToPoint) {
+                  isClose = true;
+                  break;
+                }
+                for (let i = 0; i < pts1.length; i++) {
+                  const p1A = pts1[i];
+                  const p1B = pts1[(i + 1) % pts1.length];
+                  if (p1A && p1B) {
+                    if (distToSeg(p2, p1A, p1B) < tolerance) {
+                      isClose = true;
+                      break;
+                    }
+                  }
+                }
+                if (isClose) break;
+              }
+              return isClose;
+            });
+            extraElements = connected.map((finish, idx) => {
+              const finishAny = finish as any;
+              return {
+                ...finish,
+                id: `bim-elem-cloned-finish-${Date.now()}-${idx}-${Math.floor(Math.random() * 1000)}`,
+                bimZPlane: (finishAny.bimZPlane || 0) + deltaZPlane,
+                bimZElevation: (finishAny.bimZElevation || 0) + deltaZElevation,
+                timestamp: Date.now()
+              };
+            });
+          }
+        }
+        return [...prev, newElement, ...extraElements];
       });
       setSelectedEntity(null);
     } else {
@@ -4287,9 +4452,12 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
             pattern: data.hatch === 'NONE' ? 'SOLID' : data.hatch as any,
             bimHeight: data.objectHeight,
             height: data.objectHeight,
+            bimWidth: data.objectWidth !== undefined ? data.objectWidth : (e as any).bimWidth || (e as any).width || 15,
+            width: data.objectWidth !== undefined ? data.objectWidth : (e as any).bimWidth || (e as any).width || 15,
             bimZPlane: data.zPlane,
             bimZElevation: data.zElevation,
-            bimRenderMode: data.bimRenderMode || 'solid'
+            bimRenderMode: data.bimRenderMode || 'solid',
+            sideSign: data.sideSign !== undefined ? data.sideSign : (e as any).sideSign
           };
         }
         return e;
@@ -4309,9 +4477,12 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
         pattern: data.hatch === 'NONE' ? 'SOLID' : data.hatch as any,
         bimHeight: data.objectHeight,
         height: data.objectHeight,
+        bimWidth: data.objectWidth !== undefined ? data.objectWidth : (prev as any).bimWidth || (prev as any).width || 15,
+        width: data.objectWidth !== undefined ? data.objectWidth : (prev as any).bimWidth || (prev as any).width || 15,
         bimZPlane: data.zPlane,
         bimZElevation: data.zElevation,
-        bimRenderMode: data.bimRenderMode || 'solid'
+        bimRenderMode: data.bimRenderMode || 'solid',
+        sideSign: data.sideSign !== undefined ? data.sideSign : (prev as any).sideSign
       } as any : prev);
     }
 
@@ -4427,6 +4598,7 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
 
   // Slicing States
   const [isPickFaceMode, setIsPickFaceMode] = useState<'OFF' | 'PICKING' | 'PENDING'>('OFF');
+  const [isEditBIMModeActive, setIsEditBIMModeActive] = useState(false);
   const [pendingFace, setPendingFace] = useState<any>(null);
   const [isSlicing, setIsSlicing] = useState(false);
   const maxModelHeight = useMemo(() => {
@@ -4590,11 +4762,17 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
         
         <button 
           onClick={() => {
+            setIsEditBIMModeActive(false);
             if (isPickFaceMode === 'OFF') {
               setIsPickFaceMode('PICKING');
               setSelectedEntity(null);
               setIsRotationMode(false);
               onShowToast?.("Seleziona Faccia attiva: clicca su una superficie 3D per creare una finitura.");
+            } else if (isPickFaceMode === 'PENDING' && pendingFace) {
+              lastFaceConfirmedTime.current = Date.now();
+              onCreateFaceFinish?.(pendingFace.points, pendingFace.isLinear, pendingFace.zPlane, pendingFace.objectHeight);
+              setIsPickFaceMode('OFF');
+              setPendingFace(null);
             } else {
               setIsPickFaceMode('OFF');
               setPendingFace(null);
@@ -4603,18 +4781,45 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
           className={`p-3 rounded-xl transition-all active:scale-95 flex items-center gap-1.5 cursor-pointer border ${
             isPickFaceMode !== 'OFF' 
               ? 'bg-blue-500 border-blue-600 text-white shadow-lg shadow-blue-200 animate-pulse font-black text-xs px-4' 
-              : 'hover:bg-slate-50 text-slate-400 border-transparent hover:text-blue-500'
+              : 'hover:bg-slate-50 text-slate-400 border-neutral-200 bg-white shadow-sm hover:text-blue-500 px-4'
           }`}
           title="Seleziona Faccia per Finiture"
         >
-          <Sparkles size={22} />
-          {isPickFaceMode !== 'OFF' && <span className="text-[10px] font-black uppercase tracking-wider hidden sm:inline">
-            {isPickFaceMode === 'PICKING' ? 'Seleziona Faccia' : 'Conferma Faccia'}
-          </span>}
+          <Layers3 size={22} className={isPickFaceMode !== 'OFF' ? 'text-white' : 'text-blue-500'} />
+          <span className="text-[10px] font-black uppercase tracking-wider">
+            {isPickFaceMode === 'PENDING' ? 'CONFERMA FACCIA' : 'SELEZIONA FACCIA'}
+          </span>
         </button>
 
         <button 
           onClick={() => {
+            if (isEditBIMModeActive) {
+              setIsEditBIMModeActive(false);
+            } else {
+              setIsEditBIMModeActive(true);
+              setIsPickFaceMode('OFF');
+              setPendingFace(null);
+              setIsRotationMode(false);
+              onShowToast?.("Modalità Modifica attiva: clicca su un elemento 3D per modificarlo o clonarlo.");
+              if (selectedEntity) {
+                handleOpenClickDialog(selectedEntity);
+              }
+            }
+          }}
+          className={`p-3 rounded-xl transition-all active:scale-95 flex items-center gap-1.5 cursor-pointer border ${
+            isEditBIMModeActive 
+              ? 'bg-emerald-500 border-emerald-600 text-white shadow-lg shadow-emerald-200 animate-pulse font-black text-xs px-4' 
+              : 'hover:bg-slate-50 text-slate-400 border-neutral-200 bg-white shadow-sm hover:text-emerald-500 px-4'
+          }`}
+          title="Modifica Oggetto BIM"
+        >
+          <Edit size={22} className={isEditBIMModeActive ? "animate-bounce" : "text-emerald-600"} />
+          <span className="text-[10px] font-black uppercase tracking-wider">MODIFICA ELEMENTO BIM</span>
+        </button>
+
+        <button 
+          onClick={() => {
+            setIsEditBIMModeActive(false);
             if (!selectedEntity) {
               setInspectorOpen(true);
               setIsRotationMode(true);
@@ -5630,6 +5835,15 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
             )
           ) : (
             <div className="space-y-6 overflow-y-auto pr-1 flex-1 max-h-[calc(80vh-10rem)] scrollbar-thin">
+              {/* Modifica/Clona dedicated button */}
+              <button
+                onClick={() => handleOpenClickDialog(selectedEntity)}
+                className="w-full py-4 bg-emerald-600 hover:bg-emerald-700 text-white font-black rounded-3xl shadow-lg shadow-emerald-500/25 active:scale-95 transition-all text-xs uppercase tracking-wider flex items-center justify-center gap-2 mb-2 cursor-pointer border-none shrink-0"
+              >
+                <Edit size={16} className="animate-bounce" />
+                <span>MODIFICA / CLONA OGGETTO 🛠️</span>
+              </button>
+
               {/* Advanced BIM Property card trigger */}
               <button
                 onClick={() => setShowPropertyDialogId(selectedEntity.id)}
@@ -5872,7 +6086,7 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
                       } else if (isOpening) {
                         const widthCm = (selectedEntity as any).bimWidth || 80;
                         const heightCm = (selectedEntity as any).bimWindowHeight || (selectedEntity as any).bimHeight || ((selectedEntity as any).bimType === 'door' ? 210 : 140);
-                        const thicknessCm = (selectedEntity as any).bimThickness || 10; 
+                        const thicknessCm = (selectedEntity as any).bimThickness || 0; 
                         
                         const baseAreaMq = (widthCm * thicknessCm) / 10000;
                         const soffittoMq = baseAreaMq;
@@ -6409,41 +6623,64 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
           )}
 
           {pendingFace && (
-            <group>
-              {/* Bottom contour */}
-              <Line
-                points={pendingFace.points.map((p: any) => [
-                  p.x / 100,
-                  (pendingFace.zPlane / 100),
-                  -p.y / 100
-                ])}
-                color="green"
-                lineWidth={4}
-                closed={!pendingFace.isLinear}
-              />
-              {/* Top contour */}
-              <Line
-                points={pendingFace.points.map((p: any) => [
-                  p.x / 100,
-                  (pendingFace.zPlane / 100) + (pendingFace.objectHeight / 100),
-                  -p.y / 100
-                ])}
-                color="green"
-                lineWidth={4}
-                closed={!pendingFace.isLinear}
-              />
-              {/* Vertical connectors */}
-              {pendingFace.points.map((p: any, i: number) => (
-                <Line
-                  key={i}
-                  points={[
-                    [p.x / 100, (pendingFace.zPlane / 100), -p.y / 100],
-                    [p.x / 100, (pendingFace.zPlane / 100) + (pendingFace.objectHeight / 100), -p.y / 100]
-                  ]}
-                  color="green"
-                  lineWidth={4}
-                />
-              ))}
+            <group 
+              position={pendingFace.parentPivot || [0, 0, 0]} 
+              rotation={pendingFace.parentRotation || [0, 0, 0]}
+            >
+              <group 
+                position={pendingFace.parentPivot 
+                  ? [-pendingFace.parentPivot[0], -pendingFace.parentPivot[1], -pendingFace.parentPivot[2]] 
+                  : [0, 0, 0]}
+              >
+                {/* Bottom contour */}
+                {(() => {
+                  const basePoints = pendingFace.points.map((p: any) => [
+                    p.x / 100,
+                    (pendingFace.zPlane / 100),
+                    -p.y / 100
+                  ]);
+                  const finalPoints = !pendingFace.isLinear && basePoints.length > 0
+                    ? [...basePoints, basePoints[0]]
+                    : basePoints;
+                  return (
+                    <Line
+                      points={finalPoints}
+                      color="green"
+                      lineWidth={4}
+                    />
+                  );
+                })()}
+                {/* Top contour */}
+                {(() => {
+                  const basePoints = pendingFace.points.map((p: any) => [
+                    p.x / 100,
+                    (pendingFace.zPlane / 100) + (pendingFace.objectHeight / 100),
+                    -p.y / 100
+                  ]);
+                  const finalPoints = !pendingFace.isLinear && basePoints.length > 0
+                    ? [...basePoints, basePoints[0]]
+                    : basePoints;
+                  return (
+                    <Line
+                      points={finalPoints}
+                      color="green"
+                      lineWidth={4}
+                    />
+                  );
+                })()}
+                {/* Vertical connectors */}
+                {pendingFace.points.map((p: any, i: number) => (
+                  <Line
+                    key={i}
+                    points={[
+                      [p.x / 100, (pendingFace.zPlane / 100), -p.y / 100],
+                      [p.x / 100, (pendingFace.zPlane / 100) + (pendingFace.objectHeight / 100), -p.y / 100]
+                    ]}
+                    color="green"
+                    lineWidth={4}
+                  />
+                ))}
+              </group>
             </group>
           )}
 
@@ -6584,24 +6821,48 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
               const e = entity as any;
               
               // Pivot calculation for dynamic 3D nested rotation (Front, Side or Top planes)
-              const pivotIdx = isSelected ? selectedPivotIndex : 0;
-              const pCAD = points[pivotIdx] || e.point || { x: 0, y: 0 };
-              const baseElevation = (e.bimZPlane || 0) + (e.bimZElevation || 0);
-              
-              const px = pCAD.x / 100;
-              const py = baseElevation / 100;
-              const pz = -pCAD.y / 100;
+              let px = 0;
+              let py = 0;
+              let pz = 0;
+              let rx = 0;
+              let ry = 0;
+              let rz = 0;
 
-              const rx = (e.rotationX || 0) * Math.PI / 180;
-              const ry = (e.rotationY || 0) * Math.PI / 180;
-              const rz = (e.rotationZ || 0) * Math.PI / 180;
+              const parentEntity = e.parentEntityId ? entities.find((ent: any) => ent.id === e.parentEntityId) : null;
+              if (parentEntity) {
+                const parentPoints = (parentEntity as any).points || (parentEntity as any).bimPoints || [];
+                const isParentSelected = selectedEntity?.id === parentEntity.id;
+                const parentPivotIdx = isParentSelected ? selectedPivotIndex : 0;
+                const parentPCAD = parentPoints[parentPivotIdx] || (parentEntity as any).point || { x: 0, y: 0 };
+                const parentBaseElevation = ((parentEntity as any).bimZPlane || 0) + ((parentEntity as any).bimZElevation || 0);
+
+                px = parentPCAD.x / 100;
+                py = parentBaseElevation / 100;
+                pz = -parentPCAD.y / 100;
+
+                rx = ((parentEntity as any).rotationX || 0) * Math.PI / 180;
+                ry = ((parentEntity as any).rotationY || 0) * Math.PI / 180;
+                rz = ((parentEntity as any).rotationZ || 0) * Math.PI / 180;
+              } else {
+                const pivotIdx = isSelected ? selectedPivotIndex : 0;
+                const pCAD = points[pivotIdx] || e.point || { x: 0, y: 0 };
+                const baseElevation = (e.bimZPlane || 0) + (e.bimZElevation || 0);
+
+                px = pCAD.x / 100;
+                py = baseElevation / 100;
+                pz = -pCAD.y / 100;
+
+                rx = (e.rotationX || 0) * Math.PI / 180;
+                ry = (e.rotationY || 0) * Math.PI / 180;
+                rz = (e.rotationZ || 0) * Math.PI / 180;
+              }
 
               return (
                 <group 
                   key={entity.id} 
                     onClick={(e) => {
                       e.stopPropagation();
-                      const isBlocOrModifier = isPickFaceMode !== 'OFF' || e.ctrlKey || e.altKey || (e.nativeEvent && e.nativeEvent.getModifierState && e.nativeEvent.getModifierState('CapsLock'));
+                      const isBlocOrModifier = !isEditBIMModeActive && (isPickFaceMode !== 'OFF' || e.ctrlKey || e.altKey || (e.nativeEvent && e.nativeEvent.getModifierState && e.nativeEvent.getModifierState('CapsLock')));
                       
                       if (isBlocOrModifier) {
                         if (!e.object || !e.face || !onCreateFaceFinish) {
@@ -6615,11 +6876,30 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
                            return;
                         }
                         
-                        const normalMatrix = new THREE.Matrix3().getNormalMatrix(mesh.matrixWorld);
-                        const clickedNormal = e.face.normal.clone().applyMatrix3(normalMatrix).normalize();
+                        // Helper functions to unrotate world coordinates back to geometric element's unrotated CAD coordinate system
+                        const unrotateVertex = (v: THREE.Vector3) => {
+                            const pivot = new THREE.Vector3(px, py, pz);
+                            const relative = v.clone().sub(pivot);
+                            const matrix = new THREE.Matrix4();
+                            matrix.makeRotationFromEuler(new THREE.Euler(rx, ry, rz, 'XYZ'));
+                            const invMatrix = matrix.clone().invert();
+                            relative.applyMatrix4(invMatrix);
+                            return relative.add(pivot);
+                        };
+
+                        const unrotateNormal = (n: THREE.Vector3) => {
+                            const matrix = new THREE.Matrix4();
+                            matrix.makeRotationFromEuler(new THREE.Euler(rx, ry, rz, 'XYZ'));
+                            const invMatrix = matrix.clone().invert();
+                            return n.clone().applyMatrix4(invMatrix).normalize();
+                        };
                         
-                        const isHorizontal = Math.abs(clickedNormal.y) > 0.9;
-                        const isVertical = Math.abs(clickedNormal.y) < 0.1;
+                        const normalMatrix = new THREE.Matrix3().getNormalMatrix(mesh.matrixWorld);
+                        const clickedNormalWorld = e.face.normal.clone().applyMatrix3(normalMatrix).normalize();
+                        const unrotatedNormal = unrotateNormal(clickedNormalWorld);
+                        
+                        const isHorizontal = Math.abs(unrotatedNormal.y) > 0.9;
+                        const isVertical = Math.abs(unrotatedNormal.y) < 0.1;
                         
                         if (!isVertical && !isHorizontal) {
                            onShowToast?.("Faccia ignorata (non è perfettamente orizzontale o verticale).");
@@ -6630,22 +6910,27 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
                         const pos = geom.attributes.position;
                         const idx = geom.index;
                         
-                        const targetPoint = new THREE.Vector3().fromBufferAttribute(pos, e.face.a).applyMatrix4(mesh.matrixWorld);
-                        const worldVertices: THREE.Vector3[] = [];
+                        const targetPointWorld = new THREE.Vector3().fromBufferAttribute(pos, e.face.a).applyMatrix4(mesh.matrixWorld);
+                        const targetPointUnrotated = unrotateVertex(targetPointWorld);
+                        const unrotatedVertices: THREE.Vector3[] = [];
                         
                         const checkTriangle = (a: number, b: number, c: number) => {
-                            const vA = new THREE.Vector3().fromBufferAttribute(pos, a).applyMatrix4(mesh.matrixWorld);
-                            const vB = new THREE.Vector3().fromBufferAttribute(pos, b).applyMatrix4(mesh.matrixWorld);
-                            const vC = new THREE.Vector3().fromBufferAttribute(pos, c).applyMatrix4(mesh.matrixWorld);
+                            const vAWorld = new THREE.Vector3().fromBufferAttribute(pos, a).applyMatrix4(mesh.matrixWorld);
+                            const vBWorld = new THREE.Vector3().fromBufferAttribute(pos, b).applyMatrix4(mesh.matrixWorld);
+                            const vCWorld = new THREE.Vector3().fromBufferAttribute(pos, c).applyMatrix4(mesh.matrixWorld);
+                            
+                            const vA = unrotateVertex(vAWorld);
+                            const vB = unrotateVertex(vBWorld);
+                            const vC = unrotateVertex(vCWorld);
                             
                             const edge1 = new THREE.Vector3().subVectors(vB, vA);
                             const edge2 = new THREE.Vector3().subVectors(vC, vA);
                             const triNormal = new THREE.Vector3().crossVectors(edge1, edge2).normalize();
                             
-                            if (triNormal.dot(clickedNormal) > 0.99) {
-                                const dist = Math.abs(clickedNormal.dot(new THREE.Vector3().subVectors(vA, targetPoint)));
+                            if (triNormal.dot(unrotatedNormal) > 0.99) {
+                                const dist = Math.abs(unrotatedNormal.dot(new THREE.Vector3().subVectors(vA, targetPointUnrotated)));
                                 if (dist < 0.05) {
-                                    worldVertices.push(vA, vB, vC);
+                                    unrotatedVertices.push(vA, vB, vC);
                                 }
                             }
                         };
@@ -6660,45 +6945,59 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
                             }
                         }
                         
-                        if (worldVertices.length === 0) {
+                        if (unrotatedVertices.length === 0) {
                             onShowToast?.("Nessun vertice complanare trovato.");
                             return;
                         }
 
                         const handleDetectedFace = (data: any) => {
+                          const enrichedData = {
+                            ...data,
+                            rotationX: entity.rotationX || 0,
+                            rotationY: entity.rotationY || 0,
+                            rotationZ: entity.rotationZ || 0,
+                            parentPivot: [px, py, pz],
+                            parentRotation: [rx, ry, rz],
+                            parentEntityId: entity.id
+                          };
+                          
                           if (isPickFaceMode === 'PICKING') {
-                            setPendingFace(data);
+                            setPendingFace(enrichedData);
                             setIsPickFaceMode('PENDING');
                             onShowToast?.("Contorno rilevato. Clicca di nuovo per confermare.");
                           } else if (isPickFaceMode === 'PENDING') {
-                             onCreateFaceFinish(pendingFace.points, pendingFace.isLinear, pendingFace.zPlane, pendingFace.objectHeight);
-                             // setPendingFace(null); // Keep pending face for preview
-                             // setIsPickFaceMode('PICKING'); // Keep mode active
+                             lastFaceConfirmedTime.current = Date.now();
+                             onCreateFaceFinish?.(pendingFace.points, pendingFace.isLinear, pendingFace.zPlane, pendingFace.objectHeight, pendingFace);
+                             setIsPickFaceMode('OFF');
+                             setPendingFace(null);
                           } else {
                             // Direct call (Shift/Ctrl/Alt keys)
-                            onCreateFaceFinish(data.points, data.isLinear, data.zPlane, data.objectHeight);
+                            lastFaceConfirmedTime.current = Date.now();
+                            if (onCreateFaceFinish) {
+                              onCreateFaceFinish(enrichedData.points, enrichedData.isLinear, enrichedData.zPlane, enrichedData.objectHeight, enrichedData);
+                            }
                           }
                         };
                         
                         if (isVertical) {
                             let minZ = Infinity, maxZ = -Infinity;
                             
-                            for (const v of worldVertices) {
+                            for (const v of unrotatedVertices) {
                                 if (v.y < minZ) minZ = v.y;
                                 if (v.y > maxZ) maxZ = v.y;
                             }
                             
                             if (e.shiftKey) {
                                 // "Bloc FN" behavior: select entire contour
-                                let minXY = worldVertices[0], maxXY = worldVertices[0];
+                                let minXY = unrotatedVertices[0], maxXY = unrotatedVertices[0];
                                 let maxDistSq = 0;
-                                for (let i = 0; i < worldVertices.length; i++) {
-                                    for (let j = i + 1; j < worldVertices.length; j++) {
-                                        const distSq = Math.pow(worldVertices[i].x - worldVertices[j].x, 2) + Math.pow(worldVertices[i].z - worldVertices[j].z, 2);
+                                for (let i = 0; i < unrotatedVertices.length; i++) {
+                                    for (let j = i + 1; j < unrotatedVertices.length; j++) {
+                                        const distSq = Math.pow(unrotatedVertices[i].x - unrotatedVertices[j].x, 2) + Math.pow(unrotatedVertices[i].z - unrotatedVertices[j].z, 2);
                                         if (distSq > maxDistSq) {
                                             maxDistSq = distSq;
-                                            minXY = worldVertices[i];
-                                            maxXY = worldVertices[j];
+                                            minXY = unrotatedVertices[i];
+                                            maxXY = unrotatedVertices[j];
                                         }
                                     }
                                 }
@@ -6707,7 +7006,7 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
                                 
                                 const dx = p2.x - p1.x;
                                 const dy = p2.y - p1.y;
-                                const dot = (-dy) * clickedNormal.x + (dx) * (-clickedNormal.z);
+                                const dot = (-dy) * unrotatedNormal.x + (dx) * (-unrotatedNormal.z);
                                 if (dot < 0) {
                                     const temp = p1;
                                     p1 = p2;
@@ -6719,10 +7018,10 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
                                 // Default: merge contiguous edges on the base and find the one clicked
                                 type Edge = { p1: THREE.Vector3, p2: THREE.Vector3 };
                                 const edges: Edge[] = [];
-                                for (let i = 0; i < worldVertices.length; i += 3) {
-                                    const vA = worldVertices[i];
-                                    const vB = worldVertices[i+1];
-                                    const vC = worldVertices[i+2];
+                                for (let i = 0; i < unrotatedVertices.length; i += 3) {
+                                    const vA = unrotatedVertices[i];
+                                    const vB = unrotatedVertices[i+1];
+                                    const vC = unrotatedVertices[i+2];
                                     edges.push({ p1: vA, p2: vB }, { p1: vB, p2: vC }, { p1: vC, p2: vA });
                                 }
 
@@ -6756,8 +7055,9 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
                                     return p.distanceTo(closest);
                                 };
 
+                                const clickPointUnrotated = unrotateVertex(e.point);
                                 for (const seg of edgesToSearch) {
-                                    const d = distToSegment(e.point, seg.p1, seg.p2);
+                                    const d = distToSegment(clickPointUnrotated, seg.p1, seg.p2);
                                     if (d < minDistance) {
                                         minDistance = d;
                                         closestSegment = seg;
@@ -6769,7 +7069,7 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
                                 
                                 const dx = p2.x - p1.x;
                                 const dy = p2.y - p1.y;
-                                const dot = (-dy) * clickedNormal.x + (dx) * (-clickedNormal.z);
+                                const dot = (-dy) * unrotatedNormal.x + (dx) * (-unrotatedNormal.z);
                                 if (dot < 0) {
                                     const temp = p1;
                                     p1 = p2;
@@ -6779,7 +7079,7 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
                                 handleDetectedFace({ points: [p1, p2], isLinear: true, zPlane: minZ * 100, objectHeight: (maxZ - minZ) * 100 });
                             }
                         } else {
-                            const pts = worldVertices.map(v => ({ x: v.x * 100, y: -v.z * 100 }));
+                            const pts = unrotatedVertices.map(v => ({ x: v.x * 100, y: -v.z * 100 }));
                             
                             // Use all unique points to form the contour instead of just convex hull
                             const unique: {x: number, y: number}[] = [];
@@ -6796,16 +7096,30 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
                             const center = unique.reduce((acc, p) => ({x: acc.x + p.x/unique.length, y: acc.y + p.y/unique.length}), {x:0, y:0});
                             unique.sort((a, b) => Math.atan2(a.y - center.y, a.x - center.x) - Math.atan2(b.y - center.y, b.x - center.x));
 
-                            handleDetectedFace({ points: unique, isLinear: false, zPlane: targetPoint.y * 100, objectHeight: 5 });
+                            handleDetectedFace({ points: unique, isLinear: false, zPlane: targetPointUnrotated.y * 100, objectHeight: 5 });
                         }
                       } else if (e.shiftKey) {
                         handleSelectSecondary(entity);
                       } else {
+                        if (Date.now() - lastFaceConfirmedTime.current < 600) {
+                          return;
+                        }
                         handleSelect(entity);
+                        if (isEditBIMModeActive) {
+                          handleOpenClickDialog(entity);
+                          setIsEditBIMModeActive(false);
+                        } else if (isRotationMode) {
+                          onSelectForRotation?.(entity.id);
+                        }
                       }
                     }}
                   onDoubleClick={(e) => {
                     e.stopPropagation();
+                    const isBlocOrModifier = !isEditBIMModeActive && (isPickFaceMode !== 'OFF' || e.ctrlKey || e.altKey || (e.nativeEvent && e.nativeEvent.getModifierState && e.nativeEvent.getModifierState('CapsLock')));
+                    if (isBlocOrModifier) return;
+                    if (Date.now() - lastFaceConfirmedTime.current < 600) {
+                      return;
+                    }
                     handleSelect(entity);
                     handleOpenClickDialog(entity);
                   }}
@@ -6972,9 +7286,9 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
             setIsAreaEditOpen(false);
             setEditingEntityId(null);
           }}
-          onConfirm={isFaceSurveyMode ? handleConfirmFaceCreation : handleConfirmAreaEdit}
-          isFaceSurveyMode={isFaceSurveyMode}
-          initialData={isFaceSurveyMode ? undefined : {
+          onConfirm={handleConfirmAreaEdit}
+          isFaceSurveyMode={false}
+          initialData={{
             familyId: (selectedEntity as any).bimFamilyId || (selectedEntity as any).bimAreaType || 'Fondazioni',
             subFamily: (selectedEntity as any).bimFamily || (selectedEntity as any).bimSubFamily || '',
             name: (selectedEntity as any).bimName || '',
@@ -6989,6 +7303,8 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
           }}
           onDelete={() => handleDeleteEntity(selectedEntity.id)}
           floors={floors}
+          entities={entities}
+          editingEntityId={selectedEntity?.id}
         />
       )}
 

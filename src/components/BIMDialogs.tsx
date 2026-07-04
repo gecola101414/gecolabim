@@ -1054,6 +1054,90 @@ export const FinitureDialog: React.FC<FinitureDialogProps> = ({
 };
 
 // 9. --- AREA FUNZIONALE DIALOG ---
+const isCoatingElementLocal = (e: any): boolean => {
+  const nameLower = (e.bimName || e.name || '').toLowerCase();
+  const familyLower = (e.bimFamily || e.bimAreaType || e.bimFamilyId || '').toLowerCase();
+  const layerLower = (e.layer || '').toLowerCase();
+  return familyLower.includes('intonac') || 
+         familyLower.includes('rivest') ||
+         familyLower.includes('pittur') ||
+         familyLower.includes('tinteg') ||
+         familyLower.includes('isolam') ||
+         familyLower.includes('cappott') ||
+         familyLower.includes('finitur') ||
+         familyLower.includes('plaster') ||
+         nameLower.includes('intonac') ||
+         nameLower.includes('rivest') ||
+         nameLower.includes('pittur') ||
+         nameLower.includes('tinteg') ||
+         nameLower.includes('isolam') ||
+         nameLower.includes('cappott') ||
+         nameLower.includes('finitur') ||
+         nameLower.includes('plaster') ||
+         layerLower.includes('finitur');
+};
+
+const distToSegmentLocal = (p: { x: number, y: number }, a: { x: number, y: number }, b: { x: number, y: number }): number => {
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  if (dx === 0 && dy === 0) return Math.hypot(p.x - a.x, p.y - a.y);
+  const t = ((p.x - a.x) * dx + (p.y - a.y) * dy) / (dx * dx + dy * dy);
+  const clampedT = Math.max(0, Math.min(1, t));
+  const projX = a.x + clampedT * dx;
+  const projY = a.y + clampedT * dy;
+  return Math.hypot(p.x - projX, p.y - projY);
+};
+
+const getConnectedFinishesLocal = (editingEntity: any, allEntities: any[]): any[] => {
+  if (!editingEntity || !allEntities) return [];
+  
+  const pts1 = editingEntity.bimPoints || editingEntity.points || [];
+  if (pts1.length === 0) return [];
+
+  return allEntities.filter(e => {
+    if (e.id === editingEntity.id) return false;
+    if (!isCoatingElementLocal(e)) return false;
+
+    const pts2 = e.bimPoints || e.points || [];
+    if (pts2.length === 0) return false;
+
+    // Check Z proximity (on same floor / height, e.g. within 50cm)
+    const z1 = editingEntity.bimZPlane || editingEntity.zPlane || 0;
+    const z2 = e.bimZPlane || e.zPlane || 0;
+    if (Math.abs(z1 - z2) > 50) return false;
+
+    // 2D proximity: check if any point in pts2 is within 25 cm of any point/segment of pts1
+    const tolerance = 25; // 25 cm
+    let isClose = false;
+
+    for (const p2 of pts2) {
+      // 1. Point to point
+      const closeToPoint = pts1.some((p1: any) => 
+        Math.hypot(p2.x - p1.x, p2.y - p1.y) < tolerance
+      );
+      if (closeToPoint) {
+        isClose = true;
+        break;
+      }
+
+      // 2. Point to segment
+      for (let i = 0; i < pts1.length; i++) {
+        const p1A = pts1[i];
+        const p1B = pts1[(i + 1) % pts1.length];
+        if (p1A && p1B) {
+          if (distToSegmentLocal(p2, p1A, p1B) < tolerance) {
+            isClose = true;
+            break;
+          }
+        }
+      }
+      if (isClose) break;
+    }
+
+    return isClose;
+  });
+};
+
 interface BIMElementDialogProps {
   isOpen: boolean;
   onClose: () => void;
@@ -1071,6 +1155,7 @@ interface BIMElementDialogProps {
     duplicate?: boolean;
     overlay?: boolean;
     sideSign?: number;
+    duplicateConnectedFinishes?: boolean;
   }) => void;
   points?: Point[] | { points: Point[], holes?: Point[][] };
   initialData?: {
@@ -1091,6 +1176,8 @@ interface BIMElementDialogProps {
   isMultiAreaMode?: boolean;
   onToggleMultiAreaMode?: (checked: boolean) => void;
   isFaceSurveyMode?: boolean;
+  entities?: any[];
+  editingEntityId?: string | null;
 }
 
 export const BIMElementDialog: React.FC<BIMElementDialogProps> = ({
@@ -1103,7 +1190,9 @@ export const BIMElementDialog: React.FC<BIMElementDialogProps> = ({
   floors,
   isMultiAreaMode,
   onToggleMultiAreaMode,
-  isFaceSurveyMode
+  isFaceSurveyMode,
+  entities = [],
+  editingEntityId
 }) => {
   const { position, handlePointerDown, handlePointerMove, handlePointerUp } = useDraggableDialog(isOpen, { x: 300, y: 130 });
   
@@ -1124,6 +1213,13 @@ export const BIMElementDialog: React.FC<BIMElementDialogProps> = ({
   const [customFamilyName, setCustomFamilyName] = useState('');
   const [shouldDuplicate, setShouldDuplicate] = useState(false);
   const [shouldOverlay, setShouldOverlay] = useState(false);
+  const [duplicateConnectedFinishes, setDuplicateConnectedFinishes] = useState(false);
+
+  const connectedFinishes = useMemo(() => {
+    if (!editingEntityId || !entities || entities.length === 0) return [];
+    const entity = entities.find(e => e.id === editingEntityId);
+    return getConnectedFinishesLocal(entity, entities);
+  }, [editingEntityId, entities]);
 
   const isLinear = useMemo(() => {
     const pts: any = points;
@@ -1169,6 +1265,7 @@ export const BIMElementDialog: React.FC<BIMElementDialogProps> = ({
       }
 
       setShouldDuplicate(false);
+      setDuplicateConnectedFinishes(false);
 
       if (initialData) {
         setFamilyId(initialData.familyId);
@@ -1194,8 +1291,16 @@ export const BIMElementDialog: React.FC<BIMElementDialogProps> = ({
         setZElevationInput(isFrom3D && pts.zPlane !== undefined ? pts.zPlane.toString() : (localStorage.getItem('last_bim_zElevation') || '0'));
         setObjectHeightInput(isFrom3D && pts.objectHeight !== undefined ? pts.objectHeight.toString() : (localStorage.getItem('last_bim_height') || '270'));
         
-        if (lastFam === 'intonaco_completo' || lastFam === 'intonaco_rustico' || lastFam === 'rivestimenti') {
+        if (lastFam === 'intonaco_completo') {
           setObjectWidthInput('1');
+        } else if (lastFam === 'intonaco_rustico') {
+          setObjectWidthInput('1.5');
+        } else if (lastFam === 'pitture') {
+          setObjectWidthInput('0.2');
+        } else if (lastFam === 'rivestimenti') {
+          setObjectWidthInput('2');
+        } else if (lastFam === 'isolamenti_termici') {
+          setObjectWidthInput('10');
         } else {
           setObjectWidthInput(localStorage.getItem('last_bim_width') || '15');
         }
@@ -1219,8 +1324,16 @@ export const BIMElementDialog: React.FC<BIMElementDialogProps> = ({
     if (fam && !initialData) {
       setName(fam.name);
       setColor(fam.defaultColor);
-      if (id === 'intonaco_completo' || id === 'intonaco_rustico' || id === 'rivestimenti') {
+      if (id === 'intonaco_completo') {
         setObjectWidthInput('1');
+      } else if (id === 'intonaco_rustico') {
+        setObjectWidthInput('1.5');
+      } else if (id === 'pitture') {
+        setObjectWidthInput('0.2');
+      } else if (id === 'rivestimenti') {
+        setObjectWidthInput('2');
+      } else if (id === 'isolamenti_termici') {
+        setObjectWidthInput('10');
       } else {
         setObjectWidthInput(localStorage.getItem('last_bim_width') || '15');
       }
@@ -1243,7 +1356,8 @@ export const BIMElementDialog: React.FC<BIMElementDialogProps> = ({
     
     const parsedZElevation = parseFloat(zElevationInput.replace(',', '.')) || 0;
     const parsedObjectHeight = parseFloat(objectHeightInput.replace(',', '.')) || 270;
-    const parsedObjectWidth = isLinear ? (parseFloat(objectWidthInput.replace(',', '.')) || 15) : undefined;
+    const rawVal = parseFloat(objectWidthInput.replace(',', '.'));
+    const parsedObjectWidth = (!isNaN(rawVal) && rawVal > 0) ? rawVal : 15;
 
     onConfirm({ 
       familyId: customFamilyMode ? 'custom' : familyId,
@@ -1253,18 +1367,19 @@ export const BIMElementDialog: React.FC<BIMElementDialogProps> = ({
       zPlane: actualZPlane,
       zElevation: parsedZElevation,
       objectHeight: Math.max(0.1, parsedObjectHeight), 
-      objectWidth: parsedObjectWidth !== undefined ? Math.max(0.1, parsedObjectWidth) : undefined,
+      objectWidth: parsedObjectWidth,
       hatch,
       bimRenderMode,
       duplicate: shouldDuplicate,
       overlay: shouldOverlay,
-      sideSign
+      sideSign,
+      duplicateConnectedFinishes
     });
   };
 
   return (
     <div 
-      className="fixed z-[200] bg-slate-950 border-2 border-indigo-500/50 p-6 rounded-2xl shadow-[0_20px_50px_rgba(0,0,0,0.6)] w-[420px] max-w-full text-white backdrop-blur-2xl max-h-[85vh] flex flex-col"
+      className="fixed z-[2000] bg-slate-950 border-2 border-indigo-500/50 p-6 rounded-2xl shadow-[0_20px_50px_rgba(0,0,0,0.6)] w-[420px] max-w-full text-white backdrop-blur-2xl max-h-[85vh] flex flex-col"
       style={{ left: `${position.x}px`, top: `${position.y}px` }}
       onClick={(e) => e.stopPropagation()}
     >
@@ -1514,23 +1629,46 @@ export const BIMElementDialog: React.FC<BIMElementDialogProps> = ({
           </div>
         )}
 
-        {initialData && (
+        {initialData && !isFaceSurveyMode && (
           <>
             <div className="bg-slate-900 border border-amber-500/30 p-3.5 rounded-xl flex items-start gap-3 mt-4">
               <input
                 id="bim-duplicate-checkbox"
                 type="checkbox"
                 checked={shouldDuplicate}
-                onChange={(e) => setShouldDuplicate(e.target.checked)}
+                onChange={(e) => {
+                  const checked = e.target.checked;
+                  setShouldDuplicate(checked);
+                  if (checked) {
+                    setDuplicateConnectedFinishes(true);
+                  }
+                }}
                 className="w-4 h-4 rounded border-slate-700 text-indigo-600 focus:ring-indigo-500 bg-slate-950 accent-indigo-500 cursor-pointer mt-0.5"
               />
               <label htmlFor="bim-duplicate-checkbox" className="text-xs text-amber-400 font-black uppercase tracking-wider cursor-pointer flex-1 select-none">
-                <span>Duplica Elemento ⎘</span>
+                <span>Duplica con tutte le finiture ⎘</span>
                 <span className="block text-[10px] text-slate-400 font-medium normal-case tracking-normal mt-0.5 leading-relaxed">
-                  Genera un nuovo oggetto pari a quello evidenziato con i parametri modificati invece di aggiornarlo.
+                  Genera un nuovo oggetto pari a quello evidenziato e duplica automaticamente tutte le sue finiture collegate sul nuovo piano/altezza selezionato.
                 </span>
               </label>
             </div>
+            {shouldDuplicate && connectedFinishes.length > 0 && (
+              <div className="bg-slate-900 border border-emerald-500/30 p-3.5 rounded-xl flex items-start gap-3 mt-3 ml-4 animate-fade-in">
+                <input
+                  id="bim-duplicate-finishes-checkbox"
+                  type="checkbox"
+                  checked={duplicateConnectedFinishes}
+                  onChange={(e) => setDuplicateConnectedFinishes(e.target.checked)}
+                  className="w-4 h-4 rounded border-slate-700 text-emerald-600 focus:ring-emerald-500 bg-slate-950 accent-emerald-500 cursor-pointer mt-0.5"
+                />
+                <label htmlFor="bim-duplicate-finishes-checkbox" className="text-xs text-emerald-400 font-black uppercase tracking-wider cursor-pointer flex-1 select-none">
+                  <span>Clona finiture collegate ({connectedFinishes.length}) ✨</span>
+                  <span className="block text-[10px] text-slate-400 font-medium normal-case tracking-normal mt-0.5 leading-relaxed">
+                    Duplica e sposta automaticamente anche le finiture di questo oggetto ({connectedFinishes.map(f => f.bimName || f.name).join(', ')}) sul nuovo piano/altezza selezionato.
+                  </span>
+                </label>
+              </div>
+            )}
             <div className="bg-slate-900 border border-rose-500/30 p-3.5 rounded-xl flex items-start gap-3 mt-4">
               <input
                 id="bim-overlay-checkbox"
@@ -1573,7 +1711,7 @@ export const BIMElementDialog: React.FC<BIMElementDialogProps> = ({
             type="submit"
             className="flex-1 bg-indigo-600 hover:bg-indigo-500 text-white font-black py-4 rounded-xl text-xs tracking-widest transition-all shadow-[0_10px_20px_rgba(79,70,229,0.3)] cursor-pointer uppercase active:scale-[0.98] border border-indigo-400/30"
           >
-            {initialData ? (shouldDuplicate ? 'DUPLICA ELEMENTO BIM ⎘' : 'AGGIORNA ELEMENTO BIM') : 'CARICA ELEMENTO BIM ✅'}
+            {isFaceSurveyMode ? 'CONFERMA FINITURA FACCIA ✅' : (initialData ? (shouldDuplicate ? (duplicateConnectedFinishes && connectedFinishes.length > 0 ? 'DUPLICA CON TUTTE LE FINITURE ⎘' : 'DUPLICA ELEMENTO BIM ⎘') : 'AGGIORNA ELEMENTO BIM') : 'CARICA ELEMENTO BIM ✅')}
           </button>
         </div>
       </form>

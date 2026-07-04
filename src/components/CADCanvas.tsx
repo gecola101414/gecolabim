@@ -56,7 +56,7 @@ const fastCloneEntity = (ent: Entity): Entity => {
 
 export interface CADCanvasAPI {
   getCurrentMousePosition: () => Point;
-  rotateMaskAtPoint: (e: React.MouseEvent) => boolean;
+  rotateMaskAtPoint: (e: React.MouseEvent | React.PointerEvent) => boolean;
   editRaccordo: (
     id1: string,
     id2: string,
@@ -1653,11 +1653,13 @@ const findBoundaryPolygon = (
   clickPoint: Point,
   entities: Entity[],
   view: any,
-  width: number,
-  height: number,
+  widthVal: number,
+  heightVal: number,
   screenToCanvas: (x: number, y: number) => Point,
   layers: Layer[]
 ): { points: Point[], holes?: Point[][]; gapHealed?: boolean; maxGapDetected?: number } | null => {
+  const width = Math.round(widthVal);
+  const height = Math.round(heightVal);
   // Pre-allocate typed arrays once to prevent micro-allocations in levels and avoid GC freezes
   const totalPixels = width * height;
   const filled = new Uint8Array(totalPixels);
@@ -3500,7 +3502,7 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
 
   useImperativeHandle(ref, () => ({
     getCurrentMousePosition: () => lastMouseRef.current,
-    rotateMaskAtPoint: (e: React.MouseEvent) => {
+    rotateMaskAtPoint: (e: React.MouseEvent | React.PointerEvent) => {
       const canvas = canvasRef.current;
       if (!canvas) return false;
       const rect = canvas.getBoundingClientRect();
@@ -3953,7 +3955,7 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
     };
   };
 
-  const getDampenedCoordinate = (actualRawPoint: Point, e?: React.MouseEvent | MouseEvent | KeyboardEvent): Point => {
+  const getDampenedCoordinate = (actualRawPoint: Point, e?: React.PointerEvent | React.MouseEvent | MouseEvent | KeyboardEvent): Point => {
     actualMousePosRef.current = actualRawPoint;
     
     // Rallentiamo il movimento solo se il tasto "S" è premuto
@@ -10371,7 +10373,7 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
     setActiveTool?.('Select');
   };
 
-  const handleMouseDown = (e: React.MouseEvent) => {
+  const handleMouseDown = (e: React.PointerEvent) => {
     if (activeTool === 'Copy' && copyPhase !== 'idle') {
         if (e.button === 0) {
             const canvas = canvasRef.current;
@@ -12491,7 +12493,7 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
     return current;
   };
 
-  const handleMouseMove = (e: React.MouseEvent) => {
+  const handleMouseMove = (e: React.PointerEvent) => {
     if (holdTimerRef.current && holdStartPosRef.current) {
         const dx = e.clientX - holdStartPosRef.current.x;
         const dy = e.clientY - holdStartPosRef.current.y;
@@ -12955,7 +12957,7 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
     if (drawing) {
       if (isLocked) return;
 
-      if (activeTool === 'Line' && (defaultLineStyle.mode === 'pencil' || defaultLineStyle.mode === 'ink') && !orthoMode && e.buttons === 1 && drawing.isFreehand) {
+      if (activeTool === 'Line' && (defaultLineStyle.mode === 'pencil' || defaultLineStyle.mode === 'ink') && !orthoMode && (e.buttons === 1 || e.pointerType === 'touch' || e.pointerType === 'pen') && drawing.isFreehand) {
           const prevPoints = drawing.freehandPoints || [drawing.start];
           const lastPt = prevPoints[prevPoints.length - 1];
           const distToLast = Math.sqrt(Math.pow(rawPoint.x - lastPt.x, 2) + Math.pow(rawPoint.y - lastPt.y, 2));
@@ -13335,7 +13337,7 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
         setEraserPos(rawPoint);
         setHighlightedTrimLine(null);
         setHighlightedTrimSegment(null);
-        if (e.buttons === 1) {
+        if (e.buttons === 1 || e.pointerType === 'touch' || e.pointerType === 'pen') {
             executeEraser(rawPoint, false);
         }
     } else if (activeTool === 'Trim') {
@@ -13472,7 +13474,7 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
     }
   };
 
-  const handleMouseUp = (e: React.MouseEvent) => {
+  const handleMouseUp = (e: React.PointerEvent) => {
     isDraggingZoomRef.current = false;
     isDraggingPanRef.current = false;
     if (canvasRef.current) canvasRef.current.style.cursor = '';
@@ -13954,7 +13956,11 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
       }
     };
     window.addEventListener('mouseup', handleGlobalMouseUp);
-    return () => window.removeEventListener('mouseup', handleGlobalMouseUp);
+    window.addEventListener('pointerup', handleGlobalMouseUp);
+    return () => {
+      window.removeEventListener('mouseup', handleGlobalMouseUp);
+      window.removeEventListener('pointerup', handleGlobalMouseUp);
+    };
   }, [dragEntityId, activeTool, onCommitHistory, dragTavolaId]);
 
   useEffect(() => {
@@ -14765,16 +14771,16 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
     <div 
       ref={containerRef} 
       className="w-full h-full relative overflow-hidden" 
-      style={{ cursor: isSKeyPressedRef.current ? 'none' : hoveredTavolaPart ? 'pointer' : isMovingTecnigrafo ? 'grabbing' : hoverMoveTecnigrafo ? 'grab' : dragTavolaId ? 'grabbing' : hoverTavolaEdge ? 'grab' : activeTool === 'Testo' ? 'text' : activeTool === 'Eraser' ? 'none' : activeTool === 'Select' ? `url("${crosshairSvg}") 48 48, crosshair` : activeTool === 'Trim' ? `url("${scissorsSvg}") 16 16, crosshair` : defaultLineStyle.mode === 'CAD' ? 'crosshair' : defaultLineStyle.mode === 'ink' ? getKinaCursor(kinaLabel) : defaultLineStyle.mode === 'pencil' ? getPencilCursor(pencilLabel) : rulerStyle === 'crosshair' ? `url("${crosshairSvg}") 48 48, crosshair` : `url("${tecnigrafoSvg}") 20 108, crosshair` }}
+      style={{ touchAction: 'none', cursor: isSKeyPressedRef.current ? 'none' : hoveredTavolaPart ? 'pointer' : isMovingTecnigrafo ? 'grabbing' : hoverMoveTecnigrafo ? 'grab' : dragTavolaId ? 'grabbing' : hoverTavolaEdge ? 'grab' : activeTool === 'Testo' ? 'text' : activeTool === 'Eraser' ? 'none' : activeTool === 'Select' ? `url("${crosshairSvg}") 48 48, crosshair` : activeTool === 'Trim' ? `url("${scissorsSvg}") 16 16, crosshair` : defaultLineStyle.mode === 'CAD' ? 'crosshair' : defaultLineStyle.mode === 'ink' ? getKinaCursor(kinaLabel) : defaultLineStyle.mode === 'pencil' ? getPencilCursor(pencilLabel) : rulerStyle === 'crosshair' ? `url("${crosshairSvg}") 48 48, crosshair` : `url("${tecnigrafoSvg}") 20 108, crosshair` }}
       onWheel={handleWheel} 
-      onMouseDown={handleMouseDown} 
-      onMouseMove={handleMouseMove} 
-      onMouseUp={handleMouseUp} 
+      onPointerDown={handleMouseDown} 
+      onPointerMove={handleMouseMove} 
+      onPointerUp={handleMouseUp} 
       onDoubleClick={handleDoubleClick}
       onContextMenu={handleContextMenu}
       onDragOver={handleDragOver}
       onDrop={handleDrop}
-      onMouseLeave={() => { setHoveredTavolaPart(null); setTooltipMousePos(null); }}
+      onPointerLeave={() => { setHoveredTavolaPart(null); setTooltipMousePos(null); }}
     >
       <canvas ref={canvasRef} />
       
