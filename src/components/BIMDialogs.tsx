@@ -1170,6 +1170,9 @@ interface BIMElementDialogProps {
     hatch: string;
     bimRenderMode?: 'solid' | 'transparent' | 'parete_verticale' | 'parete_orizzontale';
     sideSign?: number;
+    parentEntityId?: string;
+    normalY?: number;
+    isHorizontal?: boolean;
   };
   onDelete?: () => void;
   floors: Floor[];
@@ -1240,15 +1243,34 @@ export const BIMElementDialog: React.FC<BIMElementDialogProps> = ({
     return false;
   }, [points, initialData]);
 
+  const isHorizontalFace = useMemo(() => {
+    if (initialData?.bimRenderMode === 'parete_orizzontale') return true;
+    const pts: any = points;
+    if (pts && pts.isHorizontal) return true;
+    return false;
+  }, [points, initialData]);
+
   const currentFamily = useMemo(() => BIM_FAMILIES.find(f => f.id === familyId), [familyId]);
   const hasInitializedRef = useRef(false);
+  const lastInitializedEntityIdRef = useRef<string | null>(undefined);
+  const lastInitializedPointsRef = useRef<any>(undefined);
 
   useEffect(() => {
     if (isOpen) {
-      if (hasInitializedRef.current) {
-        return; // Skip if already initialized for this open session
+      const currentEntityId = editingEntityId || null;
+      const currentPoints = points;
+
+      if (
+        hasInitializedRef.current &&
+        lastInitializedEntityIdRef.current === currentEntityId &&
+        lastInitializedPointsRef.current === currentPoints
+      ) {
+        return; // Skip if already initialized for this specific session
       }
+
       hasInitializedRef.current = true;
+      lastInitializedEntityIdRef.current = currentEntityId;
+      lastInitializedPointsRef.current = currentPoints;
 
       // Find the best matching floor for initialData or saved last_bim_zPlane
       const targetZPlane = initialData ? initialData.zPlane : parseFloat(localStorage.getItem('last_bim_zPlane') || '0') || 0;
@@ -1272,8 +1294,8 @@ export const BIMElementDialog: React.FC<BIMElementDialogProps> = ({
         setSubFamily(initialData.subFamily);
         setName(initialData.name);
         setColor(initialData.color);
-        setZElevationInput(initialData.zElevation.toString());
-        setObjectHeightInput(initialData.objectHeight.toString());
+        setZElevationInput((initialData.zElevation ?? 0).toString());
+        setObjectHeightInput((initialData.objectHeight ?? 270).toString());
         setObjectWidthInput((initialData.objectWidth || 15).toString());
         setHatch(initialData.hatch);
         setBimRenderMode(initialData.bimRenderMode || 'solid');
@@ -1306,7 +1328,7 @@ export const BIMElementDialog: React.FC<BIMElementDialogProps> = ({
         }
         setHatch('SOLID');
         
-        setBimRenderMode(isLinear ? 'parete_verticale' : 'solid');
+        setBimRenderMode(isHorizontalFace ? 'parete_orizzontale' : (isLinear ? 'parete_verticale' : 'solid'));
         
         const ptsArr = Array.isArray(pts) ? pts : [pts];
         const initialSideSign = ptsArr[0]?.sideSign !== undefined ? ptsArr[0].sideSign : 1;
@@ -1314,8 +1336,10 @@ export const BIMElementDialog: React.FC<BIMElementDialogProps> = ({
       }
     } else {
       hasInitializedRef.current = false;
+      lastInitializedEntityIdRef.current = undefined;
+      lastInitializedPointsRef.current = undefined;
     }
-  }, [isOpen, initialData, floors]);
+  }, [isOpen, initialData, floors, editingEntityId, points, isHorizontalFace, isLinear]);
 
   const handleFamilyChange = (id: string) => {
     setFamilyId(id);
@@ -1498,7 +1522,8 @@ export const BIMElementDialog: React.FC<BIMElementDialogProps> = ({
               <select
                 value={selectedFloorId}
                 onChange={(e) => setSelectedFloorId(e.target.value)}
-                className="w-full bg-slate-900 border border-white/10 text-white rounded-lg p-3 text-sm font-bold focus:outline-none focus:border-indigo-500 appearance-none"
+                disabled={isHorizontalFace}
+                className={`w-full bg-slate-900 border border-white/10 text-white rounded-lg p-3 text-sm font-bold focus:outline-none focus:border-indigo-500 appearance-none ${isHorizontalFace ? 'opacity-50 cursor-not-allowed' : ''}`}
               >
                 {[...floors].sort((a,b) => b.elevation - a.elevation).map(floor => (
                   <option key={floor.id} value={floor.id}>
@@ -1522,29 +1547,35 @@ export const BIMElementDialog: React.FC<BIMElementDialogProps> = ({
                 type="text"
                 value={zElevationInput}
                 onChange={(e) => setZElevationInput(e.target.value)}
-                className="w-full bg-slate-900 border border-white/10 text-cyan-400 rounded p-2.5 text-sm font-mono font-bold focus:outline-none focus:border-indigo-500"
+                disabled={isHorizontalFace}
+                className={`w-full bg-slate-900 border border-white/10 text-cyan-400 rounded p-2.5 text-sm font-mono font-bold focus:outline-none focus:border-indigo-500 ${isHorizontalFace ? 'opacity-50 cursor-not-allowed' : ''}`}
                 placeholder="Es. -6 o +10"
               />
-              <span className="text-[9px] text-slate-500 italic mt-1 block">Z relativo al piano</span>
+              <span className="text-[9px] text-slate-500 italic mt-1 block">
+                {isHorizontalFace ? "Bloccato alla quota del rilievo" : "Z relativo al piano"}
+              </span>
             </div>
 
             <div>
-              <label className="block text-[10px] text-slate-400 font-black uppercase tracking-widest mb-1 font-mono">
-                {bimRenderMode === 'parete_orizzontale' ? 'Spessore Solaio (cm)' : 'Altezza Oggetto (cm)'}
+              <label className="block text-[10px] text-indigo-400 font-black uppercase tracking-widest mb-1 font-mono animate-pulse">
+                {isHorizontalFace ? 'Spessore Finitura (cm)' : (bimRenderMode === 'parete_orizzontale' ? 'Spessore Solaio (cm)' : 'Altezza Oggetto (cm)')}
               </label>
               <input
                 type="text"
                 value={objectHeightInput}
                 onChange={(e) => setObjectHeightInput(e.target.value)}
-                className="w-full bg-slate-900 border border-white/10 text-white rounded p-2.5 text-sm font-mono font-bold focus:outline-none focus:border-indigo-500"
-                placeholder="Es. 270"
+                className="w-full bg-slate-900 border border-indigo-500 text-white rounded p-2.5 text-sm font-mono font-bold focus:outline-none focus:border-indigo-400 ring-2 ring-indigo-500/20"
+                placeholder="Es. 2"
+                autoFocus={isHorizontalFace}
               />
-              <span className="text-[9px] text-slate-500 italic mt-1 block">Dimensione verticale</span>
+              <span className="text-[9px] text-slate-500 italic mt-1 block">
+                {isHorizontalFace ? "Spessore dell'intonaco orizzontale" : "Dimensione verticale"}
+              </span>
             </div>
           </div>
 
           {/* Spessore / Larghezza Elemento */}
-          {(isLinear || bimRenderMode === 'parete_verticale' || bimRenderMode === 'parete_orizzontale') && (
+          {((isLinear || bimRenderMode === 'parete_verticale' || bimRenderMode === 'parete_orizzontale') && !isHorizontalFace) && (
             <div className="col-span-2 bg-emerald-500/5 p-4 rounded-xl border border-emerald-500/10">
                <label className="block text-[10px] text-slate-400 font-black uppercase tracking-widest mb-1 font-mono">
                 {bimRenderMode === 'parete_orizzontale' ? 'Profondità / Larghezza Sezione (cm)' : 'Spessore Parete / Larghezza (cm)'}
@@ -1568,11 +1599,12 @@ export const BIMElementDialog: React.FC<BIMElementDialogProps> = ({
               <button 
                 type="button" 
                 onClick={() => setBimRenderMode('solid')} 
+                disabled={isHorizontalFace}
                 className={`py-2 px-1 text-[10px] rounded-lg border font-bold cursor-pointer transition-all ${
                   bimRenderMode === 'solid' 
                     ? 'bg-cyan-600/20 border-cyan-500 text-white' 
                     : 'bg-slate-900 border-slate-700 text-slate-400 hover:bg-slate-800'
-                }`}
+                } ${isHorizontalFace ? 'opacity-30 cursor-not-allowed' : ''}`}
                 title="Rappresentazione volumetrica piena estruesa in 3D"
               >
                 Solido (Pieno)
@@ -1580,11 +1612,12 @@ export const BIMElementDialog: React.FC<BIMElementDialogProps> = ({
               <button 
                 type="button" 
                 onClick={() => setBimRenderMode('parete_verticale')} 
+                disabled={isHorizontalFace}
                 className={`py-2 px-1 text-[10px] rounded-lg border font-bold cursor-pointer transition-all ${
                   bimRenderMode === 'parete_verticale' 
                     ? 'bg-indigo-600/20 border-indigo-500 text-white' 
                     : 'bg-slate-900 border-slate-700 text-slate-400 hover:bg-slate-800'
-                }`}
+                } ${isHorizontalFace ? 'opacity-30 cursor-not-allowed' : ''}`}
                 title="Genera solo le pareti verticali sul perimetro (spessore simbolico)"
               >
                 Parete Verticale
@@ -1592,21 +1625,23 @@ export const BIMElementDialog: React.FC<BIMElementDialogProps> = ({
               <button 
                 type="button" 
                 onClick={() => setBimRenderMode('parete_orizzontale')} 
+                disabled={isHorizontalFace}
                 className={`py-2 px-1 text-[10px] rounded-lg border font-bold cursor-pointer transition-all ${
                   bimRenderMode === 'parete_orizzontale' 
                     ? 'bg-emerald-600/20 border-emerald-500 text-white' 
                     : 'bg-slate-900 border-slate-700 text-slate-400 hover:bg-slate-800'
-                }`}
-                title="Genera lastre orizzontali (pavimenti o soffitti, spessore simbolico)"
+                } ${isHorizontalFace ? 'ring-2 ring-emerald-500' : ''}`}
+                title="Genera lastre orizzontali (pavimenti o soffitti)"
               >
                 Parete Orizzontale
               </button>
             </div>
             {/* Explanatory subtitle helper */}
-            <p className="text-[9px] text-slate-500 mt-1.5 italic font-medium leading-normal">
-              {bimRenderMode === 'solid' && "🧱 Volume pieno solido con riempimento 3D completo."}
-              {bimRenderMode === 'parete_verticale' && "🧱 Parete Verticale: prende solo il perimetro e l'altezza, spessore simbolico."}
-              {bimRenderMode === 'parete_orizzontale' && "🥞 Parete Orizzontale: crea solai/soffitti con perimetro e area, spessore simbolico."}
+            <p className="text-[9px] text-slate-500 mt-1.5 italic font-medium leading-normal font-mono">
+              {isHorizontalFace && "🥞 Bloccato su Parete Orizzontale per finitura su faccia orizzontale rilevata."}
+              {!isHorizontalFace && bimRenderMode === 'solid' && "🧱 Volume pieno solido con riempimento 3D completo."}
+              {!isHorizontalFace && bimRenderMode === 'parete_verticale' && "🧱 Parete Verticale: prende solo il perimetro e l'altezza, spessore simbolico."}
+              {!isHorizontalFace && bimRenderMode === 'parete_orizzontale' && "🥞 Parete Orizzontale: crea solai/soffitti con perimetro e area, spessore personalizzato."}
             </p>
           </div>
         </div>

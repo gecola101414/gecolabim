@@ -999,33 +999,65 @@ const MASONRY_TYPES = [
 
     if (editingEntityId && !data.duplicate && !data.overlay) {
       // UPDATE EXISTING
-      updateEntitiesWithHistory(prev => prev.map(e => {
-        if (e.id === editingEntityId) {
-          return {
-            ...e,
-            bimFamily: data.subFamily || data.familyId,
-            bimFamilyId: data.familyId,
-            bimAreaType: data.familyId,
-            bimSubFamily: data.subFamily || data.familyId,
-            bimData: undefined,
-            bimName: data.name,
-            backgroundColor: data.color,
-            color: data.color,
-            bimHatchPattern: data.hatch as any,
-            pattern: data.hatch === 'NONE' ? 'SOLID' : data.hatch as any,
-            bimHeight: data.objectHeight,
-            height: data.objectHeight,
-            bimWidth: data.objectWidth !== undefined ? data.objectWidth : e.bimWidth || e.width || 15,
-            width: data.objectWidth !== undefined ? data.objectWidth : e.bimWidth || e.width || 15,
-            bimZPlane: data.zPlane,
-            bimZElevation: data.zElevation,
-            bimRenderMode: data.bimRenderMode || 'solid',
-            sideSign: data.sideSign !== undefined ? data.sideSign : (e as any).sideSign
-          };
+      updateEntitiesWithHistory(prev => {
+        const updated = prev.map(e => {
+          if (e.id === editingEntityId) {
+            return {
+              ...e,
+              bimFamily: data.subFamily || data.familyId,
+              bimFamilyId: data.familyId,
+              bimAreaType: data.familyId,
+              bimSubFamily: data.subFamily || data.familyId,
+              bimData: undefined,
+              bimName: data.name,
+              backgroundColor: data.color,
+              color: data.color,
+              bimHatchPattern: data.hatch as any,
+              pattern: data.hatch === 'NONE' ? 'SOLID' : data.hatch as any,
+              bimHeight: data.objectHeight,
+              height: data.objectHeight,
+              bimWidth: data.objectWidth !== undefined ? data.objectWidth : e.bimWidth || e.width || 15,
+              width: data.objectWidth !== undefined ? data.objectWidth : e.bimWidth || e.width || 15,
+              bimZPlane: data.zPlane,
+              bimZElevation: data.zElevation,
+              bimRenderMode: data.bimRenderMode || 'solid',
+              sideSign: data.sideSign !== undefined ? data.sideSign : (e as any).sideSign
+            };
+          }
+          return e;
+        });
+
+        const parentEntity = updated.find(e => e.id === editingEntityId);
+        if (parentEntity) {
+          const parentZ = (parentEntity as any).bimZPlane || (parentEntity as any).zPlane || 0;
+          const parentZElev = (parentEntity as any).bimZElevation || (parentEntity as any).zElevation || 0;
+          const parentH = (parentEntity as any).bimHeight || (parentEntity as any).height || 0;
+
+          return updated.map(e => {
+            if ((e as any).parentEntityId === editingEntityId) {
+              const isHorizontal = !!(e as any).isHorizontal;
+              const normalY = (e as any).normalY ?? 0;
+              const isTopFace = isHorizontal && normalY > 0.5;
+
+              const calcZElev = isTopFace ? (parentZElev + parentH) : parentZElev;
+              const calcHeight = isHorizontal ? (e.height || (e as any).bimHeight || 2) : parentH;
+
+              return {
+                ...e,
+                bimZPlane: parentZ,
+                zPlane: parentZ,
+                bimZElevation: calcZElev,
+                zElevation: calcZElev,
+                bimHeight: calcHeight,
+                height: calcHeight
+              };
+            }
+            return e;
+          });
         }
-        return e;
-      }));
-      setShortcutToast(`Elemento ${data.name} aggiornato ✅`);
+        return updated;
+      });
+      setShortcutToast(`Elemento ${data.name} e finiture collegate aggiornati ✅`);
     } else if (editingEntityId && (data.duplicate || data.overlay)) {
       // DUPLICATE/OVERLAY EXISTING
       updateEntitiesWithHistory(prev => {
@@ -3383,20 +3415,42 @@ const MASONRY_TYPES = [
                   objectWidth: (e as any).bimWidth || (e as any).width,
                   hatch: (e as any).bimHatchPattern || 'SOLID',
                   bimRenderMode: (e as any).bimRenderMode || 'solid',
-                  sideSign: (e as any).sideSign
+                  sideSign: (e as any).sideSign,
+                  parentEntityId: (e as any).parentEntityId,
+                  normalY: (e as any).normalY,
+                  isHorizontal: (e as any).isHorizontal
                 };
-              })() : (detectedAreaPoints?.from3DFace ? {
-                familyId: 'intonaco_completo',
-                subFamily: 'Intonaco',
-                name: 'Finitura',
-                color: '#e5e7eb',
-                zPlane: detectedAreaPoints.zPlane,
-                zElevation: 0,
-                objectHeight: detectedAreaPoints.objectHeight,
-                objectWidth: detectedAreaPoints.isLinear ? 5 : undefined,
-                hatch: 'SOLID',
-                bimRenderMode: 'solid'
-              } : undefined)}
+              })() : (detectedAreaPoints?.from3DFace ? (() => {
+                const parentId = detectedAreaPoints.parentEntityId;
+                const parent = parentId ? entities.find(ent => ent.id === parentId) : null;
+                
+                const parentZ = parent ? ((parent as any).bimZPlane || (parent as any).zPlane || 0) : 0;
+                const parentZElev = parent ? ((parent as any).bimZElevation || (parent as any).zElevation || 0) : 0;
+                const parentH = parent ? ((parent as any).bimHeight || (parent as any).height || 270) : 270;
+                
+                const isHorizontal = !!detectedAreaPoints.isHorizontal;
+                const normalY = detectedAreaPoints.normalY ?? 0;
+                const isTopFace = isHorizontal && normalY > 0.5;
+                
+                const calcZElev = isTopFace ? (parentZElev + parentH) : parentZElev;
+                const calcHeight = isHorizontal ? 2 : parentH;
+                
+                return {
+                  familyId: 'intonaco_completo',
+                  subFamily: 'Intonaco',
+                  name: isHorizontal ? (isTopFace ? 'Finitura Superiore' : 'Finitura Inferiore') : 'Finitura Verticale',
+                  color: '#e5e7eb',
+                  zPlane: parentZ,
+                  zElevation: calcZElev,
+                  objectHeight: calcHeight,
+                  objectWidth: detectedAreaPoints.isLinear ? 5 : undefined,
+                  hatch: 'SOLID',
+                  bimRenderMode: isHorizontal ? 'parete_orizzontale' : 'solid',
+                  parentEntityId: parentId,
+                  normalY: normalY,
+                  isHorizontal: isHorizontal
+                };
+              })() : undefined)}
               floors={floors}
               isMultiAreaMode={isMultiAreaMode}
               onToggleMultiAreaMode={setIsMultiAreaMode}
@@ -3540,9 +3594,15 @@ const MASONRY_TYPES = [
                   objectHeight, 
                   from3DFace: true, 
                   isFaceAligned: true,
+                  isHorizontal: faceData?.isHorizontal,
+                  isVertical: faceData?.isVertical,
                   rotationX: faceData?.rotationX,
                   rotationY: faceData?.rotationY,
-                  rotationZ: faceData?.rotationZ
+                  rotationZ: faceData?.rotationZ,
+                  normalX: faceData?.normalX,
+                  normalY: faceData?.normalY,
+                  normalZ: faceData?.normalZ,
+                  parentEntityId: faceData?.parentEntityId
                 });
                 setIsBIMElementDialogOpen(true);
               }}

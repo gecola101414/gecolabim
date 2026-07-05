@@ -1363,7 +1363,7 @@ export const Room = ({
   coincidentOffset?: number,
   isFaceAligned?: boolean
 }) => {
-  const h = renderMode === 'parete_orizzontale' ? 0.03 : height / 100; // Convert to meters: 3cm symbolic thickness for horizontal walls
+  const h = renderMode === 'parete_orizzontale' ? (height ? height / 100 : 0.03) : height / 100;
   const zBase = baseZ / 100;
 
   const realisticTextures = useMemo(() => {
@@ -1459,7 +1459,7 @@ export const Room = ({
            nameLower.includes('isolam');
   }, [bimFamilyId, name]);
 
-  const shouldRenderAsVerticalWalls = renderMode === 'parete_verticale' || isPlaster;
+  const shouldRenderAsVerticalWalls = renderMode === 'parete_verticale' || (isPlaster && renderMode !== 'parete_orizzontale');
   const isWall = areaType === 'muro' || shouldRenderAsVerticalWalls;
   
   let finalOpacity;
@@ -4600,6 +4600,12 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
   const [isPickFaceMode, setIsPickFaceMode] = useState<'OFF' | 'PICKING' | 'PENDING'>('OFF');
   const [isEditBIMModeActive, setIsEditBIMModeActive] = useState(false);
   const [pendingFace, setPendingFace] = useState<any>(null);
+
+  useEffect(() => {
+    if (!isFaceSurveyMode) {
+      setPendingFace(null);
+    }
+  }, [isFaceSurveyMode]);
   const [isSlicing, setIsSlicing] = useState(false);
   const maxModelHeight = useMemo(() => {
     let max = 0.5;
@@ -4770,9 +4776,8 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
               onShowToast?.("Seleziona Faccia attiva: clicca su una superficie 3D per creare una finitura.");
             } else if (isPickFaceMode === 'PENDING' && pendingFace) {
               lastFaceConfirmedTime.current = Date.now();
-              onCreateFaceFinish?.(pendingFace.points, pendingFace.isLinear, pendingFace.zPlane, pendingFace.objectHeight);
+              onCreateFaceFinish?.(pendingFace.points, pendingFace.isLinear, pendingFace.zPlane, pendingFace.objectHeight, pendingFace);
               setIsPickFaceMode('OFF');
-              setPendingFace(null);
             } else {
               setIsPickFaceMode('OFF');
               setPendingFace(null);
@@ -6632,54 +6637,99 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
                   ? [-pendingFace.parentPivot[0], -pendingFace.parentPivot[1], -pendingFace.parentPivot[2]] 
                   : [0, 0, 0]}
               >
-                {/* Bottom contour */}
                 {(() => {
-                  const basePoints = pendingFace.points.map((p: any) => [
-                    p.x / 100,
-                    (pendingFace.zPlane / 100),
-                    -p.y / 100
-                  ]);
-                  const finalPoints = !pendingFace.isLinear && basePoints.length > 0
-                    ? [...basePoints, basePoints[0]]
-                    : basePoints;
-                  return (
-                    <Line
-                      points={finalPoints}
-                      color="green"
-                      lineWidth={4}
-                    />
-                  );
+                  const shiftX = (pendingFace.normalX || 0) * 0.003;
+                  const shiftY = (pendingFace.normalY || 0) * 0.003;
+                  const shiftZ = (pendingFace.normalZ || 0) * 0.003;
+
+                  if (pendingFace.isLinear) {
+                    // Vertical linear face/edge
+                    const p1 = pendingFace.points[0];
+                    const p2 = pendingFace.points[1];
+                    if (!p1 || !p2) return null;
+
+                    const p1x = p1.x / 100;
+                    const p1z = -p1.y / 100;
+                    const p2x = p2.x / 100;
+                    const p2z = -p2.y / 100;
+
+                    const length = Math.hypot(p2x - p1x, p2z - p1z);
+                    const angle = Math.atan2(p2z - p1z, p2x - p1x);
+
+                    const cx = (p1x + p2x) / 2;
+                    const cz = (p1z + p2z) / 2;
+                    const cy = (pendingFace.zPlane / 100) + (pendingFace.objectHeight / 200);
+                    const height = pendingFace.objectHeight / 100;
+
+                    const outlinePoints = [
+                      [p1x + shiftX, (pendingFace.zPlane / 100) + shiftY, p1z + shiftZ],
+                      [p2x + shiftX, (pendingFace.zPlane / 100) + shiftY, p2z + shiftZ],
+                      [p2x + shiftX, ((pendingFace.zPlane + pendingFace.objectHeight) / 100) + shiftY, p2z + shiftZ],
+                      [p1x + shiftX, ((pendingFace.zPlane + pendingFace.objectHeight) / 100) + shiftY, p1z + shiftZ],
+                      [p1x + shiftX, (pendingFace.zPlane / 100) + shiftY, p1z + shiftZ]
+                    ] as [number, number, number][];
+
+                    return (
+                      <group>
+                        {/* Filled mesh in green with no Z-fighting */}
+                        <mesh position={[cx + shiftX, cy + shiftY, cz + shiftZ]} rotation={[0, -angle, 0]}>
+                          <planeGeometry args={[length, height]} />
+                          <meshBasicMaterial color="#22c55e" transparent={true} opacity={0.4} side={THREE.DoubleSide} depthWrite={false} />
+                        </mesh>
+                        {/* Thick green outline */}
+                        <Line 
+                          points={outlinePoints}
+                          color="#22c55e"
+                          lineWidth={5}
+                        />
+                      </group>
+                    );
+                  } else {
+                    // Horizontal or slanted flat polygon face
+                    if (!pendingFace.points || pendingFace.points.length < 3) return null;
+
+                    const shape = new THREE.Shape();
+                    const p0 = pendingFace.points[0];
+                    shape.moveTo(p0.x / 100, p0.y / 100);
+                    for (let i = 1; i < pendingFace.points.length; i++) {
+                      const p = pendingFace.points[i];
+                      shape.lineTo(p.x / 100, p.y / 100);
+                    }
+                    shape.closePath();
+
+                    const outlinePoints = [
+                      ...pendingFace.points.map((p: any) => [
+                        (p.x / 100) + shiftX,
+                        (pendingFace.zPlane / 100) + shiftY,
+                        (-p.y / 100) + shiftZ
+                      ]),
+                      [
+                        (pendingFace.points[0].x / 100) + shiftX,
+                        (pendingFace.zPlane / 100) + shiftY,
+                        (-pendingFace.points[0].y / 100) + shiftZ
+                      ]
+                    ] as [number, number, number][];
+
+                    return (
+                      <group>
+                        {/* Filled flat mesh in green with no Z-fighting */}
+                        <mesh 
+                          position={[shiftX, (pendingFace.zPlane / 100) + shiftY, shiftZ]} 
+                          rotation={[-Math.PI / 2, 0, 0]}
+                        >
+                          <shapeGeometry args={[shape]} />
+                          <meshBasicMaterial color="#22c55e" transparent={true} opacity={0.4} side={THREE.DoubleSide} depthWrite={false} />
+                        </mesh>
+                        {/* Thick green outline */}
+                        <Line 
+                          points={outlinePoints}
+                          color="#22c55e"
+                          lineWidth={5}
+                        />
+                      </group>
+                    );
+                  }
                 })()}
-                {/* Top contour */}
-                {(() => {
-                  const basePoints = pendingFace.points.map((p: any) => [
-                    p.x / 100,
-                    (pendingFace.zPlane / 100) + (pendingFace.objectHeight / 100),
-                    -p.y / 100
-                  ]);
-                  const finalPoints = !pendingFace.isLinear && basePoints.length > 0
-                    ? [...basePoints, basePoints[0]]
-                    : basePoints;
-                  return (
-                    <Line
-                      points={finalPoints}
-                      color="green"
-                      lineWidth={4}
-                    />
-                  );
-                })()}
-                {/* Vertical connectors */}
-                {pendingFace.points.map((p: any, i: number) => (
-                  <Line
-                    key={i}
-                    points={[
-                      [p.x / 100, (pendingFace.zPlane / 100), -p.y / 100],
-                      [p.x / 100, (pendingFace.zPlane / 100) + (pendingFace.objectHeight / 100), -p.y / 100]
-                    ]}
-                    color="green"
-                    lineWidth={4}
-                  />
-                ))}
               </group>
             </group>
           )}
@@ -6862,7 +6912,18 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
                   key={entity.id} 
                     onClick={(e) => {
                       e.stopPropagation();
-                      const isBlocOrModifier = !isEditBIMModeActive && (isPickFaceMode !== 'OFF' || e.ctrlKey || e.altKey || (e.nativeEvent && e.nativeEvent.getModifierState && e.nativeEvent.getModifierState('CapsLock')));
+                      const isBlocOrModifier = !isEditBIMModeActive && (
+                        isPickFaceMode !== 'OFF' || 
+                        e.ctrlKey || 
+                        e.altKey || 
+                        e.shiftKey ||
+                        (e.nativeEvent && e.nativeEvent.getModifierState && (
+                          e.nativeEvent.getModifierState('CapsLock') ||
+                          e.nativeEvent.getModifierState('NumLock') ||
+                          e.nativeEvent.getModifierState('ScrollLock') ||
+                          e.nativeEvent.getModifierState('FnLock')
+                        ))
+                      );
                       
                       if (isBlocOrModifier) {
                         if (!e.object || !e.face || !onCreateFaceFinish) {
@@ -6898,13 +6959,8 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
                         const clickedNormalWorld = e.face.normal.clone().applyMatrix3(normalMatrix).normalize();
                         const unrotatedNormal = unrotateNormal(clickedNormalWorld);
                         
-                        const isHorizontal = Math.abs(unrotatedNormal.y) > 0.9;
-                        const isVertical = Math.abs(unrotatedNormal.y) < 0.1;
-                        
-                        if (!isVertical && !isHorizontal) {
-                           onShowToast?.("Faccia ignorata (non è perfettamente orizzontale o verticale).");
-                           return;
-                        }
+                        const isHorizontal = Math.abs(unrotatedNormal.y) >= 0.5;
+                        const isVertical = !isHorizontal;
                         
                         const geom = mesh.geometry as THREE.BufferGeometry;
                         const pos = geom.attributes.position;
@@ -6958,7 +7014,12 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
                             rotationZ: entity.rotationZ || 0,
                             parentPivot: [px, py, pz],
                             parentRotation: [rx, ry, rz],
-                            parentEntityId: entity.id
+                            parentEntityId: entity.id,
+                            normalX: unrotatedNormal.x,
+                            normalY: unrotatedNormal.y,
+                            normalZ: unrotatedNormal.z,
+                            isHorizontal,
+                            isVertical
                           };
                           
                           if (isPickFaceMode === 'PICKING') {
@@ -6967,12 +7028,13 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
                             onShowToast?.("Contorno rilevato. Clicca di nuovo per confermare.");
                           } else if (isPickFaceMode === 'PENDING') {
                              lastFaceConfirmedTime.current = Date.now();
-                             onCreateFaceFinish?.(pendingFace.points, pendingFace.isLinear, pendingFace.zPlane, pendingFace.objectHeight, pendingFace);
+                             setPendingFace(enrichedData); // Keep the highlighted face!
+                             onCreateFaceFinish?.(pendingFace?.points || enrichedData.points, pendingFace?.isLinear !== undefined ? pendingFace.isLinear : enrichedData.isLinear, pendingFace?.zPlane !== undefined ? pendingFace.zPlane : enrichedData.zPlane, pendingFace?.objectHeight !== undefined ? pendingFace.objectHeight : enrichedData.objectHeight, pendingFace || enrichedData);
                              setIsPickFaceMode('OFF');
-                             setPendingFace(null);
                           } else {
-                            // Direct call (Shift/Ctrl/Alt keys)
+                            // Direct call (Shift/Ctrl/Alt keys or CapsLock/NumLock/ScrollLock)
                             lastFaceConfirmedTime.current = Date.now();
+                            setPendingFace(enrichedData); // Highlight immediately in green!
                             if (onCreateFaceFinish) {
                               onCreateFaceFinish(enrichedData.points, enrichedData.isLinear, enrichedData.zPlane, enrichedData.objectHeight, enrichedData);
                             }
@@ -7115,7 +7177,18 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
                     }}
                   onDoubleClick={(e) => {
                     e.stopPropagation();
-                    const isBlocOrModifier = !isEditBIMModeActive && (isPickFaceMode !== 'OFF' || e.ctrlKey || e.altKey || (e.nativeEvent && e.nativeEvent.getModifierState && e.nativeEvent.getModifierState('CapsLock')));
+                    const isBlocOrModifier = !isEditBIMModeActive && (
+                      isPickFaceMode !== 'OFF' || 
+                      e.ctrlKey || 
+                      e.altKey || 
+                      e.shiftKey ||
+                      (e.nativeEvent && e.nativeEvent.getModifierState && (
+                        e.nativeEvent.getModifierState('CapsLock') ||
+                        e.nativeEvent.getModifierState('NumLock') ||
+                        e.nativeEvent.getModifierState('ScrollLock') ||
+                        e.nativeEvent.getModifierState('FnLock')
+                      ))
+                    );
                     if (isBlocOrModifier) return;
                     if (Date.now() - lastFaceConfirmedTime.current < 600) {
                       return;
