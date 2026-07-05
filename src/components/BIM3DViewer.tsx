@@ -7143,20 +7143,109 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
                         } else {
                             const pts = unrotatedVertices.map(v => ({ x: v.x * 100, y: -v.z * 100 }));
                             
-                            // Use all unique points to form the contour instead of just convex hull
                             const unique: {x: number, y: number}[] = [];
-                            const seen = new Set<string>();
-                            for (const p of pts) {
-                                const k = `${Math.round(p.x/5)},${Math.round(p.y/5)}`; // tolerance
-                                if (!seen.has(k)) {
-                                    seen.add(k);
-                                    unique.push(p);
+                            
+                            // 1. Identify outer boundary edges of the coplanar triangles
+                            const edgeCounts = new Map<string, number>();
+                            const edgeMap = new Map<string, { p1: {x: number, y: number}, p2: {x: number, y: number} }>();
+
+                            const getEdgeKey = (p1: {x: number, y: number}, p2: {x: number, y: number}) => {
+                                const k1 = `${Math.round(p1.x * 100)},${Math.round(p1.y * 100)}`;
+                                const k2 = `${Math.round(p2.x * 100)},${Math.round(p2.y * 100)}`;
+                                return k1 < k2 ? `${k1}_${k2}` : `${k2}_${k1}`;
+                            };
+
+                            for (let i = 0; i < pts.length; i += 3) {
+                                if (i + 2 >= pts.length) break;
+                                const pA = pts[i];
+                                const pB = pts[i+1];
+                                const pC = pts[i+2];
+
+                                const edges = [
+                                    { p1: pA, p2: pB },
+                                    { p1: pB, p2: pC },
+                                    { p1: pC, p2: pA }
+                                ];
+
+                                for (const edge of edges) {
+                                    const key = getEdgeKey(edge.p1, edge.p2);
+                                    edgeCounts.set(key, (edgeCounts.get(key) || 0) + 1);
+                                    edgeMap.set(key, edge);
                                 }
                             }
-                            
-                            // Sort points to form a polygon path
-                            const center = unique.reduce((acc, p) => ({x: acc.x + p.x/unique.length, y: acc.y + p.y/unique.length}), {x:0, y:0});
-                            unique.sort((a, b) => Math.atan2(a.y - center.y, a.x - center.x) - Math.atan2(b.y - center.y, b.x - center.x));
+
+                            // Keep only boundary edges (which are visited exactly once)
+                            const boundaryEdges: { p1: {x: number, y: number}, p2: {x: number, y: number} }[] = [];
+                            for (const [key, count] of edgeCounts.entries()) {
+                                if (count === 1) {
+                                    boundaryEdges.push(edgeMap.get(key)!);
+                                }
+                            }
+
+                            // 2. Chain boundary edges into a continuous ordered loop
+                            if (boundaryEdges.length >= 3) {
+                                const used = new Set<number>();
+                                
+                                // Start with first edge
+                                let currentEdgeIdx = 0;
+                                let currentPt = boundaryEdges[currentEdgeIdx].p1;
+                                unique.push(currentPt);
+                                used.add(currentEdgeIdx);
+                                
+                                currentPt = boundaryEdges[currentEdgeIdx].p2;
+                                unique.push(currentPt);
+
+                                const getDistSq = (pa: {x: number, y: number}, pb: {x: number, y: number}) => {
+                                    return Math.pow(pa.x - pb.x, 2) + Math.pow(pa.y - pb.y, 2);
+                                };
+
+                                let foundNext = true;
+                                while (foundNext && used.size < boundaryEdges.length) {
+                                    foundNext = false;
+                                    for (let i = 0; i < boundaryEdges.length; i++) {
+                                        if (used.has(i)) continue;
+                                        
+                                        const edge = boundaryEdges[i];
+                                        const d1 = getDistSq(edge.p1, currentPt);
+                                        const d2 = getDistSq(edge.p2, currentPt);
+                                        
+                                        if (d1 < 0.2) {
+                                            currentPt = edge.p2;
+                                            unique.push(currentPt);
+                                            used.add(i);
+                                            foundNext = true;
+                                            break;
+                                        } else if (d2 < 0.2) {
+                                            currentPt = edge.p1;
+                                            unique.push(currentPt);
+                                            used.add(i);
+                                            foundNext = true;
+                                            break;
+                                        }
+                                    }
+                                }
+                                
+                                if (unique.length > 1 && getDistSq(unique[0], unique[unique.length - 1]) < 0.2) {
+                                    unique.pop();
+                                }
+                            }
+
+                            // 3. Fallback to polar-sorting if chaining didn't form a valid polygon
+                            if (unique.length < 3) {
+                                unique.length = 0;
+                                const fallbackUnique: {x: number, y: number}[] = [];
+                                const seen = new Set<string>();
+                                for (const p of pts) {
+                                    const k = `${Math.round(p.x/5)},${Math.round(p.y/5)}`;
+                                    if (!seen.has(k)) {
+                                        seen.add(k);
+                                        fallbackUnique.push(p);
+                                    }
+                                }
+                                const center = fallbackUnique.reduce((acc, p) => ({x: acc.x + p.x/fallbackUnique.length, y: acc.y + p.y/fallbackUnique.length}), {x:0, y:0});
+                                fallbackUnique.sort((a, b) => Math.atan2(a.y - center.y, a.x - center.x) - Math.atan2(b.y - center.y, b.x - center.x));
+                                unique.push(...fallbackUnique);
+                            }
 
                             handleDetectedFace({ points: unique, isLinear: false, zPlane: targetPointUnrotated.y * 100, objectHeight: 5 });
                         }

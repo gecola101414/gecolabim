@@ -6748,6 +6748,7 @@ const MASONRY_TYPES = [
         isOpen={isPrezzarioOpen}
         onClose={() => setIsPrezzarioOpen(false)}
         setShortcutToast={setShortcutToast}
+        floors={floors}
       />
 
       {/* BIM Dialog Submenus were removed and redesigned in the inline top bars for higher efficiency */}

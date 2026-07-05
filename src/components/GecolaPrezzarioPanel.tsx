@@ -1,7 +1,8 @@
 import React, { useState, useMemo } from "react";
 import { PREZZARIO_GECOLA, PrezzarioItem } from "../data/prezzario";
-import { DimensionEntity, Entity } from "../types";
+import { DimensionEntity, Entity, Floor } from "../types";
 import { computeMetrics } from "../utils/bimMetrics";
+import { BIM_FAMILIES } from "../data/bimFamilies";
 import { 
   Clipboard, 
   Search, 
@@ -133,6 +134,7 @@ interface GecolaPrezzarioPanelProps {
   isOpen: boolean;
   onClose: () => void;
   setShortcutToast: (msg: string | null) => void;
+  floors?: Floor[];
 }
 
 export const GecolaPrezzarioPanel: React.FC<GecolaPrezzarioPanelProps> = ({
@@ -142,7 +144,8 @@ export const GecolaPrezzarioPanel: React.FC<GecolaPrezzarioPanelProps> = ({
   setSelectedId,
   isOpen,
   onClose,
-  setShortcutToast
+  setShortcutToast,
+  floors = []
 }) => {
   const [activeTab, setActiveTab] = useState<"prezzario" | "computo">("prezzario");
   const [searchQuery, setSearchQuery] = useState("");
@@ -579,9 +582,85 @@ export const GecolaPrezzarioPanel: React.FC<GecolaPrezzarioPanelProps> = ({
         // Extract dimension details
         let partiUguali = mult;
 
+        // Custom label generation for finishes (finiture)
+        let finalLabel = label;
+        const isFinishElement = (ent: any) => {
+          const famId = ent.bimFamilyId || ent.bimAreaType || ent.bimFamily || "";
+          const famIdLower = famId.toLowerCase();
+          
+          // Find family in BIM_FAMILIES
+          const famObj = BIM_FAMILIES.find(f => f.id === famId);
+          if (famObj && famObj.category === 'finiture') {
+            return true;
+          }
+          
+          const nameLower = (ent.bimName || ent.name || "").toLowerCase();
+          const layerLower = (ent.layer || "").toLowerCase();
+          
+          return famIdLower.includes("intonac") || 
+                 famIdLower.includes("rivest") ||
+                 famIdLower.includes("pittur") ||
+                 famIdLower.includes("tinteg") ||
+                 famIdLower.includes("isolam") ||
+                 famIdLower.includes("cappott") ||
+                 famIdLower.includes("finitur") ||
+                 famIdLower.includes("plaster") ||
+                 famIdLower.includes("massett") ||
+                 famIdLower.includes("paviment") ||
+                 nameLower.includes("intonac") ||
+                 nameLower.includes("rivest") ||
+                 nameLower.includes("pittur") ||
+                 nameLower.includes("tinteg") ||
+                 nameLower.includes("isolam") ||
+                 nameLower.includes("cappott") ||
+                 nameLower.includes("finitur") ||
+                 nameLower.includes("plaster") ||
+                 nameLower.includes("massett") ||
+                 nameLower.includes("paviment") ||
+                 layerLower.includes("finitur");
+        };
+
+        const getEntityFloorName = (ent: any) => {
+          const z = ent.bimZPlane !== undefined ? ent.bimZPlane : (ent.zPlane !== undefined ? ent.zPlane : 0);
+          if (!floors || floors.length === 0) {
+            const layer = ent.layer || "";
+            if (layer.match(/^p\d+/i)) return layer.toLowerCase();
+            return 'p0';
+          }
+          const matchedFloor = floors.reduce((prev, curr) => 
+            Math.abs(curr.elevation - z) < Math.abs(prev.elevation - z) ? curr : prev
+          );
+          if (!matchedFloor) return 'p0';
+          const nameLower = matchedFloor.name.toLowerCase();
+          if (nameLower.startsWith("piano ")) {
+            const num = nameLower.replace("piano ", "").trim();
+            return `p${num}`;
+          } else if (nameLower.startsWith("piano_")) {
+            const num = nameLower.replace("piano_", "").trim();
+            return `p${num}`;
+          } else if (nameLower.startsWith("p") && !isNaN(Number(nameLower.slice(1)))) {
+            return nameLower;
+          }
+          return matchedFloor.name;
+        };
+
+        const floorName = getEntityFloorName(e);
+        if (isFinishElement(e)) {
+          const parentEntity = (e as any).parentEntityId ? entities.find((ent: any) => ent.id === (e as any).parentEntityId) : null;
+          const parentName = parentEntity ? ((parentEntity as any).bimName || (parentEntity as any).name || "Elemento Principale") : "";
+          
+          if (parentName) {
+            finalLabel = `${floorName} - ${parentName} - ${label}`;
+          } else {
+            finalLabel = `${floorName} - ${label}`;
+          }
+        } else {
+          finalLabel = `${floorName} - ${label}`;
+        }
+
         return [{
           id: e.id,
-          label,
+          label: finalLabel,
           isBIM: true,
           subType: familyId || (e as any).bimType || "element",
           quantity: finalQty,
@@ -600,7 +679,7 @@ export const GecolaPrezzarioPanel: React.FC<GecolaPrezzarioPanelProps> = ({
       }
       return [];
     });
-  }, [entities]);
+  }, [entities, floors]);
 
   // Dimension measurements
   const dimensionMisure = useMemo(() => {
