@@ -3434,11 +3434,22 @@ const MASONRY_TYPES = [
                 
                 const calcZElev = isTopFace ? (parentZElev + parentH) : parentZElev;
                 const calcHeight = isHorizontal ? 2 : parentH;
+
+                const matchedFloor = floors.find(f => f.elevation === parentZ) || floors[0];
+                const floorPrefix = matchedFloor ? (() => {
+                  const m = matchedFloor.name.match(/Piano\s+(-?\d+)/i);
+                  return m ? `P${m[1]}` : matchedFloor.name;
+                })() : 'P0';
+                
+                const parentName = parent ? ((parent as any).bimName || (parent as any).name || 'Elemento BIM') : 'Elemento BIM';
+                const cleanParentName = parentName.replace(/^P-?\d+\s*-\s*/, '');
+                const finishTypeName = isHorizontal ? (isTopFace ? 'Finitura Superiore' : 'Finitura Inferiore') : 'Finitura Verticale';
+                const autoFinishName = `${floorPrefix} - ${finishTypeName} ${cleanParentName}`;
                 
                 return {
                   familyId: 'intonaco_completo',
                   subFamily: 'Intonaco',
-                  name: isHorizontal ? (isTopFace ? 'Finitura Superiore' : 'Finitura Inferiore') : 'Finitura Verticale',
+                  name: autoFinishName,
                   color: '#e5e7eb',
                   zPlane: parentZ,
                   zElevation: calcZElev,
@@ -3448,7 +3459,8 @@ const MASONRY_TYPES = [
                   bimRenderMode: isHorizontal ? 'parete_orizzontale' : 'solid',
                   parentEntityId: parentId,
                   normalY: normalY,
-                  isHorizontal: isHorizontal
+                  isHorizontal: isHorizontal,
+                  isFromFaceSurvey: true
                 };
               })() : undefined)}
               floors={floors}
@@ -3589,6 +3601,7 @@ const MASONRY_TYPES = [
                 setIsFaceSurveyMode(true);
                 setDetectedAreaPoints({ 
                   points, 
+                  holes: faceData?.holes,
                   isLinear, 
                   zPlane, 
                   objectHeight, 

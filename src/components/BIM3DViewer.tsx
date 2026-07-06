@@ -8,6 +8,7 @@ import { createBIMMaterialTexture } from '../utils/materialTextures';
 import { X, ZoomIn, ZoomOut, RotateCw, Box, Layers, Database, Maximize, Home, Compass, Eye, EyeOff, Lightbulb, LightbulbOff, Info, Settings, MousePointer2, Move, Scissors, Play, Pause, RefreshCw, ArrowDown, ArrowUp, ArrowLeft, ArrowRight, Edit, Trash2, Wand2, Lock, Unlock, FolderTree, ChevronDown, ChevronRight, Sliders, Layers3, Camera, Sparkles } from 'lucide-react';
 import { BIMElementDialog, PorteDialog, FinestreDialog } from './BIMDialogs';
 import { BIMPropertyCardDialog } from './BIMPropertyCardDialog';
+import polygonClipping from 'polygon-clipping';
 
 
 interface BIM3DViewerProps {
@@ -6970,7 +6971,18 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
                         const targetPointUnrotated = unrotateVertex(targetPointWorld);
                         const unrotatedVertices: THREE.Vector3[] = [];
                         
-                        const checkTriangle = (a: number, b: number, c: number) => {
+                        // 1. Collect all candidate coplanar triangles in the mesh
+                        interface CandidateTri {
+                            triIdx: number;
+                            vA: THREE.Vector3;
+                            vB: THREE.Vector3;
+                            vC: THREE.Vector3;
+                        }
+                        
+                        const candidates: CandidateTri[] = [];
+                        let startCandidateIdx = -1;
+                        
+                        const checkTriangle = (a: number, b: number, c: number, triIdx: number) => {
                             const vAWorld = new THREE.Vector3().fromBufferAttribute(pos, a).applyMatrix4(mesh.matrixWorld);
                             const vBWorld = new THREE.Vector3().fromBufferAttribute(pos, b).applyMatrix4(mesh.matrixWorld);
                             const vCWorld = new THREE.Vector3().fromBufferAttribute(pos, c).applyMatrix4(mesh.matrixWorld);
@@ -6986,19 +6998,78 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
                             if (triNormal.dot(unrotatedNormal) > 0.99) {
                                 const dist = Math.abs(unrotatedNormal.dot(new THREE.Vector3().subVectors(vA, targetPointUnrotated)));
                                 if (dist < 0.05) {
-                                    unrotatedVertices.push(vA, vB, vC);
+                                    candidates.push({ triIdx, vA, vB, vC });
+                                    if (triIdx === e.faceIndex) {
+                                        startCandidateIdx = candidates.length - 1;
+                                    }
                                 }
                             }
                         };
                         
                         if (idx) {
-                            for (let i=0; i<idx.count; i+=3) {
-                                checkTriangle(idx.getX(i), idx.getX(i+1), idx.getX(i+2));
+                            for (let i = 0; i < idx.count; i += 3) {
+                                checkTriangle(idx.getX(i), idx.getX(i + 1), idx.getX(i + 2), i / 3);
                             }
                         } else {
-                            for (let i=0; i<pos.count; i+=3) {
-                                checkTriangle(i, i+1, i+2);
+                            for (let i = 0; i < pos.count; i += 3) {
+                                checkTriangle(i, i + 1, i + 2, i / 3);
                             }
+                        }
+                        
+                        // Fallback start candidate using proximity if faceIndex mismatch
+                        if (startCandidateIdx === -1 && candidates.length > 0) {
+                            const clickPointUnrotated = unrotateVertex(e.point);
+                            let minDist = Infinity;
+                            for (let i = 0; i < candidates.length; i++) {
+                                const cand = candidates[i];
+                                const centroid = new THREE.Vector3().addVectors(cand.vA, cand.vB).add(cand.vC).multiplyScalar(1 / 3);
+                                const d = clickPointUnrotated.distanceTo(centroid);
+                                if (d < minDist) {
+                                    minDist = d;
+                                    startCandidateIdx = i;
+                                }
+                            }
+                        }
+                        
+                        // 2. BFS to find the connected component of candidates (island)
+                        const connectedCandidates: CandidateTri[] = [];
+                        if (startCandidateIdx !== -1) {
+                            const visited = new Set<number>();
+                            const queue: number[] = [startCandidateIdx];
+                            visited.add(startCandidateIdx);
+                            
+                            const shareVertex = (t1: CandidateTri, t2: CandidateTri) => {
+                                const pts1 = [t1.vA, t1.vB, t1.vC];
+                                const pts2 = [t2.vA, t2.vB, t2.vC];
+                                for (const p1 of pts1) {
+                                    for (const p2 of pts2) {
+                                        if (p1.distanceTo(p2) < 0.01) { // 1 cm tolerance for vertex sharing
+                                            return true;
+                                        }
+                                    }
+                                }
+                                return false;
+                            };
+                            
+                            while (queue.length > 0) {
+                                const currIdx = queue.shift()!;
+                                const curr = candidates[currIdx];
+                                connectedCandidates.push(curr);
+                                
+                                for (let i = 0; i < candidates.length; i++) {
+                                    if (!visited.has(i)) {
+                                        if (shareVertex(curr, candidates[i])) {
+                                            visited.add(i);
+                                            queue.push(i);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        
+                        // 3. Populate unrotatedVertices with only the connected component
+                        for (const cand of connectedCandidates) {
+                            unrotatedVertices.push(cand.vA, cand.vB, cand.vC);
                         }
                         
                         if (unrotatedVertices.length === 0) {
@@ -7143,94 +7214,216 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
                         } else {
                             const pts = unrotatedVertices.map(v => ({ x: v.x * 100, y: -v.z * 100 }));
                             
-                            const unique: {x: number, y: number}[] = [];
+                            let unique: {x: number, y: number}[] = [];
+                            let holes: {x: number, y: number}[][] = [];
                             
-                            // 1. Identify outer boundary edges of the coplanar triangles
-                            const edgeCounts = new Map<string, number>();
-                            const edgeMap = new Map<string, { p1: {x: number, y: number}, p2: {x: number, y: number} }>();
-
-                            const getEdgeKey = (p1: {x: number, y: number}, p2: {x: number, y: number}) => {
-                                const k1 = `${Math.round(p1.x * 100)},${Math.round(p1.y * 100)}`;
-                                const k2 = `${Math.round(p2.x * 100)},${Math.round(p2.y * 100)}`;
-                                return k1 < k2 ? `${k1}_${k2}` : `${k2}_${k1}`;
-                            };
-
+                            // 1. Try to union all triangles to extract the clean outer boundary of the face, avoiding holes
+                            const polyTriangles: any[] = [];
                             for (let i = 0; i < pts.length; i += 3) {
                                 if (i + 2 >= pts.length) break;
                                 const pA = pts[i];
                                 const pB = pts[i+1];
                                 const pC = pts[i+2];
-
-                                const edges = [
-                                    { p1: pA, p2: pB },
-                                    { p1: pB, p2: pC },
-                                    { p1: pC, p2: pA }
-                                ];
-
-                                for (const edge of edges) {
-                                    const key = getEdgeKey(edge.p1, edge.p2);
-                                    edgeCounts.set(key, (edgeCounts.get(key) || 0) + 1);
-                                    edgeMap.set(key, edge);
+                                const area = Math.abs((pB.x - pA.x) * (pC.y - pA.y) - (pC.x - pA.x) * (pB.y - pA.y));
+                                if (area > 0.001) {
+                                    polyTriangles.push([
+                                        [ [pA.x, pA.y], [pB.x, pB.y], [pC.x, pC.y], [pA.x, pA.y] ]
+                                    ]);
                                 }
                             }
 
-                            // Keep only boundary edges (which are visited exactly once)
-                            const boundaryEdges: { p1: {x: number, y: number}, p2: {x: number, y: number} }[] = [];
-                            for (const [key, count] of edgeCounts.entries()) {
-                                if (count === 1) {
-                                    boundaryEdges.push(edgeMap.get(key)!);
+                            if (polyTriangles.length > 0) {
+                                try {
+                                    const unionResult = polygonClipping.union(polyTriangles as any);
+                                    let maxArea = -1;
+                                    let bestOuterRing: [number, number][] = [];
+                                    let bestPolygonIndex = -1;
+                                    
+                                    for (let pIdx = 0; pIdx < unionResult.length; pIdx++) {
+                                        const polygon = unionResult[pIdx];
+                                        // The first ring of each polygon is the outer ring
+                                        const outerRing = polygon[0];
+                                        if (outerRing && outerRing.length >= 3) {
+                                            let area = 0;
+                                            const n = outerRing.length;
+                                            for (let j = 0; j < n; j++) {
+                                                const curr = outerRing[j];
+                                                const next = outerRing[(j + 1) % n];
+                                                area += curr[0] * next[1] - next[0] * curr[1];
+                                            }
+                                            area = Math.abs(area) / 2;
+                                            if (area > maxArea) {
+                                                maxArea = area;
+                                                bestOuterRing = outerRing;
+                                                bestPolygonIndex = pIdx;
+                                            }
+                                        }
+                                    }
+                                    
+                                    if (bestOuterRing.length >= 3) {
+                                        unique = bestOuterRing.map(pt => ({ x: pt[0], y: pt[1] }));
+                                        if (unique.length > 1) {
+                                            const pStart = unique[0];
+                                            const pEnd = unique[unique.length - 1];
+                                            const dSq = Math.pow(pStart.x - pEnd.x, 2) + Math.pow(pStart.y - pEnd.y, 2);
+                                            if (dSq < 0.01) {
+                                                unique.pop();
+                                            }
+                                        }
+                                    }
+
+                                    // Extract holes if any are present in the best polygon
+                                    if (bestPolygonIndex !== -1) {
+                                        const bestPoly = unionResult[bestPolygonIndex];
+                                        for (let rIdx = 1; rIdx < bestPoly.length; rIdx++) {
+                                            const holeRing = bestPoly[rIdx];
+                                            if (holeRing && holeRing.length >= 3) {
+                                                const holePts = holeRing.map(pt => ({ x: pt[0], y: pt[1] }));
+                                                if (holePts.length > 1) {
+                                                    const pStart = holePts[0];
+                                                    const pEnd = holePts[holePts.length - 1];
+                                                    const dSq = Math.pow(pStart.x - pEnd.x, 2) + Math.pow(pStart.y - pEnd.y, 2);
+                                                    if (dSq < 0.01) {
+                                                        holePts.pop();
+                                                    }
+                                                }
+                                                holes.push(holePts);
+                                            }
+                                        }
+                                    }
+                                } catch (err) {
+                                    console.error("Error in polygonClipping union:", err);
                                 }
                             }
 
-                            // 2. Chain boundary edges into a continuous ordered loop
-                            if (boundaryEdges.length >= 3) {
-                                const used = new Set<number>();
-                                
-                                // Start with first edge
-                                let currentEdgeIdx = 0;
-                                let currentPt = boundaryEdges[currentEdgeIdx].p1;
-                                unique.push(currentPt);
-                                used.add(currentEdgeIdx);
-                                
-                                currentPt = boundaryEdges[currentEdgeIdx].p2;
-                                unique.push(currentPt);
+                            // 2. Fallback 1: Identify outer boundary edges and chain them
+                            if (unique.length < 3) {
+                                unique.length = 0;
+                                const edgeCounts = new Map<string, number>();
+                                const edgeMap = new Map<string, { p1: {x: number, y: number}, p2: {x: number, y: number} }>();
 
-                                const getDistSq = (pa: {x: number, y: number}, pb: {x: number, y: number}) => {
-                                    return Math.pow(pa.x - pb.x, 2) + Math.pow(pa.y - pb.y, 2);
+                                const getEdgeKey = (p1: {x: number, y: number}, p2: {x: number, y: number}) => {
+                                    const k1 = `${Math.round(p1.x * 100)},${Math.round(p1.y * 100)}`;
+                                    const k2 = `${Math.round(p2.x * 100)},${Math.round(p2.y * 100)}`;
+                                    return k1 < k2 ? `${k1}_${k2}` : `${k2}_${k1}`;
                                 };
 
-                                let foundNext = true;
-                                while (foundNext && used.size < boundaryEdges.length) {
-                                    foundNext = false;
-                                    for (let i = 0; i < boundaryEdges.length; i++) {
-                                        if (used.has(i)) continue;
+                                for (let i = 0; i < pts.length; i += 3) {
+                                    if (i + 2 >= pts.length) break;
+                                    const pA = pts[i];
+                                    const pB = pts[i+1];
+                                    const pC = pts[i+2];
+
+                                    const edges = [
+                                        { p1: pA, p2: pB },
+                                        { p1: pB, p2: pC },
+                                        { p1: pC, p2: pA }
+                                    ];
+
+                                    for (const edge of edges) {
+                                        const key = getEdgeKey(edge.p1, edge.p2);
+                                        edgeCounts.set(key, (edgeCounts.get(key) || 0) + 1);
+                                        edgeMap.set(key, edge);
+                                    }
+                                }
+
+                                const boundaryEdges: { p1: {x: number, y: number}, p2: {x: number, y: number} }[] = [];
+                                for (const [key, count] of edgeCounts.entries()) {
+                                    if (count === 1) {
+                                        boundaryEdges.push(edgeMap.get(key)!);
+                                    }
+                                }
+
+                                if (boundaryEdges.length >= 3) {
+                                    const getDistSq = (pa: {x: number, y: number}, pb: {x: number, y: number}) => {
+                                        return Math.pow(pa.x - pb.x, 2) + Math.pow(pa.y - pb.y, 2);
+                                    };
+
+                                    const loops: {x: number, y: number}[][] = [];
+                                    const usedEdges = new Set<number>();
+                                    
+                                    while (usedEdges.size < boundaryEdges.length) {
+                                        let startEdgeIdx = -1;
+                                        for (let i = 0; i < boundaryEdges.length; i++) {
+                                            if (!usedEdges.has(i)) {
+                                                startEdgeIdx = i;
+                                                break;
+                                            }
+                                        }
+                                        if (startEdgeIdx === -1) break;
                                         
-                                        const edge = boundaryEdges[i];
-                                        const d1 = getDistSq(edge.p1, currentPt);
-                                        const d2 = getDistSq(edge.p2, currentPt);
+                                        const currentLoop: {x: number, y: number}[] = [];
+                                        let currentPt = boundaryEdges[startEdgeIdx].p1;
+                                        currentLoop.push(currentPt);
+                                        usedEdges.add(startEdgeIdx);
                                         
-                                        if (d1 < 0.2) {
-                                            currentPt = edge.p2;
-                                            unique.push(currentPt);
-                                            used.add(i);
-                                            foundNext = true;
-                                            break;
-                                        } else if (d2 < 0.2) {
-                                            currentPt = edge.p1;
-                                            unique.push(currentPt);
-                                            used.add(i);
-                                            foundNext = true;
+                                        currentPt = boundaryEdges[startEdgeIdx].p2;
+                                        currentLoop.push(currentPt);
+                                        
+                                        let foundNext = true;
+                                        while (foundNext) {
+                                            foundNext = false;
+                                            for (let i = 0; i < boundaryEdges.length; i++) {
+                                                if (usedEdges.has(i)) continue;
+                                                const edge = boundaryEdges[i];
+                                                const d1 = getDistSq(edge.p1, currentPt);
+                                                const d2 = getDistSq(edge.p2, currentPt);
+                                                
+                                                if (d1 < 0.2) {
+                                                    currentPt = edge.p2;
+                                                    currentLoop.push(currentPt);
+                                                    usedEdges.add(i);
+                                                    foundNext = true;
+                                                    break;
+                                                } else if (d2 < 0.2) {
+                                                    currentPt = edge.p1;
+                                                    currentLoop.push(currentPt);
+                                                    usedEdges.add(i);
+                                                    foundNext = true;
+                                                    break;
+                                                }
+                                            }
+                                        }
+                                        
+                                        if (currentLoop.length > 2) {
+                                            if (getDistSq(currentLoop[0], currentLoop[currentLoop.length - 1]) < 0.2) {
+                                                currentLoop.pop();
+                                            }
+                                            if (currentLoop.length >= 3) {
+                                                loops.push(currentLoop);
+                                            }
+                                        } else {
                                             break;
                                         }
                                     }
-                                }
-                                
-                                if (unique.length > 1 && getDistSq(unique[0], unique[unique.length - 1]) < 0.2) {
-                                    unique.pop();
+
+                                    const getPolygonArea = (poly: {x: number, y: number}[]) => {
+                                        let area = 0;
+                                        const n = poly.length;
+                                        for (let i = 0; i < n; i++) {
+                                            const j = (i + 1) % n;
+                                            area += poly[i].x * poly[j].y;
+                                            area -= poly[j].x * poly[i].y;
+                                        }
+                                        return Math.abs(area) / 2;
+                                    };
+
+                                    if (loops.length > 0) {
+                                        let maxArea = -1;
+                                        let bestLoop = loops[0];
+                                        for (const loop of loops) {
+                                            const area = getPolygonArea(loop);
+                                            if (area > maxArea) {
+                                                maxArea = area;
+                                                bestLoop = loop;
+                                            }
+                                        }
+                                        unique.push(...bestLoop);
+                                    }
                                 }
                             }
 
-                            // 3. Fallback to polar-sorting if chaining didn't form a valid polygon
+                            // 3. Fallback 2: polar-sorting if chaining didn't form a valid polygon
                             if (unique.length < 3) {
                                 unique.length = 0;
                                 const fallbackUnique: {x: number, y: number}[] = [];
@@ -7247,7 +7440,7 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
                                 unique.push(...fallbackUnique);
                             }
 
-                            handleDetectedFace({ points: unique, isLinear: false, zPlane: targetPointUnrotated.y * 100, objectHeight: 5 });
+                            handleDetectedFace({ points: unique, holes: holes.length > 0 ? holes : undefined, isLinear: false, zPlane: targetPointUnrotated.y * 100, objectHeight: 5 });
                         }
                       } else if (e.shiftKey) {
                         handleSelectSecondary(entity);

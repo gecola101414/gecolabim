@@ -1733,9 +1733,16 @@ const findBoundaryPolygon = (
       }
 
       if (ent.type === 'line') {
-        // ALWAYS use theoretical start/end for boundary detection, ignoring irregular ink strokes
-        oCtx.moveTo(ent.start.x, ent.start.y);
-        oCtx.lineTo(ent.end.x, ent.end.y);
+        if (ent.isFreehand && ent.inkPoints && ent.inkPoints.length > 0) {
+          oCtx.moveTo(ent.inkPoints[0].x, ent.inkPoints[0].y);
+          for (let i = 1; i < ent.inkPoints.length; i++) {
+            oCtx.lineTo(ent.inkPoints[i].x, ent.inkPoints[i].y);
+          }
+        } else {
+          // ALWAYS use theoretical start/end for boundary detection, ignoring irregular ink strokes
+          oCtx.moveTo(ent.start.x, ent.start.y);
+          oCtx.lineTo(ent.end.x, ent.end.y);
+        }
       } else if (ent.type === 'circle') {
         oCtx.arc(ent.center.x, ent.center.y, ent.radius, 0, Math.PI * 2);
       } else if (ent.type === 'arc') {
@@ -11321,16 +11328,20 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
                     let nearestDist = Infinity;
                     physicalEntities.forEach(ent => {
                         if (ent.type === 'line' && ent.start && ent.end) {
-                            const p = clickCanvasPt;
-                            const s = ent.start;
-                            const e = ent.end;
-                            const l2 = (s.x - e.x) ** 2 + (s.y - e.y) ** 2;
                             let dist = 0;
-                            if (l2 === 0) dist = Math.sqrt((p.x - s.x) ** 2 + (p.y - s.y) ** 2);
-                            else {
-                                let t = ((p.x - s.x) * (e.x - s.x) + (p.y - s.y) * (e.y - s.y)) / l2;
-                                t = Math.max(0, Math.min(1, t));
-                                dist = Math.sqrt((p.x - (s.x + t * (e.x - s.x))) ** 2 + (p.y - (s.y + t * (e.y - s.y))) ** 2);
+                            if (ent.isFreehand && ent.inkPoints && ent.inkPoints.length > 0) {
+                                dist = getClosestPointOnPolyline(clickCanvasPt, ent.inkPoints).dist;
+                            } else {
+                                const p = clickCanvasPt;
+                                const s = ent.start;
+                                const e = ent.end;
+                                const l2 = (s.x - e.x) ** 2 + (s.y - e.y) ** 2;
+                                if (l2 === 0) dist = Math.sqrt((p.x - s.x) ** 2 + (p.y - s.y) ** 2);
+                                else {
+                                    let t = ((p.x - s.x) * (e.x - s.x) + (p.y - s.y) * (e.y - s.y)) / l2;
+                                    t = Math.max(0, Math.min(1, t));
+                                    dist = Math.sqrt((p.x - (s.x + t * (e.x - s.x))) ** 2 + (p.y - (s.y + t * (e.y - s.y))) ** 2);
+                                }
                             }
                             if (dist < nearestDist) nearestDist = dist;
                         } else if (ent.type === 'circle' && ent.center && ent.radius) {

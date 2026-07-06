@@ -1289,7 +1289,7 @@ export const BIMElementDialog: React.FC<BIMElementDialogProps> = ({
       setShouldDuplicate(false);
       setDuplicateConnectedFinishes(false);
 
-      if (initialData) {
+      if (initialData && !(initialData as any).isFromFaceSurvey) {
         setFamilyId(initialData.familyId);
         setSubFamily(initialData.subFamily);
         setName(initialData.name);
@@ -1303,35 +1303,70 @@ export const BIMElementDialog: React.FC<BIMElementDialogProps> = ({
       } else {
         const pts: any = points;
         const isFrom3D = pts && pts.from3DFace;
-        const lastFam = isFrom3D ? 'intonaco_completo' : (localStorage.getItem('last_bim_family') || BIM_FAMILIES[0].id);
+        const lastFam = localStorage.getItem('last_bim_family') || (isFrom3D ? 'intonaco_completo' : BIM_FAMILIES[0].id);
         const famObj = BIM_FAMILIES.find(f => f.id === lastFam);
         
         setFamilyId(lastFam);
-        setSubFamily('');
-        setName(famObj?.name || '');
-        setColor(famObj?.defaultColor || '#34d399');
-        setZElevationInput(isFrom3D && pts.zPlane !== undefined ? pts.zPlane.toString() : (localStorage.getItem('last_bim_zElevation') || '0'));
-        setObjectHeightInput(isFrom3D && pts.objectHeight !== undefined ? pts.objectHeight.toString() : (localStorage.getItem('last_bim_height') || '270'));
+        setSubFamily(localStorage.getItem('last_bim_subFamily') || '');
         
-        if (lastFam === 'intonaco_completo') {
-          setObjectWidthInput('1');
-        } else if (lastFam === 'intonaco_rustico') {
-          setObjectWidthInput('1.5');
-        } else if (lastFam === 'pitture') {
-          setObjectWidthInput('0.2');
-        } else if (lastFam === 'rivestimenti') {
-          setObjectWidthInput('2');
-        } else if (lastFam === 'isolamenti_termici') {
-          setObjectWidthInput('10');
+        if (initialData && (initialData as any).isFromFaceSurvey) {
+          setName(initialData.name);
         } else {
-          setObjectWidthInput(localStorage.getItem('last_bim_width') || '15');
+          setName(localStorage.getItem('last_bim_name') || famObj?.name || '');
         }
-        setHatch('SOLID');
         
-        setBimRenderMode(isHorizontalFace ? 'parete_orizzontale' : (isLinear ? 'parete_verticale' : 'solid'));
+        setColor(localStorage.getItem('last_bim_color') || famObj?.defaultColor || '#34d399');
+        
+        if (initialData && (initialData as any).isFromFaceSurvey) {
+          setZElevationInput((initialData.zElevation ?? 0).toString());
+        } else {
+          setZElevationInput(isFrom3D && pts.zPlane !== undefined ? pts.zPlane.toString() : (localStorage.getItem('last_bim_zElevation') || '0'));
+        }
+        
+        const savedHeight = localStorage.getItem('last_bim_height');
+        if (savedHeight !== null) {
+          setObjectHeightInput(savedHeight);
+        } else if (initialData && (initialData as any).isFromFaceSurvey) {
+          setObjectHeightInput((initialData.objectHeight ?? 2).toString());
+        } else {
+          setObjectHeightInput(isFrom3D && pts.objectHeight !== undefined ? pts.objectHeight.toString() : '270');
+        }
+        
+        const savedWidth = localStorage.getItem('last_bim_width');
+        if (savedWidth !== null) {
+          setObjectWidthInput(savedWidth);
+        } else if (initialData && (initialData as any).isFromFaceSurvey) {
+          setObjectWidthInput((initialData.objectWidth || 2).toString());
+        } else {
+          if (lastFam === 'intonaco_completo') {
+            setObjectWidthInput('1');
+          } else if (lastFam === 'intonaco_rustico') {
+            setObjectWidthInput('1.5');
+          } else if (lastFam === 'pitture') {
+            setObjectWidthInput('0.2');
+          } else if (lastFam === 'rivestimenti') {
+            setObjectWidthInput('2');
+          } else if (lastFam === 'isolamenti_termici') {
+            setObjectWidthInput('10');
+          } else {
+            setObjectWidthInput('15');
+          }
+        }
+        
+        setHatch(localStorage.getItem('last_bim_hatch') || 'SOLID');
+        
+        const savedRenderMode = localStorage.getItem('last_bim_render_mode');
+        if (savedRenderMode && ['solid', 'transparent', 'parete_verticale', 'parete_orizzontale'].includes(savedRenderMode)) {
+          setBimRenderMode(savedRenderMode as any);
+        } else if (initialData && (initialData as any).isFromFaceSurvey) {
+          setBimRenderMode(initialData.bimRenderMode || 'solid');
+        } else {
+          setBimRenderMode(isHorizontalFace ? 'parete_orizzontale' : (isLinear ? 'parete_verticale' : 'solid'));
+        }
         
         const ptsArr = Array.isArray(pts) ? pts : [pts];
-        const initialSideSign = ptsArr[0]?.sideSign !== undefined ? ptsArr[0].sideSign : 1;
+        const savedSideSign = localStorage.getItem('last_bim_side_sign');
+        const initialSideSign = savedSideSign !== null ? parseInt(savedSideSign, 10) : (ptsArr[0]?.sideSign !== undefined ? ptsArr[0].sideSign : 1);
         setSideSign(initialSideSign);
       }
     } else {
@@ -1341,11 +1376,28 @@ export const BIMElementDialog: React.FC<BIMElementDialogProps> = ({
     }
   }, [isOpen, initialData, floors, editingEntityId, points, isHorizontalFace, isLinear]);
 
+  // Auto-save form values on any change if NOT editing an existing entity,
+  // so they are immediately available for subsequent elements.
+  useEffect(() => {
+    if (isOpen && (!initialData || (initialData as any).isFromFaceSurvey)) {
+      localStorage.setItem('last_bim_family', familyId);
+      localStorage.setItem('last_bim_subFamily', subFamily);
+      localStorage.setItem('last_bim_name', name);
+      localStorage.setItem('last_bim_color', color);
+      localStorage.setItem('last_bim_hatch', hatch);
+      localStorage.setItem('last_bim_render_mode', bimRenderMode);
+      localStorage.setItem('last_bim_side_sign', sideSign.toString());
+      localStorage.setItem('last_bim_width', objectWidthInput);
+      localStorage.setItem('last_bim_height', objectHeightInput);
+      localStorage.setItem('last_bim_zElevation', zElevationInput);
+    }
+  }, [isOpen, initialData, familyId, subFamily, name, color, hatch, bimRenderMode, sideSign, objectWidthInput, objectHeightInput, zElevationInput]);
+
   const handleFamilyChange = (id: string) => {
     setFamilyId(id);
     localStorage.setItem('last_bim_family', id);
     const fam = BIM_FAMILIES.find(f => f.id === id);
-    if (fam && !initialData) {
+    if (fam && (!initialData || (initialData as any).isFromFaceSurvey)) {
       setName(fam.name);
       setColor(fam.defaultColor);
       if (id === 'intonaco_completo') {
@@ -1371,12 +1423,26 @@ export const BIMElementDialog: React.FC<BIMElementDialogProps> = ({
     const matchedFloor = floors.find(f => f.id === selectedFloorId);
     const actualZPlane = matchedFloor ? matchedFloor.elevation : 0;
 
+    const floorPrefix = matchedFloor ? (() => {
+      const m = matchedFloor.name.match(/Piano\s+(-?\d+)/i);
+      return m ? `P${m[1]}` : matchedFloor.name;
+    })() : 'P0';
+
+    const rawName = name || (customFamilyMode ? customFamilyName : (currentFamily?.name || ''));
+    const cleanName = rawName.replace(/^P-?\d+\s*-\s*/i, '').replace(/^Piano\s*-?\d+\s*-\s*/i, '');
+    const finalName = `${floorPrefix} - ${cleanName}`;
+
     localStorage.setItem('last_bim_zPlane', actualZPlane.toString());
     localStorage.setItem('last_bim_zElevation', zElevationInput);
     localStorage.setItem('last_bim_height', objectHeightInput);
-    if (isLinear) {
-      localStorage.setItem('last_bim_width', objectWidthInput);
-    }
+    localStorage.setItem('last_bim_width', objectWidthInput);
+    localStorage.setItem('last_bim_family', familyId);
+    localStorage.setItem('last_bim_subFamily', subFamily);
+    localStorage.setItem('last_bim_name', finalName);
+    localStorage.setItem('last_bim_color', color);
+    localStorage.setItem('last_bim_hatch', hatch);
+    localStorage.setItem('last_bim_render_mode', bimRenderMode);
+    localStorage.setItem('last_bim_side_sign', sideSign.toString());
     
     const parsedZElevation = parseFloat(zElevationInput.replace(',', '.')) || 0;
     const parsedObjectHeight = parseFloat(objectHeightInput.replace(',', '.')) || 270;
@@ -1386,14 +1452,14 @@ export const BIMElementDialog: React.FC<BIMElementDialogProps> = ({
     onConfirm({ 
       familyId: customFamilyMode ? 'custom' : familyId,
       subFamily: customFamilyMode ? customFamilyName : subFamily,
-      name: name || (customFamilyMode ? customFamilyName : (currentFamily?.name || '')), 
+      name: finalName, 
       color, 
       zPlane: actualZPlane,
       zElevation: parsedZElevation,
-      objectHeight: Math.max(0.1, parsedObjectHeight), 
+      objectHeight: isHorizontalFace ? parsedObjectWidth : Math.max(0.1, parsedObjectHeight), 
       objectWidth: parsedObjectWidth,
       hatch,
-      bimRenderMode,
+      bimRenderMode: isHorizontalFace ? 'parete_orizzontale' : bimRenderMode,
       duplicate: shouldDuplicate,
       overlay: shouldOverlay,
       sideSign,
@@ -1416,7 +1482,7 @@ export const BIMElementDialog: React.FC<BIMElementDialogProps> = ({
         <div className="flex flex-col text-left text-ellipsis overflow-hidden">
           <h3 className="text-base font-black uppercase text-indigo-400 tracking-widest font-mono flex items-center gap-2">
             <Building size={16} className="animate-pulse" />
-            <span>{isFaceSurveyMode ? 'CREAZIONE FACCIA BIM' : (initialData ? 'MODIFICA ELEMENTO BIM' : 'RILEVAMENTO ELEMENTO BIM')}</span>
+            <span>{isFaceSurveyMode ? 'CREAZIONE FINITURA VERTICALE' : (initialData ? 'MODIFICA ELEMENTO BIM' : 'RILEVAMENTO ELEMENTO BIM')}</span>
           </h3>
           <span className="text-[11px] text-slate-500 font-bold font-mono uppercase tracking-tighter">Standard Internazionale BIM</span>
         </div>
@@ -1514,81 +1580,101 @@ export const BIMElementDialog: React.FC<BIMElementDialogProps> = ({
           </div>
 
           {/* Piano di Riferimento (finestra a tendina) */}
-          <div className="col-span-2">
-            <label className="block text-xs text-slate-400 font-black uppercase tracking-widest mb-1.5 font-mono italic">
-              Piano di Riferimento (1° Dato)
-            </label>
-            <div className="relative">
-              <select
-                value={selectedFloorId}
-                onChange={(e) => setSelectedFloorId(e.target.value)}
-                disabled={isHorizontalFace}
-                className={`w-full bg-slate-900 border border-white/10 text-white rounded-lg p-3 text-sm font-bold focus:outline-none focus:border-indigo-500 appearance-none ${isHorizontalFace ? 'opacity-50 cursor-not-allowed' : ''}`}
-              >
-                {[...floors].sort((a,b) => b.elevation - a.elevation).map(floor => (
-                  <option key={floor.id} value={floor.id}>
-                    {floor.name} (Quota: {floor.elevation} cm)
-                  </option>
-                ))}
-              </select>
-              <div className="absolute right-3 top-3.5 pointer-events-none opacity-50">
-                <ChevronDown size={16} />
+          {!isHorizontalFace && (
+            <div className="col-span-2">
+              <label className="block text-xs text-slate-400 font-black uppercase tracking-widest mb-1.5 font-mono italic">
+                Piano di Riferimento (Posizione)
+              </label>
+              <div className="relative">
+                <select
+                  value={selectedFloorId}
+                  onChange={(e) => setSelectedFloorId(e.target.value)}
+                  className="w-full bg-slate-900 border border-white/10 text-white rounded-lg p-3 text-sm font-bold focus:outline-none focus:border-indigo-500 appearance-none"
+                >
+                  {[...floors].sort((a,b) => b.elevation - a.elevation).map(floor => (
+                    <option key={floor.id} value={floor.id}>
+                      {floor.name} (Quota: {floor.elevation} cm)
+                    </option>
+                  ))}
+                </select>
+                <div className="absolute right-3 top-3.5 pointer-events-none opacity-50">
+                  <ChevronDown size={16} />
+                </div>
               </div>
             </div>
-          </div>
+          )}
 
-          {/* Quota di Partenza (2° Dato) & Altezza dell'oggetto */}
-          <div className="col-span-2 grid grid-cols-2 gap-4 bg-indigo-500/5 p-4 rounded-xl border border-indigo-500/10">
-            <div>
-              <label className="block text-[10px] text-slate-400 font-black uppercase tracking-widest mb-1 font-mono">
-                Quota di Partenza (cm)
-              </label>
-              <input
-                type="text"
-                value={zElevationInput}
-                onChange={(e) => setZElevationInput(e.target.value)}
-                disabled={isHorizontalFace}
-                className={`w-full bg-slate-900 border border-white/10 text-cyan-400 rounded p-2.5 text-sm font-mono font-bold focus:outline-none focus:border-indigo-500 ${isHorizontalFace ? 'opacity-50 cursor-not-allowed' : ''}`}
-                placeholder="Es. -6 o +10"
-              />
-              <span className="text-[9px] text-slate-500 italic mt-1 block">
-                {isHorizontalFace ? "Bloccato alla quota del rilievo" : "Z relativo al piano"}
-              </span>
+          {/* Quota di Partenza (Posizione Z) & Altezza Finitura/Oggetto */}
+          {!isHorizontalFace && (
+            <div className="col-span-2 grid grid-cols-2 gap-4 bg-indigo-500/5 p-4 rounded-xl border border-indigo-500/10">
+              <div>
+                <label className="block text-[10px] text-slate-400 font-black uppercase tracking-widest mb-1 font-mono">
+                  Quota di Partenza (cm)
+                </label>
+                <input
+                  type="text"
+                  value={zElevationInput}
+                  onChange={(e) => setZElevationInput(e.target.value)}
+                  className="w-full bg-slate-900 border border-white/10 text-cyan-400 rounded p-2.5 text-sm font-mono font-bold focus:outline-none focus:border-indigo-500"
+                  placeholder="Es. -6 o +10"
+                />
+                <span className="text-[9px] text-slate-500 italic mt-1 block">
+                  Z relativo al piano di riferimento
+                </span>
+              </div>
+
+              <div>
+                <label className="block text-[10px] text-indigo-400 font-black uppercase tracking-widest mb-1 font-mono animate-pulse">
+                  {isFaceSurveyMode ? 'Altezza Finitura (cm)' : (bimRenderMode === 'parete_orizzontale' ? 'Spessore Solaio (cm)' : 'Altezza Oggetto (cm)')}
+                </label>
+                <input
+                  type="text"
+                  value={objectHeightInput}
+                  onChange={(e) => setObjectHeightInput(e.target.value)}
+                  className="w-full bg-slate-900 border border-indigo-500 text-white rounded p-2.5 text-sm font-mono font-bold focus:outline-none focus:border-indigo-400 ring-2 ring-indigo-500/20"
+                  placeholder="Es. 270"
+                />
+                <span className="text-[9px] text-slate-500 italic mt-1 block">
+                  {isFaceSurveyMode ? "Es. 270 per Intonaco, 10 per Battiscopa" : "Dimensione verticale dell'oggetto"}
+                </span>
+              </div>
             </div>
+          )}
 
-            <div>
-              <label className="block text-[10px] text-indigo-400 font-black uppercase tracking-widest mb-1 font-mono animate-pulse">
-                {isHorizontalFace ? 'Spessore Finitura (cm)' : (bimRenderMode === 'parete_orizzontale' ? 'Spessore Solaio (cm)' : 'Altezza Oggetto (cm)')}
+          {isHorizontalFace && (
+            <div className="col-span-2 bg-emerald-500/5 p-4 rounded-xl border border-emerald-500/10">
+               <label className="block text-[10px] text-emerald-400 font-black uppercase tracking-widest mb-1 font-mono">
+                Spessore Finitura (cm)
               </label>
               <input
                 type="text"
-                value={objectHeightInput}
-                onChange={(e) => setObjectHeightInput(e.target.value)}
-                className="w-full bg-slate-900 border border-indigo-500 text-white rounded p-2.5 text-sm font-mono font-bold focus:outline-none focus:border-indigo-400 ring-2 ring-indigo-500/20"
+                value={objectWidthInput}
+                onChange={(e) => setObjectWidthInput(e.target.value)}
+                className="w-full bg-slate-900 border border-white/10 text-emerald-400 rounded p-2.5 text-sm font-mono font-bold focus:outline-none focus:border-emerald-500"
                 placeholder="Es. 2"
-                autoFocus={isHorizontalFace}
+                autoFocus
               />
               <span className="text-[9px] text-slate-500 italic mt-1 block">
-                {isHorizontalFace ? "Spessore dell'intonaco orizzontale" : "Dimensione verticale"}
+                Spessore della finitura sulla superficie orizzontale.
               </span>
             </div>
-          </div>
+          )}
 
-          {/* Spessore / Larghezza Elemento */}
+          {/* Spessore Finitura (per le facce verticali) */}
           {((isLinear || bimRenderMode === 'parete_verticale' || bimRenderMode === 'parete_orizzontale') && !isHorizontalFace) && (
             <div className="col-span-2 bg-emerald-500/5 p-4 rounded-xl border border-emerald-500/10">
-               <label className="block text-[10px] text-slate-400 font-black uppercase tracking-widest mb-1 font-mono">
-                {bimRenderMode === 'parete_orizzontale' ? 'Profondità / Larghezza Sezione (cm)' : 'Spessore Parete / Larghezza (cm)'}
+               <label className="block text-[10px] text-emerald-400 font-black uppercase tracking-widest mb-1 font-mono">
+                {isFaceSurveyMode ? 'Spessore Finitura (cm)' : (bimRenderMode === 'parete_orizzontale' ? 'Profondità / Larghezza Sezione (cm)' : 'Spessore Parete / Larghezza (cm)')}
               </label>
               <input
                 type="text"
                 value={objectWidthInput}
                 onChange={(e) => setObjectWidthInput(e.target.value)}
                 className="w-full bg-slate-900 border border-white/10 text-emerald-400 rounded p-2.5 text-sm font-mono font-bold focus:outline-none focus:border-indigo-500"
-                placeholder="Es. 15 per muro, 2 per intonaco"
+                placeholder="Es. 2 per intonaco"
               />
               <span className="text-[9px] text-slate-500 italic mt-1 block">
-                {bimRenderMode === 'parete_orizzontale' ? 'Spessore della sezione orizzontale' : 'Spessore orizzontale della sezione'}
+                {isFaceSurveyMode ? "Spessore della finitura (es. 1.5 o 2 per intonaco, 2 per battiscopa/zoccolini)" : "Spessore orizzontale della sezione"}
               </span>
             </div>
           )}
@@ -1638,7 +1724,6 @@ export const BIMElementDialog: React.FC<BIMElementDialogProps> = ({
             </div>
             {/* Explanatory subtitle helper */}
             <p className="text-[9px] text-slate-500 mt-1.5 italic font-medium leading-normal font-mono">
-              {isHorizontalFace && "🥞 Bloccato su Parete Orizzontale per finitura su faccia orizzontale rilevata."}
               {!isHorizontalFace && bimRenderMode === 'solid' && "🧱 Volume pieno solido con riempimento 3D completo."}
               {!isHorizontalFace && bimRenderMode === 'parete_verticale' && "🧱 Parete Verticale: prende solo il perimetro e l'altezza, spessore simbolico."}
               {!isHorizontalFace && bimRenderMode === 'parete_orizzontale' && "🥞 Parete Orizzontale: crea solai/soffitti con perimetro e area, spessore personalizzato."}
