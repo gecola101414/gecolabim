@@ -1332,8 +1332,12 @@ export const BIMElementDialog: React.FC<BIMElementDialogProps> = ({
           setObjectHeightInput(isFrom3D && pts.objectHeight !== undefined ? pts.objectHeight.toString() : '270');
         }
         
+        const isHorizontal = !!pts?.isHorizontal;
+        const savedHorizontalWidth = localStorage.getItem('last_horizontal_finish_thickness');
         const savedWidth = localStorage.getItem('last_bim_width');
-        if (savedWidth !== null) {
+        if (isHorizontal && savedHorizontalWidth !== null) {
+          setObjectWidthInput(savedHorizontalWidth);
+        } else if (savedWidth !== null) {
           setObjectWidthInput(savedWidth);
         } else if (initialData && (initialData as any).isFromFaceSurvey) {
           setObjectWidthInput((initialData.objectWidth || 2).toString());
@@ -1580,101 +1584,91 @@ export const BIMElementDialog: React.FC<BIMElementDialogProps> = ({
           </div>
 
           {/* Piano di Riferimento (finestra a tendina) */}
-          {!isHorizontalFace && (
-            <div className="col-span-2">
-              <label className="block text-xs text-slate-400 font-black uppercase tracking-widest mb-1.5 font-mono italic">
-                Piano di Riferimento (Posizione)
-              </label>
-              <div className="relative">
-                <select
-                  value={selectedFloorId}
-                  onChange={(e) => setSelectedFloorId(e.target.value)}
-                  className="w-full bg-slate-900 border border-white/10 text-white rounded-lg p-3 text-sm font-bold focus:outline-none focus:border-indigo-500 appearance-none"
-                >
-                  {[...floors].sort((a,b) => b.elevation - a.elevation).map(floor => (
-                    <option key={floor.id} value={floor.id}>
-                      {floor.name} (Quota: {floor.elevation} cm)
-                    </option>
-                  ))}
-                </select>
-                <div className="absolute right-3 top-3.5 pointer-events-none opacity-50">
-                  <ChevronDown size={16} />
-                </div>
+          <div className="col-span-2">
+            <label className="block text-xs text-slate-400 font-black uppercase tracking-widest mb-1.5 font-mono italic">
+              Piano di Riferimento (Posizione)
+            </label>
+            <div className="relative">
+              <select
+                value={selectedFloorId}
+                onChange={(e) => setSelectedFloorId(e.target.value)}
+                className={`w-full bg-slate-900 border border-white/10 text-white rounded-lg p-3 text-sm font-bold focus:outline-none focus:border-indigo-500 appearance-none ${isHorizontalFace ? 'opacity-50' : ''}`}
+                disabled={isHorizontalFace}
+              >
+                {[...floors].sort((a,b) => b.elevation - a.elevation).map(floor => (
+                  <option key={floor.id} value={floor.id}>
+                    {floor.name} (Quota: {floor.elevation} cm)
+                  </option>
+                ))}
+              </select>
+              <div className="absolute right-3 top-3.5 pointer-events-none opacity-50">
+                <ChevronDown size={16} />
               </div>
             </div>
-          )}
+            {isHorizontalFace && (
+              <span className="text-[9px] text-emerald-400 italic mt-1 block font-mono">
+                * Automatico per finiture su facciate orizzontali
+              </span>
+            )}
+          </div>
 
           {/* Quota di Partenza (Posizione Z) & Altezza Finitura/Oggetto */}
-          {!isHorizontalFace && (
-            <div className="col-span-2 grid grid-cols-2 gap-4 bg-indigo-500/5 p-4 rounded-xl border border-indigo-500/10">
-              <div>
-                <label className="block text-[10px] text-slate-400 font-black uppercase tracking-widest mb-1 font-mono">
-                  Quota di Partenza (cm)
-                </label>
-                <input
-                  type="text"
-                  value={zElevationInput}
-                  onChange={(e) => setZElevationInput(e.target.value)}
-                  className="w-full bg-slate-900 border border-white/10 text-cyan-400 rounded p-2.5 text-sm font-mono font-bold focus:outline-none focus:border-indigo-500"
-                  placeholder="Es. -6 o +10"
-                />
-                <span className="text-[9px] text-slate-500 italic mt-1 block">
-                  Z relativo al piano di riferimento
-                </span>
-              </div>
-
-              <div>
-                <label className="block text-[10px] text-indigo-400 font-black uppercase tracking-widest mb-1 font-mono animate-pulse">
-                  {isFaceSurveyMode ? 'Altezza Finitura (cm)' : (bimRenderMode === 'parete_orizzontale' ? 'Spessore Solaio (cm)' : 'Altezza Oggetto (cm)')}
-                </label>
-                <input
-                  type="text"
-                  value={objectHeightInput}
-                  onChange={(e) => setObjectHeightInput(e.target.value)}
-                  className="w-full bg-slate-900 border border-indigo-500 text-white rounded p-2.5 text-sm font-mono font-bold focus:outline-none focus:border-indigo-400 ring-2 ring-indigo-500/20"
-                  placeholder="Es. 270"
-                />
-                <span className="text-[9px] text-slate-500 italic mt-1 block">
-                  {isFaceSurveyMode ? "Es. 270 per Intonaco, 10 per Battiscopa" : "Dimensione verticale dell'oggetto"}
-                </span>
-              </div>
-            </div>
-          )}
-
-          {isHorizontalFace && (
-            <div className="col-span-2 bg-emerald-500/5 p-4 rounded-xl border border-emerald-500/10">
-               <label className="block text-[10px] text-emerald-400 font-black uppercase tracking-widest mb-1 font-mono">
-                Spessore Finitura (cm)
+          <div className="col-span-2 grid grid-cols-2 gap-4 bg-indigo-500/5 p-4 rounded-xl border border-indigo-500/10">
+            <div>
+              <label className="block text-[10px] text-slate-400 font-black uppercase tracking-widest mb-1 font-mono">
+                Quota di Partenza (cm)
               </label>
               <input
                 type="text"
-                value={objectWidthInput}
-                onChange={(e) => setObjectWidthInput(e.target.value)}
-                className="w-full bg-slate-900 border border-white/10 text-emerald-400 rounded p-2.5 text-sm font-mono font-bold focus:outline-none focus:border-emerald-500"
-                placeholder="Es. 2"
-                autoFocus
+                value={zElevationInput}
+                onChange={(e) => setZElevationInput(e.target.value)}
+                className={`w-full bg-slate-900 border border-white/10 text-cyan-400 rounded p-2.5 text-sm font-mono font-bold focus:outline-none focus:border-indigo-500 ${isHorizontalFace ? 'opacity-50' : ''}`}
+                placeholder="Es. -6 o +10"
+                disabled={isHorizontalFace}
               />
               <span className="text-[9px] text-slate-500 italic mt-1 block">
-                Spessore della finitura sulla superficie orizzontale.
+                {isHorizontalFace ? '* Dedotta in automatico' : 'Z relativo al piano di riferimento'}
               </span>
             </div>
-          )}
+            <div>
+              <label className="block text-[10px] text-indigo-400 font-black uppercase tracking-widest mb-1 font-mono animate-pulse">
+                {isFaceSurveyMode ? 'Altezza Finitura (cm)' : (bimRenderMode === 'parete_orizzontale' ? 'Spessore Solaio (cm)' : 'Altezza Oggetto (cm)')}
+              </label>
+              <input
+                type="text"
+                value={objectHeightInput}
+                onChange={(e) => setObjectHeightInput(e.target.value)}
+                className={`w-full bg-slate-900 border border-indigo-500 text-white rounded p-2.5 text-sm font-mono font-bold focus:outline-none focus:border-indigo-400 ring-2 ring-indigo-500/20 ${isHorizontalFace ? 'opacity-50' : ''}`}
+                placeholder="Es. 270"
+                disabled={isHorizontalFace}
+              />
+              <span className="text-[9px] text-slate-500 italic mt-1 block">
+                {isHorizontalFace ? '* Dedotta in automatico' : (isFaceSurveyMode ? "Es. 270 per Intonaco, 10 per Battiscopa" : "Dimensione verticale dell'oggetto")}
+              </span>
+            </div>
+          </div>
 
-          {/* Spessore Finitura (per le facce verticali) */}
-          {((isLinear || bimRenderMode === 'parete_verticale' || bimRenderMode === 'parete_orizzontale') && !isHorizontalFace) && (
-            <div className="col-span-2 bg-emerald-500/5 p-4 rounded-xl border border-emerald-500/10">
-               <label className="block text-[10px] text-emerald-400 font-black uppercase tracking-widest mb-1 font-mono">
-                {isFaceSurveyMode ? 'Spessore Finitura (cm)' : (bimRenderMode === 'parete_orizzontale' ? 'Profondità / Larghezza Sezione (cm)' : 'Spessore Parete / Larghezza (cm)')}
+          {/* Spessore Finitura (per le facce) */}
+          {(isLinear || bimRenderMode === 'parete_verticale' || bimRenderMode === 'parete_orizzontale' || isHorizontalFace) && (
+            <div className={`col-span-2 p-4 rounded-xl border ${isHorizontalFace ? 'bg-emerald-500/10 border-emerald-500/30' : 'bg-emerald-500/5 border-emerald-500/10'}`}> 
+              <label className="block text-[10px] text-emerald-400 font-black uppercase tracking-widest mb-1 font-mono">
+                {isHorizontalFace ? 'Spessore Finitura Orizzontale (cm)' : (isFaceSurveyMode ? 'Spessore Finitura (cm)' : (bimRenderMode === 'parete_orizzontale' ? 'Profondità / Larghezza Sezione (cm)' : 'Spessore Parete / Larghezza (cm)'))}
               </label>
               <input
                 type="text"
                 value={objectWidthInput}
-                onChange={(e) => setObjectWidthInput(e.target.value)}
+                onChange={(e) => {
+                  setObjectWidthInput(e.target.value);
+                  if (isHorizontalFace) {
+                    localStorage.setItem('last_horizontal_finish_thickness', e.target.value);
+                  }
+                }}
                 className="w-full bg-slate-900 border border-white/10 text-emerald-400 rounded p-2.5 text-sm font-mono font-bold focus:outline-none focus:border-indigo-500"
-                placeholder="Es. 2 per intonaco"
+                placeholder={isHorizontalFace ? "Es. 2" : "Es. 2 per intonaco"}
+                autoFocus={isHorizontalFace}
               />
               <span className="text-[9px] text-slate-500 italic mt-1 block">
-                {isFaceSurveyMode ? "Spessore della finitura (es. 1.5 o 2 per intonaco, 2 per battiscopa/zoccolini)" : "Spessore orizzontale della sezione"}
+                {isHorizontalFace ? "Spessore della finitura sulla superficie orizzontale (es. pavimento/soffitto)" : (isFaceSurveyMode ? "Spessore della finitura (es. 1.5 o 2 per intonaco, 2 per battiscopa/zoccolini)" : "Spessore orizzontale della sezione")}
               </span>
             </div>
           )}

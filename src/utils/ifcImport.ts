@@ -66,6 +66,21 @@ export function parseIFCContent(content: string): Entity[] {
     lineMap.set(id, { id, className, args });
   });
 
+  // Determine scale factor to centimeters
+  let lengthFactorToCm = 0.1; // Default to assuming millimeters (mm -> cm = *0.1)
+  lineMap.forEach((line) => {
+    if (line.className === 'IFCSIUNIT' && line.args[1] === '.LENGTHUNIT.') {
+      // args[2] is the prefix. '.MILLI.' means mm, empty '$' means meters
+      if (line.args[2] === '$') {
+        lengthFactorToCm = 100; // meters to cm
+      } else if (line.args[2] === '.CENTI.') {
+        lengthFactorToCm = 1;
+      } else if (line.args[2] === '.MILLI.') {
+        lengthFactorToCm = 0.1;
+      }
+    }
+  });
+
   // Helper functions for parsing STEP parameter formats
   const parseRef = (v: string): number | null => {
     if (!v || !v.trim().startsWith('#')) return null;
@@ -109,6 +124,42 @@ export function parseIFCContent(content: string): Entity[] {
       if (outerCurveId !== null) {
         return resolvePointsFromCurve(outerCurveId);
       }
+    } else if (profile.className === 'IFCRECTANGLEPROFILEDEF') {
+      const xDimVal = parseFloat(profile.args[3]) || 1;
+      const yDimVal = parseFloat(profile.args[4]) || 1;
+      const xCm = xDimVal * lengthFactorToCm;
+      const yCm = yDimVal * lengthFactorToCm;
+      return [
+        { x: -xCm/2, y: -yCm/2 },
+        { x: xCm/2, y: -yCm/2 },
+        { x: xCm/2, y: yCm/2 },
+        { x: -xCm/2, y: yCm/2 }
+      ];
+    } else if (profile.className === 'IFCISHAPEPROFILEDEF') {
+      const xDimVal = parseFloat(profile.args[3]) || 0.2; // overall width
+      const yDimVal = parseFloat(profile.args[4]) || 0.2; // overall depth
+      const twVal = parseFloat(profile.args[5]) || 0.01; // web thickness
+      const tfVal = parseFloat(profile.args[6]) || 0.015; // flange thickness
+      
+      const xCm = xDimVal * lengthFactorToCm;
+      const yCm = yDimVal * lengthFactorToCm;
+      const twCm = twVal * lengthFactorToCm;
+      const tfCm = tfVal * lengthFactorToCm;
+      
+      return [
+        { x: -xCm/2, y: -yCm/2 },
+        { x: xCm/2, y: -yCm/2 },
+        { x: xCm/2, y: -yCm/2 + tfCm },
+        { x: twCm/2, y: -yCm/2 + tfCm },
+        { x: twCm/2, y: yCm/2 - tfCm },
+        { x: xCm/2, y: yCm/2 - tfCm },
+        { x: xCm/2, y: yCm/2 },
+        { x: -xCm/2, y: yCm/2 },
+        { x: -xCm/2, y: yCm/2 - tfCm },
+        { x: -twCm/2, y: yCm/2 - tfCm },
+        { x: -twCm/2, y: -yCm/2 + tfCm },
+        { x: -xCm/2, y: -yCm/2 + tfCm }
+      ];
     }
     return [];
   };
@@ -125,17 +176,65 @@ export function parseIFCContent(content: string): Entity[] {
         if (ptLine && ptLine.className === 'IFCCARTESIANPOINT') {
           const coords = parseNumberList(ptLine.args[0]);
           if (coords.length >= 2) {
-            // Map coordinates back: scale from millimeters to centimeters, flip Y back to positive/negative y
+            // Map coordinates back: scale based on IFC unit factor, flip Y back to positive/negative y
             pts.push({
-              x: coords[0] / 10,
-              y: -coords[1] / 10
+              x: (coords[0] || 0) * lengthFactorToCm,
+              y: -(coords[1] || 0) * lengthFactorToCm
             });
           }
         }
       });
       return pts;
+    } else if (curve.className === 'IFCCOMPOSITECURVE') {
+      const segRefs = parseRefList(curve.args[0]);
+      const pts: Point[] = [];
+      segRefs.forEach(segRefId => {
+        pts.push(...resolvePointsFromCurve(segRefId));
+      });
+      return pts;
+    } else if (curve.className === 'IFCCOMPOSITECURVESEGMENT') {
+      const subCurveId = parseRef(curve.args[2]);
+      if (subCurveId !== null) {
+        return resolvePointsFromCurve(subCurveId);
+      }
     }
     return [];
+  };
+
+  // Helper to recursively compute the absolute position from IFCLOCALPLACEMENT
+  const resolveAbsolutePlacement = (placementId: number): { x: number, y: number, z: number } => {
+    let pos = { x: 0, y: 0, z: 0 };
+    let currentId: number | null = placementId;
+    
+    while (currentId !== null) {
+      const placement = lineMap.get(currentId);
+      if (!placement) break;
+      
+      if (placement.className === 'IFCLOCALPLACEMENT') {
+        const parentId = parseRef(placement.args[0]);
+        const axisId = parseRef(placement.args[1]);
+        
+        if (axisId !== null) {
+          const axis = lineMap.get(axisId);
+          if (axis && axis.className === 'IFCAXIS2PLACEMENT3D') {
+            const ptId = parseRef(axis.args[0]);
+            if (ptId !== null) {
+              const pt = lineMap.get(ptId);
+              if (pt && pt.className === 'IFCCARTESIANPOINT') {
+                const coords = parseNumberList(pt.args[0]);
+                pos.x += (coords[0] || 0);
+                pos.y += (coords[1] || 0);
+                pos.z += (coords[2] || 0);
+              }
+            }
+          }
+        }
+        currentId = parentId;
+      } else {
+        break;
+      }
+    }
+    return pos;
   };
 
   // Build entities from parsed lines
@@ -146,7 +245,8 @@ export function parseIFCContent(content: string): Entity[] {
   lineMap.forEach((line) => {
     const isBimElement = [
       'IFCWALL', 'IFCWALLSTANDARDCASE', 'IFCDOOR', 'IFCWINDOW', 'IFCSLAB', 
-      'IFCBUILDINGELEMENTPROXY', 'IFCCOVERING', 'IFCCOLUMNS', 'IFCBEAMS', 'IFCFURNISHINGELEMENT', 'IFCSPACE'
+      'IFCBUILDINGELEMENTPROXY', 'IFCCOVERING', 'IFCCOLUMNS', 'IFCBEAMS', 'IFCFURNISHINGELEMENT', 'IFCSPACE',
+      'IFCBEAM'
     ].includes(line.className);
 
     if (!isBimElement) return;
@@ -162,23 +262,27 @@ export function parseIFCContent(content: string): Entity[] {
     let baseZElevationCm = 0;
     let baseZPlaneCm = 0;
     let points: Point[] = [];
+    let absolutePos = { x: 0, y: 0, z: 0 };
 
-    // Resolve base Z elevation & position from axis placement (IFCAXIS2PLACEMENT3D)
+    // Resolve base Z elevation & position from axis placement (IFCLOCALPLACEMENT)
     if (axisId !== null) {
-      const axisPlacement = lineMap.get(axisId);
-      if (axisPlacement && axisPlacement.className === 'IFCAXIS2PLACEMENT3D') {
-        const ptRef = parseRef(axisPlacement.args[0]);
-        if (ptRef !== null) {
-          const ptLine = lineMap.get(ptRef);
-          if (ptLine && ptLine.className === 'IFCCARTESIANPOINT') {
-            const coords = parseNumberList(ptLine.args[0]);
-            if (coords.length >= 3) {
-              baseZElevationCm = coords[2] / 10;
-            }
-          }
-        }
-      }
+      absolutePos = resolveAbsolutePlacement(axisId);
+      baseZElevationCm = absolutePos.z * lengthFactorToCm;
     }
+
+    // Helper to find IFCEXTRUDEDAREASOLID
+    const findExtrudedSolidId = (startId: number): number | null => {
+      const line = lineMap.get(startId);
+      if (!line) return null;
+      if (line.className === 'IFCEXTRUDEDAREASOLID') return startId;
+      if (line.className === 'IFCBOUNDINGBOX') return startId;
+      if (line.className === 'IFCBOOLEANCLIPPINGRESULT') {
+        // usually arg[1] is the first operand (the solid to be clipped)
+        const operandId = parseRef(line.args[1]);
+        if (operandId !== null) return findExtrudedSolidId(operandId);
+      }
+      return null;
+    };
 
     // Resolve profile geom and height from shape representation (IFCPRODUCTDEFINITIONSHAPE)
     if (shapeId !== null) {
@@ -190,45 +294,56 @@ export function parseIFCContent(content: string): Entity[] {
           if (repLine && repLine.className === 'IFCSHAPEREPRESENTATION') {
             const itemRefs = parseRefList(repLine.args[3]);
             itemRefs.forEach(itemId => {
-              const itemLine = lineMap.get(itemId);
-              if (itemLine) {
-                if (itemLine.className === 'IFCEXTRUDEDAREASOLID') {
-                  // Resolve shape height in cm
-                  const heightMm = parseFloat(itemLine.args[3]);
-                  if (!isNaN(heightMm)) {
-                    heightCm = heightMm / 10;
-                  }
-                  // Resolve extrusion profile
-                  const profileRef = parseRef(itemLine.args[0]);
-                  if (profileRef !== null) {
-                    points = resolvePointsFromProfile(profileRef);
-                  }
-                } else if (itemLine.className === 'IFCBOUNDINGBOX') {
-                  // Fallback for simple bounding boxes
-                  const ptRef = parseRef(itemLine.args[0]);
-                  let bx = 0, by = 0;
-                  if (ptRef !== null) {
-                    const ptLine = lineMap.get(ptRef);
-                    if (ptLine && ptLine.className === 'IFCCARTESIANPOINT') {
-                      const c = parseNumberList(ptLine.args[0]);
-                      if (c.length >= 3) {
-                        bx = c[0] / 10;
-                        by = -c[1] / 10;
-                        baseZElevationCm = c[2] / 10;
+              const targetSolidId = findExtrudedSolidId(itemId);
+              if (targetSolidId !== null) {
+                const itemLine = lineMap.get(targetSolidId);
+                if (itemLine) {
+                  if (itemLine.className === 'IFCEXTRUDEDAREASOLID') {
+                    // Resolve shape height in cm
+                    const heightVal = parseFloat(itemLine.args[3]);
+                    if (!isNaN(heightVal)) {
+                      heightCm = heightVal * lengthFactorToCm;
+                    }
+                    // Resolve extrusion profile
+                    const profileRef = parseRef(itemLine.args[0]);
+                    if (profileRef !== null) {
+                      points = resolvePointsFromProfile(profileRef);
+                      // Apply absolute placement transformation
+                      points = points.map(p => ({
+                        x: p.x + (absolutePos.x * lengthFactorToCm),
+                        y: p.y - (absolutePos.y * lengthFactorToCm) // Y is flipped in 2D canvas
+                      }));
+                    }
+                  } else if (itemLine.className === 'IFCBOUNDINGBOX') {
+                    // Fallback for simple bounding boxes
+                    const ptRef = parseRef(itemLine.args[0]);
+                    let bx = 0, by = 0;
+                    if (ptRef !== null) {
+                      const ptLine = lineMap.get(ptRef);
+                      if (ptLine && ptLine.className === 'IFCCARTESIANPOINT') {
+                        const c = parseNumberList(ptLine.args[0]);
+                        if (c.length >= 3) {
+                          bx = (c[0] || 0) * lengthFactorToCm;
+                          by = -(c[1] || 0) * lengthFactorToCm;
+                          baseZElevationCm = (c[2] || 0) * lengthFactorToCm;
+                        }
                       }
                     }
-                  }
-                  const xDim = parseFloat(itemLine.args[1]) / 10 || 100;
-                  const yDim = parseFloat(itemLine.args[2]) / 10 || 100;
-                  const zDim = parseFloat(itemLine.args[3]) / 10 || 270;
-                  heightCm = zDim;
+                    const xDim = parseFloat(itemLine.args[1]) * lengthFactorToCm || 100;
+                    const yDim = parseFloat(itemLine.args[2]) * lengthFactorToCm || 100;
+                    const zDim = parseFloat(itemLine.args[3]) * lengthFactorToCm || 270;
+                    heightCm = zDim;
 
-                  points = [
-                    { x: bx - xDim/2, y: by - yDim/2 },
-                    { x: bx + xDim/2, y: by - yDim/2 },
-                    { x: bx + xDim/2, y: by + yDim/2 },
-                    { x: bx - xDim/2, y: by + yDim/2 },
-                  ];
+                    bx += (absolutePos.x * lengthFactorToCm);
+                    by -= (absolutePos.y * lengthFactorToCm);
+
+                    points = [
+                      { x: bx - xDim/2, y: by - yDim/2 },
+                      { x: bx + xDim/2, y: by - yDim/2 },
+                      { x: bx + xDim/2, y: by + yDim/2 },
+                      { x: bx - xDim/2, y: by + yDim/2 },
+                    ];
+                  }
                 }
               }
             });
@@ -262,6 +377,14 @@ export function parseIFCContent(content: string): Entity[] {
       layerName = 'BIM_Vani';
       defaultColor = '#f59e0b';
       pattern = 'ANSI31';
+    } else if (line.className === 'IFCBEAM' || line.className === 'IFCBEAMS') {
+      layerName = 'BIM_Strutture';
+      defaultColor = '#dc2626'; // Red for Beams
+      pattern = 'SOLID';
+    } else if (line.className === 'IFCSLAB') {
+      layerName = 'BIM_Solai';
+      defaultColor = '#0d9488'; // Teal for Slabs
+      pattern = 'CROSS';
     }
 
     // Ensure the points loop doesn't contain a duplicate ending node in 2D array representation
@@ -357,6 +480,31 @@ export function parseIFCContent(content: string): Entity[] {
       }
     }
   });
+
+  // Recenter imported entities to the origin
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  let hasPoints = false;
+  
+  importedEntities.forEach(ent => {
+    ent.points.forEach(p => {
+      if (p.x < minX) minX = p.x;
+      if (p.y < minY) minY = p.y;
+      if (p.x > maxX) maxX = p.x;
+      if (p.y > maxY) maxY = p.y;
+      hasPoints = true;
+    });
+  });
+
+  if (hasPoints) {
+    const cx = (minX + maxX) / 2;
+    const cy = (minY + maxY) / 2;
+    importedEntities.forEach(ent => {
+      ent.points = ent.points.map(p => ({
+        x: p.x - cx,
+        y: p.y - cy
+      }));
+    });
+  }
 
   return importedEntities;
 }

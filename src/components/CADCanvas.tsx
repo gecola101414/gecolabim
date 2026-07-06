@@ -8213,7 +8213,7 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
         const snapRes = getSnappedPoint(actualMousePosRef.current, staticEntities, activeTool, null);
         let snapPoint = snapRes.snapped ? snapRes.point : actualMousePosRef.current;
 
-        const effectiveOrthoMode = orthoMode || isShiftPressedRef.current;
+        const effectiveOrthoMode = orthoMode ? !isShiftPressedRef.current : isShiftPressedRef.current;
         if (effectiveOrthoMode && !snapRes.snapped) {
           const dx = snapPoint.x - basePt.x;
           const dy = snapPoint.y - basePt.y;
@@ -8382,7 +8382,8 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
           } else if (specchioState === 'axis_end' && specchioAxisPt1) {
               const snappedPoint = getSnappedPoint(rawPoint, entities, activeTool, { type: 'line', start: specchioAxisPt1, current: rawPoint } as any).snapped ? getSnappedPoint(rawPoint, entities, activeTool, { type: 'line', start: specchioAxisPt1, current: rawPoint } as any).point : rawPoint;
               let finalPt2 = snappedPoint;
-              if (orthoMode) {
+              const effectiveOrthoMode = orthoMode ? !isShiftPressedRef.current : isShiftPressedRef.current;
+              if (effectiveOrthoMode) {
                   const dx = Math.abs(finalPt2.x - specchioAxisPt1.x);
                   const dy = Math.abs(finalPt2.y - specchioAxisPt1.y);
                   if (dx > dy) finalPt2.y = specchioAxisPt1.y;
@@ -10404,7 +10405,7 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
                 const snapRes = getSnappedPoint(rawPoint, staticEntities, activeTool, null);
                 let snapPoint = snapRes.snapped ? snapRes.point : rawPoint;
                 
-                const effectiveOrthoMode = orthoMode || isShiftPressedRef.current;
+                const effectiveOrthoMode = orthoMode ? !isShiftPressedRef.current : isShiftPressedRef.current;
                 if (effectiveOrthoMode && !snapRes.snapped) {
                     const dx = snapPoint.x - copyBasePoint.x;
                     const dy = snapPoint.y - copyBasePoint.y;
@@ -11087,7 +11088,8 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
                 : rawPoint;
             
             let finalPt2 = snappedPoint;
-            if (orthoMode) {
+            const effectiveOrthoMode = orthoMode ? !isShiftPressedRef.current : isShiftPressedRef.current;
+            if (effectiveOrthoMode) {
                const dx = Math.abs(finalPt2.x - specchioAxisPt1.x);
                const dy = Math.abs(finalPt2.y - specchioAxisPt1.y);
                if (dx > dy) {
@@ -11770,7 +11772,7 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
                   rawSnappedFromRawPoint = getSnappedPoint(rawPoint, entities, activeTool, drawing as any);
               }
 
-              const isBothSnappedException = false;
+              const isBothSnappedException = rawSnappedFromRawPoint.snapped && rawSnappedFromRawPoint.type === 'CAD';
 
               const isLineLikeTool = (activeTool as string) === 'Line' || (activeTool as string) === 'Filo' || (activeTool as string) === 'BIM_Porta' || (activeTool as string) === 'BIM_Finestra';
               const effectiveOrthoMode = isLineLikeTool && (orthoMode ? !isShiftPressedRef.current : isShiftPressedRef.current);
@@ -12121,7 +12123,7 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
             const snapRes = getSnappedPoint(rawPoint, staticEntities, activeTool, null);
             let snapPoint = snapRes.snapped ? snapRes.point : rawPoint;
             
-            const effectiveOrthoMode = orthoMode || isShiftPressedRef.current;
+            const effectiveOrthoMode = orthoMode ? !isShiftPressedRef.current : isShiftPressedRef.current;
             if (effectiveOrthoMode && !snapRes.snapped && moveBasePoint) {
                 const dx = snapPoint.x - moveBasePoint.x;
                 const dy = snapPoint.y - moveBasePoint.y;
@@ -12473,7 +12475,8 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
     // Normalize to 0-360
     angle = (angle + 360) % 360;
 
-    if (orthoMode) {
+    const effectiveOrthoMode = orthoMode ? !isShiftPressedRef.current : isShiftPressedRef.current;
+    if (effectiveOrthoMode) {
         // Find nearest orthogonal angle: 0, 90, 180, or 270
         const orthoAngles = [0, 90, 180, 270];
         let nearestAngle = 0;
@@ -13199,7 +13202,7 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
                         snapFound = snapRes.point;
                     }
 
-                    const effectiveOrthoMode = orthoMode || isShiftPressedRef.current;
+                    const effectiveOrthoMode = orthoMode ? !isShiftPressedRef.current : isShiftPressedRef.current;
                     if (effectiveOrthoMode && !snapRes.snapped) {
                         const dx = snapPoint.x - activeBasePoint.x;
                         const dy = snapPoint.y - activeBasePoint.y;
@@ -13258,7 +13261,7 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
                     deltaX += bestAdj.x;
                     deltaY += bestAdj.y;
 
-                    const effectiveOrthoMode = orthoMode || isShiftPressedRef.current;
+                    const effectiveOrthoMode = orthoMode ? !isShiftPressedRef.current : isShiftPressedRef.current;
                     const isOrthoForMoveCopy = (activeTool === 'Copy' || activeTool === 'Move') && effectiveOrthoMode;
                     
                     if (isOrthoForMoveCopy) {

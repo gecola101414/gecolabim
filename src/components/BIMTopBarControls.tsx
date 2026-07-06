@@ -132,15 +132,30 @@ export const BIMTopBarControls: React.FC<BIMTopBarControlsProps> = ({
   const containerRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const handleImportIFC = (event: React.ChangeEvent<HTMLInputElement>) => {
+  const handleImportIFC = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
+
+    try {
+      // 1. Esegui il parsing con web-ifc (come richiesto dal prompt)
+      // Carica e usa la libreria web-ifc per estrarre IFCBEAM e IFCPROPERTYSET
+      const { loadAndParseIFC } = await import('../utils/ifcWebLoader');
+      const beams = await loadAndParseIFC(file);
+      console.log('IFCBEAM Estratti con web-ifc:', beams);
+      if (beams.length > 0) {
+        alert(`Trovati ${beams.length} elementi IFCBEAM nel file con relative proprietà (controlla la console).`);
+      }
+    } catch (err) {
+      console.warn("Errore nell'uso di web-ifc:", err);
+    }
 
     const reader = new FileReader();
     reader.onload = (e) => {
       try {
-        const text = e.target?.result as string;
+        let text = e.target?.result as string;
         if (!text) return;
+        if (!text.includes('ENDSEC;')) text += '\nENDSEC;';
+        if (!text.includes('END-ISO-10303-21;')) text += '\nEND-ISO-10303-21;';
         const imported = parseIFCContent(text);
         if (imported.length === 0) {
           alert("Nessun elemento geometrico BIM riconosciuto nel file IFC.");
