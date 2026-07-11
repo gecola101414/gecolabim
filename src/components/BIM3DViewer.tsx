@@ -3,9 +3,9 @@ import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { OrbitControls, PerspectiveCamera, OrthographicCamera, Grid, Stars, Float, Text, Html, ContactShadows, Environment, Edges, GizmoHelper, GizmoViewcube, Line } from '@react-three/drei';
 
 import * as THREE from 'three';
-import { Entity, Point, LineEntity, RectEntity, Floor, CircleEntity, ArcEntity, TextEntity, DimensionEntity, PointEntity, HatchEntity, ImageEntity } from '../types';
+import { Entity, Point, LineEntity, RectEntity, Floor, CircleEntity, ArcEntity, TextEntity, DimensionEntity, PointEntity, HatchEntity, ImageEntity, BIMRenderingStyle } from '../types';
 import { createBIMMaterialTexture } from '../utils/materialTextures';
-import { X, ZoomIn, ZoomOut, RotateCw, Box, Layers, Database, Maximize, Home, Compass, Eye, EyeOff, Lightbulb, LightbulbOff, Info, Settings, MousePointer2, Move, Scissors, Play, Pause, RefreshCw, ArrowDown, ArrowUp, ArrowLeft, ArrowRight, Edit, Trash2, Wand2, Lock, Unlock, FolderTree, ChevronDown, ChevronRight, Sliders, Layers3, Camera, Sparkles } from 'lucide-react';
+import { X, ZoomIn, ZoomOut, RotateCw, Box, Layers, Database, Maximize, Home, Compass, Eye, EyeOff, Lightbulb, LightbulbOff, Info, Settings, MousePointer2, Move, Scissors, Play, Pause, RefreshCw, ArrowDown, ArrowUp, ArrowLeft, ArrowRight, Edit, Trash2, Wand2, Lock, Unlock, FolderTree, ChevronDown, ChevronRight, Sliders, Layers3, Camera, Sparkles, Zap } from 'lucide-react';
 import { BIMElementDialog, PorteDialog, FinestreDialog } from './BIMDialogs';
 import { BIMPropertyCardDialog } from './BIMPropertyCardDialog';
 import polygonClipping from 'polygon-clipping';
@@ -1293,6 +1293,868 @@ export const Wall = ({
   );
 };
 
+interface Scaffolding3DProps {
+  points: Point[];
+  height: number; // in cm
+  baseZ: number;   // in cm
+  color: string;   // scaffolding frame color
+  clippingPlanes?: THREE.Plane[];
+  isLinear?: boolean;
+  hasMantovana?: boolean;
+  mantovanaAngle?: number;
+  mantovanaHeight?: number;
+  lightweight?: boolean;
+}
+
+export const Scaffolding3D = React.memo(({
+  points,
+  height,
+  baseZ,
+  color,
+  clippingPlanes = [],
+  isLinear = false,
+  hasMantovana = true,
+  mantovanaAngle = 45,
+  mantovanaHeight = 4.5,
+  lightweight = true
+}: Scaffolding3DProps) => {
+  // Convert all dimensions to meters
+  const h = height / 100;
+  const zBase = baseZ / 100;
+  
+  // Standard interpiano lift height is 2.0m
+  const numLevels = Math.max(1, Math.round(h / 2.0));
+  
+  // Extract horizontal segments
+  const segments = useMemo(() => {
+    const list = [];
+    if (!points || points.length < 2) return [];
+    
+    const count = isLinear ? points.length - 1 : points.length;
+    for (let i = 0; i < count; i++) {
+      const p1 = points[i];
+      const p2 = points[(i + 1) % points.length];
+      
+      const dx = (p2.x - p1.x) / 100;
+      const dy = (p2.y - p1.y) / 100;
+      const len = Math.hypot(dx, dy);
+      
+      if (len > 0.1) {
+        list.push({
+          p1: { x: p1.x / 100, y: p1.y / 100 },
+          p2: { x: p2.x / 100, y: p2.y / 100 },
+          length: len,
+          dx,
+          dy
+        });
+      }
+    }
+    return list;
+  }, [points, isLinear]);
+
+  // CylinderBetweenPoints utility to place braces or structural beams
+  const CylinderBetweenPoints = useCallback(({ p1, p2, radius, tubeColor }: {
+    p1: { x: number; y: number; z: number };
+    p2: { x: number; y: number; z: number };
+    radius: number;
+    tubeColor: string;
+  }) => {
+    const dx = p2.x - p1.x;
+    const dy = p2.y - p1.y;
+    const dz = p2.z - p1.z;
+    const len = Math.sqrt(dx * dx + dy * dy + dz * dz);
+    if (len < 0.01) return null;
+
+    const midpoint = new THREE.Vector3(p1.x + dx / 2, p1.y + dy / 2, p1.z + dz / 2);
+    
+    // Check clipping
+    if (clippingPlanes && clippingPlanes.length > 0) {
+      if (clippingPlanes.some(plane => plane.distanceToPoint(midpoint) < 0)) {
+        return null; // clipped
+      }
+    }
+
+    const quat = (() => {
+      const v = new THREE.Vector3(dx, dy, dz).normalize();
+      const up = new THREE.Vector3(0, 1, 0);
+      return new THREE.Quaternion().setFromUnitVectors(up, v);
+    })();
+
+    return (
+      <mesh position={midpoint} quaternion={quat} castShadow receiveShadow>
+        <cylinderGeometry args={[radius, radius, len, 6]} />
+        <meshStandardMaterial 
+          color={tubeColor} 
+          metalness={0.8} 
+          roughness={0.2} 
+          clippingPlanes={clippingPlanes} 
+          clipShadows={true} 
+        />
+      </mesh>
+    );
+  }, [clippingPlanes]);
+
+  // If there are no segments, we can't draw anything
+  if (segments.length === 0) return null;
+
+  if (lightweight) {
+    return (
+      <group>
+        {segments.map((seg, segIdx) => {
+          // Horizontal direction unit vectors
+          const uX = seg.dx / seg.length;
+          const uZ = -seg.dy / seg.length;
+          
+          // Horizontal normal vector
+          const nX = -uZ;
+          const nZ = uX;
+          
+          const angle = Math.atan2(seg.dy, seg.dx);
+          const numSpans = Math.max(1, Math.round(seg.length / 1.8));
+          const actualS = seg.length / numSpans;
+          
+          const frames = [];
+          for (let j = 0; j <= numSpans; j++) {
+            const t = j / numSpans;
+            const x = seg.p1.x + t * (seg.p2.x - seg.p1.x);
+            const z = -(seg.p1.y + t * (seg.p2.y - seg.p1.y));
+            
+            const x_inner = x + nX * 0.05;
+            const z_inner = z + nZ * 0.05;
+            const x_outer = x + nX * 0.85;
+            const z_outer = z + nZ * 0.85;
+            
+            frames.push({ x_inner, z_inner, x_outer, z_outer, x, z });
+          }
+
+          const uprightHeight = numLevels * 2.0;
+          const y_upright = zBase + uprightHeight / 2;
+          const frameColor = color && color !== '#3b82f6' ? color : '#ea580c';
+          const galvanisedColor = '#cbd5e1';
+          const netColor = '#047857';
+
+          return (
+            <group key={`scaffold-seg-light-${segIdx}`}>
+              {/* 1. Vertical Uprights - Simple Box Meshes instead of Cylinders (extremely low vertex/mesh footprint) */}
+              {frames.map((f, fIdx) => {
+                const showInner = !clippingPlanes.some(p => p.distanceToPoint(new THREE.Vector3(f.x_inner, zBase, f.z_inner)) < 0);
+                const showOuter = !clippingPlanes.some(p => p.distanceToPoint(new THREE.Vector3(f.x_outer, zBase, f.z_outer)) < 0);
+
+                return (
+                  <group key={`frame-uprights-light-${fIdx}`}>
+                    {showInner && (
+                      <mesh position={[f.x_inner, y_upright, f.z_inner]} castShadow receiveShadow>
+                        <boxGeometry args={[0.048, uprightHeight, 0.048]} />
+                        <meshStandardMaterial color={frameColor} metalness={0.4} roughness={0.5} clippingPlanes={clippingPlanes} />
+                      </mesh>
+                    )}
+                    {showOuter && (
+                      <mesh position={[f.x_outer, y_upright, f.z_outer]} castShadow receiveShadow>
+                        <boxGeometry args={[0.048, uprightHeight, 0.048]} />
+                        <meshStandardMaterial color={frameColor} metalness={0.4} roughness={0.5} clippingPlanes={clippingPlanes} />
+                      </mesh>
+                    )}
+                  </group>
+                );
+              })}
+
+              {/* 2. Platform levels: single box deck per level & thin box guardrail (instant render) */}
+              {frames.slice(0, -1).map((_, sIdx) => {
+                const f1 = frames[sIdx];
+                const f2 = frames[sIdx + 1];
+                
+                const x_mid_seg = (f1.x + f2.x) / 2;
+                const z_mid_seg = (f1.z + f2.z) / 2;
+
+                return (
+                  <group key={`span-light-${sIdx}`}>
+                    {Array.from({ length: numLevels }).map((_, lIdx) => {
+                      const y_floor = zBase + (lIdx + 1) * 2.0;
+                      
+                      const x_plat = x_mid_seg + nX * 0.45;
+                      const z_plat = z_mid_seg + nZ * 0.45;
+                      const y_plat = y_floor - 0.025;
+
+                      const isClipped = clippingPlanes.some(p => p.distanceToPoint(new THREE.Vector3(x_plat, y_floor, z_plat)) < 0);
+                      if (isClipped) return null;
+
+                      return (
+                        <group key={`level-light-${lIdx}`}>
+                          {/* Consolidated platform deck */}
+                          <mesh position={[x_plat, y_plat, z_plat]} rotation={[0, -angle, 0]} castShadow receiveShadow>
+                            <boxGeometry args={[actualS, 0.04, 0.8]} />
+                            <meshStandardMaterial color={galvanisedColor} metalness={0.6} roughness={0.4} clippingPlanes={clippingPlanes} />
+                          </mesh>
+
+                          {/* Simplified horizontal guardrail bar */}
+                          <mesh position={[x_mid_seg + nX * 0.85, y_floor + 1.0, z_mid_seg + nZ * 0.85]} rotation={[0, -angle, 0]} castShadow>
+                            <boxGeometry args={[actualS, 0.04, 0.03]} />
+                            <meshStandardMaterial color={galvanisedColor} metalness={0.6} roughness={0.4} clippingPlanes={clippingPlanes} />
+                          </mesh>
+                          
+                          {/* Simplified mid-rail bar */}
+                          <mesh position={[x_mid_seg + nX * 0.85, y_floor + 0.5, z_mid_seg + nZ * 0.85]} rotation={[0, -angle, 0]} castShadow>
+                            <boxGeometry args={[actualS, 0.02, 0.02]} />
+                            <meshStandardMaterial color={galvanisedColor} metalness={0.6} roughness={0.4} clippingPlanes={clippingPlanes} />
+                          </mesh>
+                        </group>
+                      );
+                    })}
+                  </group>
+                );
+              })}
+
+              {/* 3. Protective safety net */}
+              {(() => {
+                const x_mid_seg = (seg.p1.x + seg.p2.x) / 2;
+                const z_mid_seg = -(seg.p1.y + seg.p2.y) / 2;
+                const x_net = x_mid_seg + nX * 0.88;
+                const z_net = z_mid_seg + nZ * 0.88;
+                const y_net = zBase + (numLevels * 2.0) / 2;
+                const netHeight = numLevels * 2.0;
+                
+                const isClipped = clippingPlanes.some(p => p.distanceToPoint(new THREE.Vector3(x_net, y_net, z_net)) < 0);
+                if (isClipped) return null;
+
+                return (
+                  <mesh position={[x_net, y_net, z_net]} rotation={[0, -angle, 0]} castShadow receiveShadow>
+                    <boxGeometry args={[seg.length, netHeight, 0.002]} />
+                    <meshStandardMaterial 
+                      color={netColor} 
+                      transparent={true} 
+                      opacity={0.3} 
+                      roughness={0.9} 
+                      metalness={0.1} 
+                      side={THREE.DoubleSide} 
+                      clippingPlanes={clippingPlanes}
+                    />
+                  </mesh>
+                );
+              })()}
+            </group>
+          );
+        })}
+      </group>
+    );
+  }
+
+  return (
+    <group>
+      {segments.map((seg, segIdx) => {
+        // Horizontal direction unit vectors
+        const uX = seg.dx / seg.length;
+        const uZ = -seg.dy / seg.length; // Negated Y in standard plan maps to Z in Three.js
+        
+        // Horizontal normal vector (offset direction, outwards/perpendicular)
+        const nX = -uZ;
+        const nZ = uX;
+        
+        const angle = Math.atan2(seg.dy, seg.dx); // 2D angle
+        
+        // Standard span spacing: 1.8m
+        const numSpans = Math.max(1, Math.round(seg.length / 1.8));
+        const actualS = seg.length / numSpans;
+        
+        const frames = [];
+        for (let j = 0; j <= numSpans; j++) {
+          const t = j / numSpans;
+          const x = seg.p1.x + t * (seg.p2.x - seg.p1.x);
+          const z = -(seg.p1.y + t * (seg.p2.y - seg.p1.y));
+          
+          // Inner: slightly offset (5cm) to prevent overlapping walls
+          const x_inner = x + nX * 0.05;
+          const z_inner = z + nZ * 0.05;
+          
+          // Outer: offset by 0.85m total (80cm width scaffolding)
+          const x_outer = x + nX * 0.85;
+          const z_outer = z + nZ * 0.85;
+          
+          frames.push({ x_inner, z_inner, x_outer, z_outer, x, z });
+        }
+
+        const tubeRadius = 0.024; // 48mm tube diameter
+        const braceRadius = 0.015; // 30mm tube diameter
+        
+        // Frame colors (classical construction red/orange/blue or custom)
+        const frameColor = color && color !== '#3b82f6' ? color : '#ea580c'; // default scaffolding orange
+        const galvanisedColor = '#d1d5db'; // shiny silver
+        const woodenColor = '#d97706'; // wood ochre
+        const netColor = '#047857'; // safety green
+
+        // For rendering, we will iterate over frames and levels
+        return (
+          <group key={`scaffold-seg-${segIdx}`}>
+            {/* 1. Base Plates & Screw Jacks & Vertical Uprights */}
+            {frames.map((f, fIdx) => {
+              const uprightHeight = numLevels * 2.0;
+              const y_upright = zBase + uprightHeight / 2;
+              
+              // Inner screw jack baseplate
+              const showInner = !clippingPlanes.some(p => p.distanceToPoint(new THREE.Vector3(f.x_inner, zBase, f.z_inner)) < 0);
+              const showOuter = !clippingPlanes.some(p => p.distanceToPoint(new THREE.Vector3(f.x_outer, zBase, f.z_outer)) < 0);
+
+              return (
+                <group key={`frame-uprights-${fIdx}`}>
+                  {/* Inner Upright Tube */}
+                  {showInner && (
+                    <group>
+                      {/* Base plate */}
+                      <mesh position={[f.x_inner, zBase + 0.01, f.z_inner]} castShadow receiveShadow>
+                        <boxGeometry args={[0.15, 0.02, 0.15]} />
+                        <meshStandardMaterial color="#cca300" metalness={0.8} roughness={0.3} clippingPlanes={clippingPlanes} />
+                      </mesh>
+                      {/* Spindle collar */}
+                      <mesh position={[f.x_inner, zBase + 0.1, f.z_inner]} castShadow receiveShadow>
+                        <cylinderGeometry args={[0.03, 0.03, 0.2, 6]} />
+                        <meshStandardMaterial color="#cca300" metalness={0.8} roughness={0.3} clippingPlanes={clippingPlanes} />
+                      </mesh>
+                      {/* Continuous Upright tube */}
+                      <mesh position={[f.x_inner, y_upright, f.z_inner]} castShadow receiveShadow>
+                        <cylinderGeometry args={[tubeRadius, tubeRadius, uprightHeight, 6]} />
+                        <meshStandardMaterial color={frameColor} metalness={0.7} roughness={0.4} clippingPlanes={clippingPlanes} clipShadows={true} />
+                      </mesh>
+                    </group>
+                  )}
+
+                  {/* Outer Upright Tube */}
+                  {showOuter && (
+                    <group>
+                      {/* Base plate */}
+                      <mesh position={[f.x_outer, zBase + 0.01, f.z_outer]} castShadow receiveShadow>
+                        <boxGeometry args={[0.15, 0.02, 0.15]} />
+                        <meshStandardMaterial color="#cca300" metalness={0.8} roughness={0.3} clippingPlanes={clippingPlanes} />
+                      </mesh>
+                      {/* Spindle collar */}
+                      <mesh position={[f.x_outer, zBase + 0.1, f.z_outer]} castShadow receiveShadow>
+                        <cylinderGeometry args={[0.03, 0.03, 0.2, 6]} />
+                        <meshStandardMaterial color="#cca300" metalness={0.8} roughness={0.3} clippingPlanes={clippingPlanes} />
+                      </mesh>
+                      {/* Continuous Upright tube */}
+                      <mesh position={[f.x_outer, y_upright, f.z_outer]} castShadow receiveShadow>
+                        <cylinderGeometry args={[tubeRadius, tubeRadius, uprightHeight, 6]} />
+                        <meshStandardMaterial color={frameColor} metalness={0.7} roughness={0.4} clippingPlanes={clippingPlanes} clipShadows={true} />
+                      </mesh>
+                    </group>
+                  )}
+                  
+                  {/* Horizontal Transoms for each frame level (Connecting inner and outer) */}
+                  {Array.from({ length: numLevels }).map((_, lIdx) => {
+                    const y_level = zBase + (lIdx + 1) * 2.0;
+                    const x_mid = (f.x_inner + f.x_outer) / 2;
+                    const z_mid = (f.z_inner + f.z_outer) / 2;
+                    const transomLen = 0.80;
+                    
+                    const isClipped = clippingPlanes.some(p => p.distanceToPoint(new THREE.Vector3(x_mid, y_level, z_mid)) < 0);
+                    if (isClipped) return null;
+
+                    return (
+                      <group key={`transoms-${lIdx}`}>
+                        {/* Top Ledger of frame */}
+                        <mesh position={[x_mid, y_level, z_mid]} rotation={[Math.PI / 2, 0, Math.atan2(nX, nZ)]} castShadow receiveShadow>
+                          <cylinderGeometry args={[tubeRadius, tubeRadius, transomLen, 6]} />
+                          <meshStandardMaterial color={frameColor} metalness={0.7} roughness={0.4} clippingPlanes={clippingPlanes} clipShadows={true} />
+                        </mesh>
+                        {/* Lower reinforcement rod of modular frame (30cm below top ledger) */}
+                        <mesh position={[x_mid, y_level - 0.3, z_mid]} rotation={[Math.PI / 2, 0, Math.atan2(nX, nZ)]} castShadow receiveShadow>
+                          <cylinderGeometry args={[braceRadius, braceRadius, transomLen, 6]} />
+                          <meshStandardMaterial color={frameColor} metalness={0.7} roughness={0.4} clippingPlanes={clippingPlanes} clipShadows={true} />
+                        </mesh>
+                        {/* Gusset plates in the frame corners for reinforcement */}
+                        <mesh position={[f.x_inner + nX * 0.1, y_level - 0.15, f.z_inner + nZ * 0.1]} rotation={[0, -angle, 0]} castShadow>
+                          <boxGeometry args={[0.02, 0.15, 0.08]} />
+                          <meshStandardMaterial color={frameColor} metalness={0.6} roughness={0.5} clippingPlanes={clippingPlanes} />
+                        </mesh>
+                        <mesh position={[f.x_outer - nX * 0.1, y_level - 0.15, f.z_outer - nZ * 0.1]} rotation={[0, -angle, 0]} castShadow>
+                          <boxGeometry args={[0.02, 0.15, 0.08]} />
+                          <meshStandardMaterial color={frameColor} metalness={0.6} roughness={0.5} clippingPlanes={clippingPlanes} />
+                        </mesh>
+                      </group>
+                    );
+                  })}
+                </group>
+              );
+            })}
+
+            {/* 2. Walkway Platform Decks, Guardrails, Toe-Boards, and Diagonals (Spanned between frames) */}
+            {frames.slice(0, -1).map((_, sIdx) => {
+              const f1 = frames[sIdx];
+              const f2 = frames[sIdx + 1];
+              
+              const x_mid_seg = (f1.x + f2.x) / 2;
+              const z_mid_seg = (f1.z + f2.z) / 2;
+              
+              return (
+                <group key={`span-${sIdx}`}>
+                  {Array.from({ length: numLevels }).map((_, lIdx) => {
+                    const y_floor = zBase + (lIdx + 1) * 2.0;
+                    
+                    // Midpoint for this platform span
+                    const x_plat = x_mid_seg + nX * 0.45;
+                    const z_plat = z_mid_seg + nZ * 0.45;
+                    const y_plat = y_floor - 0.025; // Sits just below the transom level
+
+                    // Skip drawing if this platform midpoint is clipped
+                    const isClipped = clippingPlanes.some(p => p.distanceToPoint(new THREE.Vector3(x_plat, y_floor, z_plat)) < 0);
+                    if (isClipped) return null;
+
+                    // Draw 3 side-by-side metal walkway decks for absolute extreme realism!
+                    const planks = [-0.25, 0, 0.25];
+                    const plankWidth = 0.23; // slightly thinner to leave a tiny gap
+                    const plankThickness = 0.05;
+
+                    // Inside ladder check (Let's draw a beautiful ladder hatch in the 1st span of each segment)
+                    const isLadderSpan = sIdx === 0;
+
+                    return (
+                      <group key={`level-${lIdx}`}>
+                        {/* Walkway Planks */}
+                        {planks.map((offsetVal, pIdx) => {
+                          // If it is a ladder span, let's omit the middle plank to leave a hatch opening!
+                          if (isLadderSpan && pIdx === 1) {
+                            // Render a nice open hatch frame with hinges!
+                            return (
+                              <group key={`hatch-${pIdx}`}>
+                                {/* Open safety door frame */}
+                                <mesh position={[x_plat + nX * offsetVal, y_plat + 0.01, z_plat + nZ * offsetVal]} rotation={[0, -angle, 0]} castShadow>
+                                  <boxGeometry args={[actualS, 0.02, plankWidth]} />
+                                  <meshStandardMaterial color="#475569" metalness={0.9} roughness={0.3} clippingPlanes={clippingPlanes} />
+                                </mesh>
+                                {/* Modular safety staircase ramp (Scala a rampa interna conforme a norma) */}
+                                {(() => {
+                                  const stepsCount = 7;
+                                  const stairWidth = 0.20; // fits perfectly inside hatch opening
+                                  
+                                  const x_b = x_plat + nX * offsetVal - uX * (actualS * 0.45);
+                                  const z_b = z_plat + nZ * offsetVal - uZ * (actualS * 0.45);
+                                  const y_b = y_floor - 2.0;
+
+                                  const x_t = x_plat + nX * offsetVal + uX * (actualS * 0.45);
+                                  const z_t = z_plat + nZ * offsetVal + uZ * (actualS * 0.45);
+                                  const y_t = y_floor;
+
+                                  return (
+                                    <group>
+                                      {/* Left structural stringer (Cosciale sinistro) */}
+                                      <CylinderBetweenPoints 
+                                        p1={{ x: x_b - nX * 0.10, y: y_b, z: z_b - nZ * 0.10 }}
+                                        p2={{ x: x_t - nX * 0.10, y: y_t, z: z_t - nZ * 0.10 }}
+                                        radius={0.015}
+                                        tubeColor={galvanisedColor}
+                                      />
+                                      {/* Right structural stringer (Cosciale destro) */}
+                                      <CylinderBetweenPoints 
+                                        p1={{ x: x_b + nX * 0.10, y: y_b, z: z_b + nZ * 0.10 }}
+                                        p2={{ x: x_t + nX * 0.10, y: y_t, z: z_t + nZ * 0.10 }}
+                                        radius={0.015}
+                                        tubeColor={galvanisedColor}
+                                      />
+                                      {/* Horizontal steps (Gradini antisdrucciolo) */}
+                                      {Array.from({ length: stepsCount }).map((_, stIdx) => {
+                                        const ratio = (stIdx + 0.5) / stepsCount;
+                                        const xs = x_b + ratio * (x_t - x_b);
+                                        const zs = z_b + ratio * (z_t - z_b);
+                                        const ys = y_b + ratio * (y_t - y_b);
+                                        
+                                        return (
+                                          <mesh key={`stair-step-${stIdx}`} position={[xs, ys, zs]} rotation={[0, -angle, 0]} castShadow>
+                                            <boxGeometry args={[0.20, 0.012, stairWidth]} />
+                                            <meshStandardMaterial color="#cbd5e1" metalness={0.8} roughness={0.3} clippingPlanes={clippingPlanes} />
+                                          </mesh>
+                                        );
+                                      })}
+                                      {/* Safe diagonal handrail (Corrimano rampa scale) */}
+                                      <CylinderBetweenPoints 
+                                        p1={{ x: x_b + nX * 0.11, y: y_b + 0.8, z: z_b + nZ * 0.11 }}
+                                        p2={{ x: x_t + nX * 0.11, y: y_t + 0.8, z: z_t + nZ * 0.11 }}
+                                        radius={0.012}
+                                        tubeColor={galvanisedColor}
+                                      />
+                                    </group>
+                                  );
+                                })()}
+                              </group>
+                            );
+                          }
+
+                          return (
+                            <mesh 
+                              key={`plank-${pIdx}`} 
+                              position={[x_plat + nX * offsetVal, y_plat, z_plat + nZ * offsetVal]} 
+                              rotation={[0, -angle, 0]} 
+                              castShadow 
+                              receiveShadow
+                            >
+                              <boxGeometry args={[actualS, plankThickness, plankWidth]} />
+                              <meshStandardMaterial 
+                                color={galvanisedColor} 
+                                metalness={0.9} 
+                                roughness={0.25} 
+                                clippingPlanes={clippingPlanes}
+                                clipShadows={true}
+                              />
+                            </mesh>
+                          );
+                        })}
+
+                        {/* Outer Safety Guardrails (Double security correnti at 0.5m and 1.0m above platform) */}
+                        {/* Upper Guardrail (1.0m) */}
+                        <mesh position={[x_mid_seg + nX * 0.85, y_floor + 1.0, z_mid_seg + nZ * 0.85]} rotation={[Math.PI / 2, 0, -angle]} castShadow receiveShadow>
+                          <cylinderGeometry args={[0.015, 0.015, actualS, 6]} />
+                          <meshStandardMaterial color={galvanisedColor} metalness={0.9} roughness={0.2} clippingPlanes={clippingPlanes} clipShadows={true} />
+                        </mesh>
+                        {/* Intermediate Guardrail (0.5m) */}
+                        <mesh position={[x_mid_seg + nX * 0.85, y_floor + 0.5, z_mid_seg + nZ * 0.85]} rotation={[Math.PI / 2, 0, -angle]} castShadow receiveShadow>
+                          <cylinderGeometry args={[0.015, 0.015, actualS, 6]} />
+                          <meshStandardMaterial color={galvanisedColor} metalness={0.9} roughness={0.2} clippingPlanes={clippingPlanes} clipShadows={true} />
+                        </mesh>
+
+                        {/* Wooden Toe-Board (Tavola Fermapiede) - wooden yellow 20cm height */}
+                        <mesh position={[x_mid_seg + nX * 0.83, y_floor + 0.1, z_mid_seg + nZ * 0.83]} rotation={[0, -angle, 0]} castShadow receiveShadow>
+                          <boxGeometry args={[actualS, 0.20, 0.03]} />
+                          <meshStandardMaterial color={woodenColor} roughness={0.8} metalness={0.1} clippingPlanes={clippingPlanes} clipShadows={true} />
+                        </mesh>
+
+                        {/* Diagonal Bracing (Zigzag pattern along outer face) */}
+                        {((sIdx + lIdx) % 2 === 0) ? (
+                          // Diagonal from bottom-left to top-right
+                          <CylinderBetweenPoints 
+                            p1={{ x: f1.x_outer, y: y_floor - 2.0, z: f1.z_outer }}
+                            p2={{ x: f2.x_outer, y: y_floor, z: f2.z_outer }}
+                            radius={braceRadius}
+                            tubeColor={galvanisedColor}
+                          />
+                        ) : (
+                          // Diagonal from bottom-right to top-left
+                          <CylinderBetweenPoints 
+                            p1={{ x: f2.x_outer, y: y_floor - 2.0, z: f2.z_outer }}
+                            p2={{ x: f1.x_outer, y: y_floor, z: f1.z_outer }}
+                            radius={braceRadius}
+                            tubeColor={galvanisedColor}
+                          />
+                        )}
+                      </group>
+                    );
+                  })}
+                </group>
+              );
+            })}
+
+            {/* 3. Protective Safety Netting (Draped completely on the outer face) */}
+            {(() => {
+              // The net covers the outer face of this entire segment
+              const x_mid_seg = (seg.p1.x + seg.p2.x) / 2;
+              const z_mid_seg = -(seg.p1.y + seg.p2.y) / 2;
+              const x_net = x_mid_seg + nX * 0.88;
+              const z_net = z_mid_seg + nZ * 0.88;
+              const y_net = zBase + (numLevels * 2.0) / 2;
+              const netHeight = numLevels * 2.0;
+              
+              const isClipped = clippingPlanes.some(p => p.distanceToPoint(new THREE.Vector3(x_net, y_net, z_net)) < 0);
+              if (isClipped) return null;
+
+              return (
+                <mesh position={[x_net, y_net, z_net]} rotation={[0, -angle, 0]} castShadow receiveShadow>
+                  <boxGeometry args={[seg.length, netHeight, 0.002]} />
+                  <meshStandardMaterial 
+                    color={netColor} 
+                    transparent={true} 
+                    opacity={0.4} 
+                    roughness={0.9} 
+                    metalness={0.1} 
+                    side={THREE.DoubleSide} 
+                    clippingPlanes={clippingPlanes}
+                    clipShadows={true}
+                  />
+                </mesh>
+              );
+            })()}
+
+            {/* Removed nested mantovana logic to model it as a separate BIM object */}
+          </group>
+        );
+      })}
+    </group>
+  );
+});
+Scaffolding3D.displayName = 'Scaffolding3D';
+
+interface Mantovana3DProps {
+  points: Point[];
+  height?: number; // custom cantilever projection length in cm
+  baseZ: number;   // base height in cm
+  color?: string;
+  clippingPlanes?: THREE.Plane[];
+  isLinear?: boolean;
+  mantovanaAngle?: number;
+  sideSign?: number;
+}
+
+export const Mantovana3D = React.memo(({
+  points,
+  height = 150, // default horizontal projection width in cm (1.20m or 1.50m)
+  baseZ,
+  color = '#eab308', // classic golden-yellow spruce wood color
+  clippingPlanes = [],
+  isLinear = true,
+  mantovanaAngle = 45,
+  sideSign = -1 // Default to -1 so it projects opposite to standard wall
+}: Mantovana3DProps) => {
+  const zBase = baseZ / 100;
+  
+  // Enforce regulatory minimum inclination of 30 degrees
+  const angleDeg = Math.max(30, mantovanaAngle || 45);
+  const angleRad = (angleDeg * Math.PI) / 180;
+  const cosA = Math.cos(angleRad);
+  const sinA = Math.sin(angleRad);
+
+  // Regulatory horizontal projection in meters (default 1.50m for general safety)
+  // We resolve the unit: if it's in cm (80 to 180), convert to meters. If in meters (0.8 to 1.8), use as-is.
+  // If it's a default wall height (e.g., 270 or 300) or undefined, fallback to exactly 1.50m.
+  let projWidthM = 1.50;
+  if (height && height >= 80 && height <= 180) {
+    projWidthM = height / 100;
+  } else if (height && height >= 0.8 && height <= 1.8) {
+    projWidthM = height;
+  }
+
+  // Calculate exact structural arm length (hypotenuse) to achieve the target horizontal projection
+  const armLength = projWidthM / cosA;
+
+  // Extract horizontal segments, and keep only the longest one representing the free outer side
+  const segments = useMemo(() => {
+    const list = [];
+    if (!points || points.length < 2) return [];
+    
+    const count = isLinear ? points.length - 1 : points.length;
+    for (let i = 0; i < count; i++) {
+      const p1 = points[i];
+      const p2 = points[(i + 1) % points.length];
+      
+      const dx = (p2.x - p1.x) / 100;
+      const dy = (p2.y - p1.y) / 100;
+      const len = Math.hypot(dx, dy);
+      
+      if (len > 0.1) {
+        list.push({
+          p1: { x: p1.x / 100, y: p1.y / 100 },
+          p2: { x: p2.x / 100, y: p2.y / 100 },
+          length: len,
+          dx,
+          dy
+        });
+      }
+    }
+
+    if (list.length === 0) return [];
+    // Keep only the single longest segment representing the free opposite facade
+    let longest = list[0];
+    for (let i = 1; i < list.length; i++) {
+      if (list[i].length > longest.length) {
+        longest = list[i];
+      }
+    }
+    return [longest];
+  }, [points, isLinear]);
+
+  const CylinderBetweenPoints = useCallback(({ p1, p2, radius, tubeColor }: {
+    p1: { x: number; y: number; z: number };
+    p2: { x: number; y: number; z: number };
+    radius: number;
+    tubeColor: string;
+  }) => {
+    const dx = p2.x - p1.x;
+    const dy = p2.y - p1.y;
+    const dz = p2.z - p1.z;
+    const len = Math.sqrt(dx * dx + dy * dy + dz * dz);
+    if (len < 0.01) return null;
+
+    const midpoint = new THREE.Vector3(p1.x + dx / 2, p1.y + dy / 2, p1.z + dz / 2);
+    if (clippingPlanes && clippingPlanes.length > 0) {
+      if (clippingPlanes.some(plane => plane.distanceToPoint(midpoint) < 0)) {
+        return null;
+      }
+    }
+
+    const quat = (() => {
+      const v = new THREE.Vector3(dx, dy, dz).normalize();
+      const up = new THREE.Vector3(0, 1, 0);
+      return new THREE.Quaternion().setFromUnitVectors(up, v);
+    })();
+
+    return (
+      <mesh position={midpoint} quaternion={quat} castShadow receiveShadow>
+        <cylinderGeometry args={[radius, radius, len, 6]} />
+        <meshStandardMaterial 
+          color={tubeColor} 
+          metalness={0.8} 
+          roughness={0.2} 
+          clippingPlanes={clippingPlanes} 
+          clipShadows={true} 
+        />
+      </mesh>
+    );
+  }, [clippingPlanes]);
+
+  if (segments.length === 0) return null;
+
+  return (
+    <group>
+      {segments.map((seg, segIdx) => {
+        const uX = seg.dx / seg.length;
+        const uZ = -seg.dy / seg.length;
+        
+        const effSide = sideSign !== undefined ? sideSign : -1;
+        const nX = -uZ * effSide;
+        const nZ = uX * effSide;
+        
+        const angle = Math.atan2(seg.dy, seg.dx);
+        const numSpans = Math.max(1, Math.round(seg.length / 1.8));
+        const actualS = seg.length / numSpans;
+        
+        const frames = [];
+        for (let j = 0; j <= numSpans; j++) {
+          const t = j / numSpans;
+          const x = seg.p1.x + t * (seg.p2.x - seg.p1.x);
+          const z = -(seg.p1.y + t * (seg.p2.y - seg.p1.y));
+          frames.push({ x, z });
+        }
+
+        // Orthonormal basis vectors to align the planks parallel and inclined along the brackets
+        const dirX = new THREE.Vector3(uX, 0, uZ).normalize();
+        const dirZ = new THREE.Vector3(nX * cosA, sinA, nZ * cosA).normalize();
+        const dirY = new THREE.Vector3().crossVectors(dirZ, dirX).normalize();
+        const matrix = new THREE.Matrix4().makeBasis(dirX, dirY, dirZ);
+        const plankQuaternion = new THREE.Quaternion().setFromRotationMatrix(matrix);
+
+        return (
+          <group key={`mantovana-seg-${segIdx}`}>
+            {/* 1. Metal cantilever brackets & high oblique tie-rods */}
+            {frames.map((f, fIdx) => {
+              const startOffset = 0.85; // starts from the outer standards of the 85cm scaffolding
+              const x_start = f.x + nX * startOffset;
+              const z_start = f.z + nZ * startOffset;
+              const y_start = zBase;
+
+              const x_end = x_start + nX * armLength * cosA;
+              const z_end = z_start + nZ * armLength * cosA;
+              const y_end = y_start + armLength * sinA;
+
+              const isClippedBracket = clippingPlanes.some(p => p.distanceToPoint(new THREE.Vector3(x_start, y_start, z_start)) < 0);
+              if (isClippedBracket) return null;
+
+              return (
+                <group key={`mantovana-bracket-${fIdx}`}>
+                  {/* Cantilever principal support arm (metal tube) */}
+                  <CylinderBetweenPoints 
+                    p1={{ x: x_start, y: y_start, z: z_start }}
+                    p2={{ x: x_end, y: y_end, z: z_end }}
+                    radius={0.024}
+                    tubeColor="#cbd5e1"
+                  />
+                  {/* High oblique structural tie rod / safety steel cable (Tirante obliquo di sospensione superiore) */}
+                  <CylinderBetweenPoints 
+                    p1={{ x: x_start, y: y_start + 1.6, z: z_start }}
+                    p2={{ x: x_end, y: y_end, z: z_end }}
+                    radius={0.014}
+                    tubeColor="#475569"
+                  />
+                </group>
+              );
+            })}
+
+            {/* 2. Regulatory Spruce Wood Planks (Tavolato continuo in abete spessore 45mm o lamiera) */}
+            {frames.slice(0, -1).map((_, sIdx) => {
+              const f1 = frames[sIdx];
+              const f2 = frames[sIdx + 1];
+
+              const startOffset = 0.85; // starts from the outer face of scaffolding
+
+              // We render 4 separate wood boards laid parallel along the support arm
+              const steps = [0.15, 0.40, 0.65, 0.90];
+              const plankThickness = 0.045; // 45mm compliant wood thickness
+              const plankWidth = armLength * 0.22;
+
+              return (
+                <group key={`mantovana-planks-${sIdx}`}>
+                  {steps.map((stepVal, stepIdx) => {
+                    const x_p1_mid = f1.x + nX * startOffset + nX * armLength * stepVal * cosA;
+                    const z_p1_mid = f1.z + nZ * startOffset + nZ * armLength * stepVal * cosA;
+                    const y_mid = zBase + armLength * stepVal * sinA;
+
+                    const x_p2_mid = f2.x + nX * startOffset + nX * armLength * stepVal * cosA;
+                    const z_p2_mid = f2.z + nZ * startOffset + nZ * armLength * stepVal * cosA;
+
+                    const x_center = (x_p1_mid + x_p2_mid) / 2;
+                    const z_center = (z_p1_mid + z_p2_mid) / 2;
+
+                    const isClippedDeck = clippingPlanes.some(p => p.distanceToPoint(new THREE.Vector3(x_center, y_mid, z_center)) < 0);
+                    if (isClippedDeck) return null;
+
+                    return (
+                      <mesh 
+                        key={`plank-board-${stepIdx}`}
+                        position={[x_center, y_mid, z_center]} 
+                        quaternion={plankQuaternion}
+                        castShadow 
+                        receiveShadow
+                      >
+                        <boxGeometry args={[actualS, plankThickness, plankWidth]} />
+                        <meshStandardMaterial 
+                          color="#f59e0b" // beautiful golden safety spruce wood color
+                          roughness={0.7} 
+                          metalness={0.1} 
+                          clippingPlanes={clippingPlanes}
+                          clipShadows={true}
+                        />
+                      </mesh>
+                    );
+                  })}
+
+                  {/* Safety toe board / barrier at the outer edge */}
+                  {(() => {
+                    const s_edge = 0.96;
+                    const x_edge1 = f1.x + nX * startOffset + nX * armLength * s_edge * cosA;
+                    const z_edge1 = f1.z + nZ * startOffset + nZ * armLength * s_edge * cosA;
+                    const y_edge = zBase + armLength * s_edge * sinA;
+
+                    const x_edge2 = f2.x + nX * startOffset + nX * armLength * s_edge * cosA;
+                    const z_edge2 = f2.z + nZ * startOffset + nZ * armLength * s_edge * cosA;
+
+                    const x_mid_edge = (x_edge1 + x_edge2) / 2;
+                    const z_mid_edge = (z_edge1 + z_edge2) / 2;
+
+                    // Sit exactly on top of the planks by shifting by half the toe-board height (0.12m) in the local Y-axis direction
+                    const pos_x = x_mid_edge + dirY.x * 0.12;
+                    const pos_y = y_edge + dirY.y * 0.12;
+                    const pos_z = z_mid_edge + dirY.z * 0.12;
+
+                    return (
+                      <mesh 
+                        position={[pos_x, pos_y, pos_z]} 
+                        quaternion={plankQuaternion}
+                        castShadow
+                      >
+                        <boxGeometry args={[actualS, 0.24, 0.03]} />
+                        <meshStandardMaterial 
+                          color="#ea580c" // Safety Orange
+                          roughness={0.8} 
+                          metalness={0.1}
+                          clippingPlanes={clippingPlanes}
+                        />
+                      </mesh>
+                    );
+                  })()}
+                </group>
+              );
+            })}
+          </group>
+        );
+      })}
+    </group>
+  );
+});
+Mantovana3D.displayName = 'Mantovana3D';
+
 export const Room = ({ 
   points, 
   holes, 
@@ -1327,7 +2189,12 @@ export const Room = ({
   coincidentWallWidth,
   sideSign = 1,
   coincidentOffset,
-  isFaceAligned = false
+  isFaceAligned = false,
+  renderingStyle = 'none',
+  hasMantovana = true,
+  mantovanaAngle = 45,
+  mantovanaHeight = 4.5,
+  isScaffoldLightweight = true
 }: { 
   points: Point[], 
   holes?: Point[][], 
@@ -1362,16 +2229,55 @@ export const Room = ({
   coincidentWallWidth?: number,
   sideSign?: number,
   coincidentOffset?: number,
-  isFaceAligned?: boolean
+  isFaceAligned?: boolean,
+  renderingStyle?: BIMRenderingStyle,
+  hasMantovana?: boolean,
+  mantovanaAngle?: number,
+  mantovanaHeight?: number,
+  isScaffoldLightweight?: boolean
 }) => {
+  if (renderingStyle === 'ponteggio') {
+    return (
+      <Scaffolding3D 
+        points={points}
+        height={height}
+        baseZ={baseZ}
+        color={color}
+        clippingPlanes={clippingPlanes}
+        isLinear={isLinear}
+        hasMantovana={hasMantovana}
+        mantovanaAngle={mantovanaAngle}
+        mantovanaHeight={mantovanaHeight}
+        lightweight={isScaffoldLightweight}
+      />
+    );
+  }
+
+  if (renderingStyle === 'mantovana') {
+    return (
+      <Mantovana3D 
+        points={points}
+        height={height}
+        baseZ={baseZ}
+        color={color}
+        clippingPlanes={clippingPlanes}
+        isLinear={isLinear}
+        mantovanaAngle={mantovanaAngle}
+        sideSign={sideSign}
+      />
+    );
+  }
+
   const h = renderMode === 'parete_orizzontale' ? (height ? height / 100 : 0.03) : height / 100;
   const zBase = baseZ / 100;
 
   const realisticTextures = useMemo(() => {
     const id = (bimFamilyId || '').toLowerCase().trim();
-    if (!id) return null;
-    let type: 'concrete' | 'masonry' | 'partition' | 'plaster' | 'plaster_rustic' | 'insulation' | 'tiles' | null = null;
-    if (id.includes('pilastri') || id.includes('fondazioni') || id.includes('solaio') || id.includes('c.a.') || id.includes('casseri')) {
+    if (!id && renderingStyle !== 'solaio_pignatte') return null;
+    let type: 'concrete' | 'masonry' | 'partition' | 'plaster' | 'plaster_rustic' | 'stone' | 'insulation' | 'tiles' | 'casseri' | 'solaio_pignatte' | null = null;
+    if (renderingStyle === 'solaio_pignatte') {
+      type = 'solaio_pignatte';
+    } else if (id.includes('pilastri') || id.includes('fondazioni') || id.includes('solaio') || id.includes('c.a.') || id.includes('casseri')) {
       type = 'concrete';
     } else if (id.includes('murature') || id.includes('muro') || id.includes('portant') || id.includes('matton') || id.includes('svizzeri')) {
       type = 'masonry';
@@ -1388,6 +2294,14 @@ export const Room = ({
     }
     
     if (type) {
+      if (type === 'solaio_pignatte') {
+        return {
+          side: createBIMMaterialTexture('solaio_pignatte', 'side', color),
+          top: createBIMMaterialTexture('concrete', 'top', color),
+          concreteSide: createBIMMaterialTexture('concrete', 'side', color),
+          type
+        };
+      }
       return {
         side: createBIMMaterialTexture(type, 'side', color),
         top: createBIMMaterialTexture(type, 'top', color),
@@ -1395,7 +2309,7 @@ export const Room = ({
       };
     }
     return null;
-  }, [bimFamilyId, color]);
+  }, [bimFamilyId, color, renderingStyle]);
 
   const shape = useMemo(() => {
     if (!points || points.length < 3) return null;
@@ -1459,6 +2373,12 @@ export const Room = ({
            nameLower.includes('cappott') ||
            nameLower.includes('isolam');
   }, [bimFamilyId, name]);
+
+  const patternTexture = useMemo(() => {
+    // The top surface of the slab (floor) is concrete, so we don't render pignatte there.
+    // The pignatte are rendered on the underside (ceiling) of the slab mesh itself.
+    return null;
+  }, []);
 
   const shouldRenderAsVerticalWalls = renderMode === 'parete_verticale' || (isPlaster && renderMode !== 'parete_orizzontale');
   const isWall = areaType === 'muro' || shouldRenderAsVerticalWalls;
@@ -1625,54 +2545,152 @@ export const Room = ({
 
   if (!shape) return null;
 
+  const isSolaioPignatte = renderingStyle === 'solaio_pignatte';
+  const h_top = isSolaioPignatte ? Math.min(h, 0.05) : 0;
+  const h_bottom = isSolaioPignatte ? Math.max(0.01, h - h_top) : h;
+
   return (
     <group>
       <group position={[0, zBase, 0]}>
         {/* Solid Clipped part */}
-        <mesh rotation={[-Math.PI / 2, 0, 0]} castShadow receiveShadow>
-          <extrudeGeometry args={[shape, extrudeSettings]} />
-          {realisticTextures ? (
-            (() => {
-                const topTex = realisticTextures.top.clone();
-                const sideTex = realisticTextures.side.clone();
-                const repeatFactor = realisticTextures.type === 'tiles' ? 1.0 : 2.5;
-                topTex.repeat.set(repeatFactor, repeatFactor);
-                topTex.wrapS = topTex.wrapT = THREE.RepeatWrapping;
-                sideTex.repeat.set(repeatFactor, realisticTextures.type === 'tiles' ? 1.0 : 0.5);
-                sideTex.wrapS = sideTex.wrapT = THREE.RepeatWrapping;
-                
-                const matProps = {
-                  color: realisticTextures ? '#ffffff' : color,
-                  transparent: renderMode === 'transparent' || finalOpacity < 1, 
-                  opacity: renderMode === 'transparent' ? 0.3 : finalOpacity, 
-                  metalness: 0.1,
-                  roughness: 0.7,
-                  envMapIntensity: 1.0,
-                  clippingPlanes: clippingPlanes,
-                  clipShadows: true,
-                  side: THREE.DoubleSide
-                };
+        {!isSolaioPignatte ? (
+          <mesh rotation={[-Math.PI / 2, 0, 0]} castShadow receiveShadow>
+            <extrudeGeometry args={[shape, extrudeSettings]} />
+            {realisticTextures ? (
+              (() => {
+                  const topTex = realisticTextures.top.clone();
+                  const sideTex = realisticTextures.side.clone();
+                  const repeatFactor = realisticTextures.type === 'tiles' ? 1.0 : 2.5;
+                  topTex.repeat.set(repeatFactor, repeatFactor);
+                  topTex.wrapS = topTex.wrapT = THREE.RepeatWrapping;
+                  sideTex.repeat.set(repeatFactor, realisticTextures.type === 'tiles' ? 1.0 : 0.5);
+                  sideTex.wrapS = sideTex.wrapT = THREE.RepeatWrapping;
+                  
+                  const matProps = {
+                    color: '#ffffff',
+                    transparent: renderMode === 'transparent' || finalOpacity < 1, 
+                    opacity: renderMode === 'transparent' ? 0.3 : finalOpacity, 
+                    metalness: 0.1,
+                    roughness: 0.7,
+                    envMapIntensity: 1.0,
+                    clippingPlanes: clippingPlanes,
+                    clipShadows: true,
+                    side: THREE.DoubleSide
+                  };
 
-                return [
-                    <meshStandardMaterial key="top" attach="material-0" map={topTex} {...matProps} />,
-                    <meshStandardMaterial key="side" attach="material-1" map={sideTex} {...matProps} />
-                ];
-            })()
-          ) : (
-            <meshStandardMaterial 
-                color={color} 
-                transparent={renderMode === 'transparent' || finalOpacity < 1} 
-                wireframe={renderMode === 'transparent'}
-                opacity={renderMode === 'transparent' ? 0.3 : finalOpacity} 
-                metalness={isWall ? 0.35 : 0.15}
-                roughness={isWall ? 0.35 : 0.3}
-                envMapIntensity={1.5}
-                clippingPlanes={clippingPlanes}
-                clipShadows={true}
-                side={THREE.DoubleSide}
-            />
-          )}
-        </mesh>
+                  return [
+                      <meshStandardMaterial key="top" attach="material-0" map={topTex} {...matProps} />,
+                      <meshStandardMaterial key="side" attach="material-1" map={sideTex} {...matProps} />
+                  ];
+              })()
+            ) : (
+              <meshStandardMaterial 
+                  color={color} 
+                  transparent={renderMode === 'transparent' || finalOpacity < 1} 
+                  wireframe={renderMode === 'transparent'}
+                  opacity={renderMode === 'transparent' ? 0.3 : finalOpacity} 
+                  metalness={isWall ? 0.35 : 0.15}
+                  roughness={isWall ? 0.35 : 0.3}
+                  envMapIntensity={1.5}
+                  clippingPlanes={clippingPlanes}
+                  clipShadows={true}
+                  side={THREE.DoubleSide}
+              />
+            )}
+          </mesh>
+        ) : (
+          <group>
+            {/* Bottom Solaio Layer (Pignatte + Travetti visible from below) */}
+            <mesh rotation={[-Math.PI / 2, 0, 0]} castShadow receiveShadow>
+              <extrudeGeometry args={[shape, { steps: 1, depth: h_bottom, bevelEnabled: false }]} />
+              {realisticTextures ? (
+                (() => {
+                    const pignatteTex = realisticTextures.side.clone();
+                    pignatteTex.repeat.set(1.6667, 1.6667); // Exact 60cm repetition
+                    pignatteTex.wrapS = pignatteTex.wrapT = THREE.RepeatWrapping;
+                    
+                    const sideTex = (realisticTextures.concreteSide || realisticTextures.top).clone();
+                    sideTex.repeat.set(2.5, 0.5);
+                    sideTex.wrapS = sideTex.wrapT = THREE.RepeatWrapping;
+                    
+                    const matProps = {
+                      color: '#ffffff',
+                      transparent: renderMode === 'transparent' || finalOpacity < 1, 
+                      opacity: renderMode === 'transparent' ? 0.3 : finalOpacity, 
+                      metalness: 0.1,
+                      roughness: 0.7,
+                      envMapIntensity: 1.0,
+                      clippingPlanes: clippingPlanes,
+                      clipShadows: true,
+                      side: THREE.DoubleSide
+                    };
+
+                    return [
+                        <meshStandardMaterial key="pignatte-cap" attach="material-0" map={pignatteTex} {...matProps} />,
+                        <meshStandardMaterial key="pignatte-side" attach="material-1" map={sideTex} {...matProps} />
+                    ];
+                })()
+              ) : (
+                <meshStandardMaterial 
+                    color="#D2B48C" // Brick terracotta color
+                    transparent={renderMode === 'transparent' || finalOpacity < 1} 
+                    opacity={renderMode === 'transparent' ? 0.3 : finalOpacity} 
+                    metalness={0.15}
+                    roughness={0.5}
+                    clippingPlanes={clippingPlanes}
+                    clipShadows={true}
+                    side={THREE.DoubleSide}
+                />
+              )}
+            </mesh>
+
+            {/* Top Solaio Layer (Solid Concrete Cappa) */}
+            {h_top > 0 && (
+              <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, h_bottom, 0]} castShadow receiveShadow>
+                <extrudeGeometry args={[shape, { steps: 1, depth: h_top, bevelEnabled: false }]} />
+                {realisticTextures ? (
+                  (() => {
+                      const topTex = realisticTextures.top.clone();
+                      topTex.repeat.set(2.5, 2.5);
+                      topTex.wrapS = topTex.wrapT = THREE.RepeatWrapping;
+                      
+                      const sideTex = (realisticTextures.concreteSide || realisticTextures.top).clone();
+                      sideTex.repeat.set(2.5, 0.5);
+                      sideTex.wrapS = sideTex.wrapT = THREE.RepeatWrapping;
+                      
+                      const matProps = {
+                        color: '#ffffff',
+                        transparent: renderMode === 'transparent' || finalOpacity < 1, 
+                        opacity: renderMode === 'transparent' ? 0.3 : finalOpacity, 
+                        metalness: 0.1,
+                        roughness: 0.7,
+                        envMapIntensity: 1.0,
+                        clippingPlanes: clippingPlanes,
+                        clipShadows: true,
+                        side: THREE.DoubleSide
+                      };
+
+                      return [
+                          <meshStandardMaterial key="concrete-cap" attach="material-0" map={topTex} {...matProps} />,
+                          <meshStandardMaterial key="concrete-side" attach="material-1" map={sideTex} {...matProps} />
+                      ];
+                  })()
+                ) : (
+                  <meshStandardMaterial 
+                      color="#94a3b8" // Concrete gray color
+                      transparent={renderMode === 'transparent' || finalOpacity < 1} 
+                      opacity={renderMode === 'transparent' ? 0.3 : finalOpacity} 
+                      metalness={0.15}
+                      roughness={0.4}
+                      clippingPlanes={clippingPlanes}
+                      clipShadows={true}
+                      side={THREE.DoubleSide}
+                  />
+                )}
+              </mesh>
+            )}
+          </group>
+        )}
 
         {/* Wireframe Reference - Unclipped */}
         <mesh rotation={[-Math.PI / 2, 0, 0]}>
@@ -1686,7 +2704,8 @@ export const Room = ({
           <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.001, 0]} receiveShadow>
             <shapeGeometry args={[shape]} />
             <meshStandardMaterial 
-              color={color} 
+              color={patternTexture ? '#ffffff' : color}
+              map={patternTexture || undefined}
               transparent 
               opacity={finalFloorOpacity} 
               clippingPlanes={clippingPlanes}
@@ -3597,6 +4616,7 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
   const [isSectionMode, setIsSectionMode] = useState(false);
   const [showSectionConfig, setShowSectionConfig] = useState(false);
   const [isRealistic, setIsRealistic] = useState(true);
+  const [isScaffoldLightweight, setIsScaffoldLightweight] = useState(true);
   const [globalOpacityMode, setGlobalOpacityMode] = useState<'WORK' | 'SOLID'>('SOLID');
   const [globalRoomOpacityVal, setGlobalRoomOpacityVal] = useState<number>(0.25);
   const [globalWallOpacityVal, setGlobalWallOpacityVal] = useState<number>(1.0);
@@ -5862,7 +6882,7 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
               <div className="bg-slate-50 p-5 rounded-3xl border border-slate-100">
                 <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest block mb-1">Nome Elemento</span>
                 <div className="text-base font-black text-slate-800 break-words">
-                  {(selectedEntity as any).bimName || 'Elemento Non Nominato'}
+                  {(selectedEntity as any).prezzarioDescrizione || (selectedEntity as any).cost_5d?.prezzarioDescrizione || (selectedEntity as any).bimName || 'Elemento Non Nominato'}
                 </div>
               </div>
 
@@ -5917,8 +6937,8 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
                     <div className="flex items-center justify-between gap-3">
                       <div className="min-w-0 pr-1 flex-1">
                         <span className="block text-[8px] text-slate-400 uppercase tracking-wider font-extrabold">Singolo Elemento</span>
-                        <span className="block font-black text-slate-700 truncate text-[11px]" title={(selectedEntity as any).bimName || 'Elemento'}>
-                          {(selectedEntity as any).bimName || 'Senza Nome'}
+                        <span className="block font-black text-slate-700 truncate text-[11px]" title={(selectedEntity as any).prezzarioDescrizione || (selectedEntity as any).bimName || 'Elemento'}>
+                          {(selectedEntity as any).prezzarioDescrizione || (selectedEntity as any).cost_5d?.prezzarioDescrizione || (selectedEntity as any).bimName || 'Senza Nome'}
                         </span>
                       </div>
                       <div className="flex items-center gap-1 shrink-0">
@@ -6583,6 +7603,23 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
             className={`w-10 h-5.5 rounded-full transition-all relative cursor-pointer outline-none border-none ${isRealistic ? 'bg-indigo-600 shadow-[0_0_10px_rgba(79,70,229,0.3)]' : 'bg-slate-200 shadow-inner'}`}
           >
             <div className={`absolute top-1 w-3.5 h-3.5 bg-white rounded-full shadow-sm transition-all duration-300 ${isRealistic ? 'left-5.5' : 'left-1'}`} />
+          </button>
+        </div>
+
+        {/* Lightweight Scaffolding Toggle */}
+        <div className="flex items-center justify-between pt-2.5 border-t border-slate-100 mt-1">
+          <div className="flex items-center gap-2">
+            <Zap size={14} className={isScaffoldLightweight ? "text-emerald-500 fill-emerald-500/20 animate-pulse" : "text-slate-400"} />
+            <div className="flex flex-col">
+              <span className="text-[10px] font-black text-slate-600 uppercase tracking-wider">Ponteggio Leggero</span>
+              <span className="text-[8px] text-emerald-600 font-bold tracking-tight uppercase">🚀 3D Ultra-Fluido</span>
+            </div>
+          </div>
+          <button
+            onClick={() => setIsScaffoldLightweight(!isScaffoldLightweight)}
+            className={`w-10 h-5.5 rounded-full transition-all relative cursor-pointer outline-none border-none ${isScaffoldLightweight ? 'bg-emerald-500 shadow-[0_0_10px_rgba(16,185,129,0.3)]' : 'bg-slate-200 shadow-inner'}`}
+          >
+            <div className={`absolute top-1 w-3.5 h-3.5 bg-white rounded-full shadow-sm transition-all duration-300 ${isScaffoldLightweight ? 'left-5.5' : 'left-1'}`} />
           </button>
         </div>
 
@@ -7550,6 +8587,10 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
                               coincidentOffset={stackedOffsetInfo.offsetZ}
                               sideSign={(e as any).sideSign}
                               isFaceAligned={(e as any).isFaceAligned}
+                              hasMantovana={e.hasMantovana}
+                              mantovanaAngle={e.mantovanaAngle}
+                              mantovanaHeight={e.mantovanaHeight}
+                              isScaffoldLightweight={isScaffoldLightweight}
                             />
                           ) : (
                             <Wall 
@@ -7593,6 +8634,7 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
                               name={e.bimName}
                               baseZ={baseZ}
                               bimFamilyId={e.bimFamilyId || e.bimAreaType || e.bimFamily || e.bimName || ''}
+                              renderingStyle={e.renderingStyle || e.bimData?.renderingStyle}
                               clippingPlanes={clippingPlanes}
                               opacity={entityOpacity}
                               globalOpacityMode={globalOpacityMode}
@@ -7616,6 +8658,10 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
                               coincidentOffset={stackedOffsetInfo.offsetZ}
                               sideSign={(e as any).sideSign}
                               isFaceAligned={(e as any).isFaceAligned}
+                              hasMantovana={e.hasMantovana}
+                              mantovanaAngle={e.mantovanaAngle}
+                              mantovanaHeight={e.mantovanaHeight}
+                              isScaffoldLightweight={isScaffoldLightweight}
                             />
                           );
                         } else if (entity.bimType === 'door' || entity.bimType === 'window') {

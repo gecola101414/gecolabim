@@ -40,9 +40,12 @@ import {
   Eye,
   EyeOff,
   Lock,
-  Unlock
+  Unlock,
+  Clipboard,
+  FileDown
 } from "lucide-react";
-import { Point, Entity, Floor } from '../types';
+import { motion, AnimatePresence } from 'motion/react';
+import { Point, Entity, Floor, PrezzarioItem, BIMRenderingStyle } from '../types';
 import { TEMPLATES, Template } from '../data/templates';
 import { TemplatePreview } from './TemplatePreview';
 import { BIM_FAMILIES, BIMFamily } from '../data/bimFamilies';
@@ -1181,6 +1184,7 @@ interface BIMElementDialogProps {
   isFaceSurveyMode?: boolean;
   entities?: any[];
   editingEntityId?: string | null;
+  prezzarioItems?: PrezzarioItem[];
 }
 
 export const BIMElementDialog: React.FC<BIMElementDialogProps> = ({
@@ -1195,7 +1199,8 @@ export const BIMElementDialog: React.FC<BIMElementDialogProps> = ({
   onToggleMultiAreaMode,
   isFaceSurveyMode,
   entities = [],
-  editingEntityId
+  editingEntityId,
+  prezzarioItems = []
 }) => {
   const { position, handlePointerDown, handlePointerMove, handlePointerUp } = useDraggableDialog(isOpen, { x: 300, y: 130 });
   
@@ -1209,6 +1214,7 @@ export const BIMElementDialog: React.FC<BIMElementDialogProps> = ({
   const [objectHeightInput, setObjectHeightInput] = useState<string>('270');
   const [objectWidthInput, setObjectWidthInput] = useState<string>('15');
   const [hatch, setHatch] = useState<string>('SOLID');
+  const [renderingStyle, setRenderingStyle] = useState<BIMRenderingStyle>('none');
   const [bimRenderMode, setBimRenderMode] = useState<'solid' | 'transparent' | 'parete_verticale' | 'parete_orizzontale'>('solid');
   const [sideSign, setSideSign] = useState<number>(1);
   
@@ -1217,6 +1223,95 @@ export const BIMElementDialog: React.FC<BIMElementDialogProps> = ({
   const [shouldDuplicate, setShouldDuplicate] = useState(false);
   const [shouldOverlay, setShouldOverlay] = useState(false);
   const [duplicateConnectedFinishes, setDuplicateConnectedFinishes] = useState(false);
+
+  // Price List State
+  const [prezzarioCodice, setPrezzarioCodice] = useState('');
+  const [prezzarioDescrizione, setPrezzarioDescrizione] = useState('');
+  const [prezzarioUnita, setPrezzarioUnita] = useState('');
+  const [prezzarioPrezzo, setPrezzarioPrezzo] = useState<string>('0');
+  const [incidenzaManodopera, setIncidenzaManodopera] = useState<string>('0');
+  const [prezzarioNome, setPrezzarioNome] = useState('');
+  const [isPrezzarioSearchOpen, setIsPrezzarioSearchOpen] = useState(false);
+  const [prezzarioSearch, setPrezzarioSearch] = useState('');
+
+  const filteredPrezzario = useMemo(() => {
+    if (!prezzarioSearch) return prezzarioItems.slice(0, 10);
+    return prezzarioItems.filter(it => 
+      it.codice.toLowerCase().includes(prezzarioSearch.toLowerCase()) || 
+      it.descrizione.toLowerCase().includes(prezzarioSearch.toLowerCase())
+    ).slice(0, 50);
+  }, [prezzarioSearch, prezzarioItems]);
+
+  const selectPrezzarioItem = (item: PrezzarioItem) => {
+    setPrezzarioCodice(item.codice);
+    setPrezzarioDescrizione(item.descrizione);
+    setPrezzarioUnita(item.unita);
+    setPrezzarioPrezzo(item.prezzo.toString());
+    setIncidenzaManodopera((item.incidenzaManodopera || 0).toString());
+    setPrezzarioNome(item.prezzario || '');
+    setIsPrezzarioSearchOpen(false);
+    
+    // Force update identifying names to match the price list item
+    const descForName = item.descrizione.substring(0, 80);
+    setName(descForName);
+    setSubFamily(item.codice);
+
+    if (customFamilyMode) {
+      setCustomFamilyName(item.descrizione.substring(0, 40));
+    }
+
+    // Logic based on unit of measure
+    const unit = item.unita.toLowerCase();
+    if (unit === 'm' || unit === 'ml' || unit === 'ml.') {
+      // If it's a linear item (like a baseboard/battiscopa) and we have a high default height
+      if (objectHeightInput === '270' || objectHeightInput === '300') {
+        setObjectHeightInput('10'); // Default for baseboards
+      }
+    } else if (unit === 'm2' || unit === 'mq' || unit === 'mq.') {
+      // If it's a surface item and we have a small height (maybe from a previous baseboard drop)
+      if (parseFloat(objectHeightInput) < 30) {
+        setObjectHeightInput('270'); // Back to standard wall height
+      }
+    }
+  };
+
+  const [isDraggingOverComputo, setIsDraggingOverComputo] = useState(false);
+  const [showDropSuccess, setShowDropSuccess] = useState(false);
+
+  const handleDropPrezzario = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDraggingOverComputo(false);
+    
+    // 1. Try application/json
+    let data = e.dataTransfer.getData('application/json');
+    
+    // 2. Fallback to text (which might be JSON stringified)
+    if (!data) {
+      data = e.dataTransfer.getData('text/plain') || e.dataTransfer.getData('text');
+    }
+
+    if (data) {
+      try {
+        // Try to parse as JSON first
+        const item = JSON.parse(data) as PrezzarioItem;
+        if (item && (item.codice || item.descrizione)) {
+          selectPrezzarioItem(item);
+          setShowDropSuccess(true);
+          setTimeout(() => setShowDropSuccess(false), 2000);
+          return;
+        }
+      } catch (err) {
+        // Not a valid JSON
+      }
+      
+      // 3. Fallback: use text as search query
+      setPrezzarioSearch(data);
+      setIsPrezzarioSearchOpen(true);
+      setShowDropSuccess(true);
+      setTimeout(() => setShowDropSuccess(false), 2000);
+    }
+  };
 
   const connectedFinishes = useMemo(() => {
     if (!editingEntityId || !entities || entities.length === 0) return [];
@@ -1300,6 +1395,16 @@ export const BIMElementDialog: React.FC<BIMElementDialogProps> = ({
         setHatch(initialData.hatch);
         setBimRenderMode(initialData.bimRenderMode || 'solid');
         setSideSign((initialData as any).sideSign !== undefined ? (initialData as any).sideSign : 1);
+        setRenderingStyle((initialData as any).renderingStyle || (initialData as any).bimData?.renderingStyle || 'none');
+
+        // Load price list data if available in cost_5d
+        const cost = (initialData as any).properties?.cost_5d || (initialData as any).cost_5d || {};
+        setPrezzarioCodice(cost.prezzarioCodice || '');
+        setPrezzarioDescrizione(cost.prezzarioDescrizione || '');
+        setPrezzarioUnita(cost.prezzarioUnita || '');
+        setPrezzarioPrezzo((cost.prezzarioPrezzo ?? 0).toString());
+        setIncidenzaManodopera((cost.incidenzaManodopera ?? 0).toString());
+        setPrezzarioNome(cost.prezzarioNome || '');
       } else {
         const pts: any = points;
         const isFrom3D = pts && pts.from3DFace;
@@ -1352,6 +1457,8 @@ export const BIMElementDialog: React.FC<BIMElementDialogProps> = ({
             setObjectWidthInput('2');
           } else if (lastFam === 'isolamenti_termici') {
             setObjectWidthInput('10');
+          } else if (lastFam === 'ponteggio') {
+            setObjectWidthInput('100');
           } else {
             setObjectWidthInput('15');
           }
@@ -1372,6 +1479,9 @@ export const BIMElementDialog: React.FC<BIMElementDialogProps> = ({
         const savedSideSign = localStorage.getItem('last_bim_side_sign');
         const initialSideSign = savedSideSign !== null ? parseInt(savedSideSign, 10) : (ptsArr[0]?.sideSign !== undefined ? ptsArr[0].sideSign : 1);
         setSideSign(initialSideSign);
+
+        const savedRenderingStyle = localStorage.getItem('last_bim_rendering_style') || 'none';
+        setRenderingStyle(lastFam === 'ponteggio' ? 'ponteggio' : (savedRenderingStyle as BIMRenderingStyle));
       }
     } else {
       hasInitializedRef.current = false;
@@ -1394,8 +1504,9 @@ export const BIMElementDialog: React.FC<BIMElementDialogProps> = ({
       localStorage.setItem('last_bim_width', objectWidthInput);
       localStorage.setItem('last_bim_height', objectHeightInput);
       localStorage.setItem('last_bim_zElevation', zElevationInput);
+      localStorage.setItem('last_bim_rendering_style', renderingStyle);
     }
-  }, [isOpen, initialData, familyId, subFamily, name, color, hatch, bimRenderMode, sideSign, objectWidthInput, objectHeightInput, zElevationInput]);
+  }, [isOpen, initialData, familyId, subFamily, name, color, hatch, bimRenderMode, sideSign, objectWidthInput, objectHeightInput, zElevationInput, renderingStyle]);
 
   const handleFamilyChange = (id: string) => {
     setFamilyId(id);
@@ -1406,16 +1517,28 @@ export const BIMElementDialog: React.FC<BIMElementDialogProps> = ({
       setColor(fam.defaultColor);
       if (id === 'intonaco_completo') {
         setObjectWidthInput('1');
+        if (renderingStyle === 'ponteggio') setRenderingStyle('none');
       } else if (id === 'intonaco_rustico') {
         setObjectWidthInput('1.5');
+        if (renderingStyle === 'ponteggio') setRenderingStyle('none');
       } else if (id === 'pitture') {
         setObjectWidthInput('0.2');
+        if (renderingStyle === 'ponteggio') setRenderingStyle('none');
       } else if (id === 'rivestimenti') {
         setObjectWidthInput('2');
+        if (renderingStyle === 'ponteggio') setRenderingStyle('none');
       } else if (id === 'isolamenti_termici') {
         setObjectWidthInput('10');
+        if (renderingStyle === 'ponteggio' || renderingStyle === 'mantovana') setRenderingStyle('none');
+      } else if (id === 'ponteggio') {
+        setObjectWidthInput('100');
+        setRenderingStyle('ponteggio');
+      } else if (id === 'mantovana') {
+        setObjectWidthInput('130');
+        setRenderingStyle('mantovana');
       } else {
         setObjectWidthInput(localStorage.getItem('last_bim_width') || '15');
+        if (renderingStyle === 'ponteggio' || renderingStyle === 'mantovana') setRenderingStyle('none');
       }
     }
   };
@@ -1464,11 +1587,20 @@ export const BIMElementDialog: React.FC<BIMElementDialogProps> = ({
       objectWidth: parsedObjectWidth,
       hatch,
       bimRenderMode: isHorizontalFace ? 'parete_orizzontale' : bimRenderMode,
+      renderingStyle,
       duplicate: shouldDuplicate,
       overlay: shouldOverlay,
       sideSign,
-      duplicateConnectedFinishes
-    });
+      duplicateConnectedFinishes,
+      cost_5d: {
+        prezzarioCodice,
+        prezzarioDescrizione,
+        prezzarioUnita,
+        prezzarioPrezzo: parseFloat(prezzarioPrezzo.replace(',', '.')),
+        incidenzaManodopera: parseFloat(incidenzaManodopera.replace(',', '.')),
+        prezzarioNome
+      }
+    } as any);
   };
 
   return (
@@ -1497,6 +1629,164 @@ export const BIMElementDialog: React.FC<BIMElementDialogProps> = ({
 
       <form onSubmit={handleSubmit} className="space-y-4 overflow-y-auto pr-2 pb-2 scrollbar-none">
         
+        {/* COMPUTO / PREZZARIO SECTION */}
+        <div 
+          onDragOver={(e) => {
+            e.preventDefault();
+            setIsDraggingOverComputo(true);
+          }}
+          onDragLeave={() => setIsDraggingOverComputo(false)}
+          onDrop={handleDropPrezzario}
+          className={`bg-indigo-500/5 border rounded-xl p-4 space-y-3 relative group transition-all duration-300 ${
+            showDropSuccess ? 'border-emerald-500 bg-emerald-500/5 shadow-lg shadow-emerald-500/10' :
+            isDraggingOverComputo ? 'border-amber-400 bg-amber-400/5 scale-[1.02] shadow-lg shadow-amber-500/10' : 'border-indigo-500/20'
+          }`}
+        >
+          <div className="flex justify-between items-center mb-1">
+            <h4 className={`text-[10px] font-black uppercase tracking-widest font-mono flex items-center gap-2 transition-colors ${
+              isDraggingOverComputo ? 'text-amber-400' : 'text-indigo-400'
+            }`}>
+              <Clipboard size={12} />
+              Computo Metrico e Costi
+            </h4>
+            <div className={`text-[8px] font-mono font-bold uppercase tracking-tighter transition-colors ${
+              showDropSuccess ? 'text-emerald-400' : isDraggingOverComputo ? 'text-amber-500' : 'text-indigo-500/50'
+            }`}>
+              {showDropSuccess ? '✓ VOCE ASSOCIATA' : isDraggingOverComputo ? 'RILASCIA QUI' : 'Trascinamento Abilitato'}
+            </div>
+          </div>
+
+          <div className="relative">
+            <div className="flex gap-2">
+              <div className="relative flex-1">
+                <input
+                  type="text"
+                  placeholder="Cerca nel prezzario..."
+                  value={prezzarioSearch}
+                  onChange={(e) => {
+                    setPrezzarioSearch(e.target.value);
+                    setIsPrezzarioSearchOpen(true);
+                  }}
+                  onFocus={() => setIsPrezzarioSearchOpen(true)}
+                  onDragOver={(e) => {
+                    e.preventDefault();
+                    setIsDraggingOverComputo(true);
+                  }}
+                  onDrop={handleDropPrezzario}
+                  className="w-full bg-slate-900 border border-white/10 text-white rounded-lg px-3 py-2 text-xs font-bold focus:outline-none focus:border-indigo-500"
+                />
+                <Search size={14} className="absolute right-3 top-2.5 text-slate-500" />
+              </div>
+              {prezzarioCodice && (
+                <button 
+                  type="button"
+                  onClick={() => {
+                    setPrezzarioCodice('');
+                    setPrezzarioDescrizione('');
+                    setPrezzarioUnita('');
+                    setPrezzarioPrezzo('0');
+                    setIncidenzaManodopera('0');
+                  }}
+                  className="p-2 bg-rose-500/10 text-rose-400 border border-rose-500/20 rounded-lg hover:bg-rose-500/20 transition-colors"
+                >
+                  <X size={14} />
+                </button>
+              )}
+            </div>
+
+            <AnimatePresence>
+              {isPrezzarioSearchOpen && (
+                <motion.div
+                  initial={{ opacity: 0, y: -10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -10 }}
+                  className="absolute z-50 left-0 right-0 top-full mt-1 bg-slate-900 border border-white/20 rounded-xl shadow-2xl overflow-hidden max-h-60 overflow-y-auto scrollbar-thin"
+                >
+                  {filteredPrezzario.length > 0 ? (
+                    filteredPrezzario.map(it => (
+                      <button
+                        key={it.codice}
+                        type="button"
+                        onClick={() => selectPrezzarioItem(it)}
+                        className="w-full text-left p-3 border-b border-white/5 hover:bg-indigo-500/10 transition-colors flex flex-col gap-1"
+                      >
+                        <div className="flex justify-between items-center">
+                          <span className="text-[10px] font-mono font-black text-indigo-400">{it.codice}</span>
+                          <span className="text-[9px] font-bold text-emerald-400">€ {it.prezzo.toFixed(2)}</span>
+                        </div>
+                        <p className="text-[10px] text-slate-300 font-bold leading-tight">{it.descrizione}</p>
+                        <div className="flex items-center gap-2 text-[8px] text-slate-500 font-mono">
+                          <span>UM: {it.unita}</span>
+                          {it.prezzario && <span>• {it.prezzario}</span>}
+                        </div>
+                      </button>
+                    ))
+                  ) : (
+                    <div className="p-4 text-center text-xs text-slate-500 italic">Nessuna voce trovata</div>
+                  )}
+                </motion.div>
+              )}
+            </AnimatePresence>
+          </div>
+
+          {prezzarioCodice && (
+            <motion.div 
+              initial={{ opacity: 0, height: 0 }}
+              animate={{ opacity: 1, height: 'auto' }}
+              className="space-y-2 pt-2 border-t border-white/5"
+            >
+              <div className="flex items-start gap-2">
+                <div className="px-2 py-1 bg-indigo-500/20 rounded text-[9px] font-mono font-black text-indigo-400 border border-indigo-500/30">
+                  {prezzarioCodice}
+                </div>
+                <div className="flex-1 min-w-0">
+                  <p className="text-[10px] font-bold text-slate-200 leading-tight line-clamp-2 italic">"{prezzarioDescrizione}"</p>
+                </div>
+              </div>
+              
+              <div className="grid grid-cols-3 gap-2">
+                <div>
+                  <label className="block text-[8px] text-slate-500 font-black uppercase mb-1">U.M.</label>
+                  <input
+                    type="text"
+                    value={prezzarioUnita}
+                    onChange={(e) => setPrezzarioUnita(e.target.value)}
+                    className="w-full bg-slate-950 border border-white/10 rounded-md p-1.5 text-[10px] font-bold text-slate-300"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[8px] text-slate-500 font-black uppercase mb-1">Prezzo (€)</label>
+                  <input
+                    type="text"
+                    value={prezzarioPrezzo}
+                    onChange={(e) => setPrezzarioPrezzo(e.target.value)}
+                    className="w-full bg-slate-950 border border-white/10 rounded-md p-1.5 text-[10px] font-bold text-emerald-400"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[8px] text-slate-500 font-black uppercase mb-1">Inc. MO %</label>
+                  <input
+                    type="text"
+                    value={incidenzaManodopera}
+                    onChange={(e) => setIncidenzaManodopera(e.target.value)}
+                    className="w-full bg-slate-950 border border-white/10 rounded-md p-1.5 text-[10px] font-bold text-amber-400"
+                  />
+                </div>
+              </div>
+            </motion.div>
+          )}
+
+          {/* Simple overlay hints for dropping */}
+          <div className="absolute inset-0 pointer-events-none border-2 border-dashed border-indigo-500/0 rounded-xl group-hover:border-indigo-500/20 transition-all flex items-center justify-center">
+            {!prezzarioCodice && (
+              <div className="opacity-0 group-hover:opacity-100 transition-opacity bg-indigo-500/10 backdrop-blur-sm px-3 py-1 rounded-full border border-indigo-500/30 flex items-center gap-2">
+                <FileDown size={12} className="text-indigo-400" />
+                <span className="text-[9px] font-black text-indigo-400 uppercase tracking-tighter">Rilascia voce qui</span>
+              </div>
+            )}
+          </div>
+        </div>
+
         {/* FAMILY SELECTION */}
         <div>
           <div className="flex justify-between items-center mb-1.5">
@@ -1715,6 +2005,22 @@ export const BIMElementDialog: React.FC<BIMElementDialogProps> = ({
               >
                 Parete Orizzontale
               </button>
+            </div>
+            <div className="mt-4">
+              <label className="block text-[11px] text-slate-400 font-black uppercase tracking-widest mb-2 font-mono italic">Rendering Style</label>
+              <select
+                value={renderingStyle}
+                onChange={(e) => setRenderingStyle(e.target.value as BIMRenderingStyle)}
+                className="w-full bg-slate-900 border border-slate-700 text-slate-200 rounded-lg p-2 text-xs"
+              >
+                <option value="none">Nessuno</option>
+                <option value="calcestruzzo">Calcestruzzo</option>
+                <option value="mattone_portante">Mattone Portante</option>
+                <option value="tramezzo">Tramezzo</option>
+                <option value="solaio_pignatte">Solaio con Pignatte</option>
+                <option value="ponteggio">Ponteggio 3D Classico</option>
+                <option value="mantovana">Mantovana di Sicurezza</option>
+              </select>
             </div>
             {/* Explanatory subtitle helper */}
             <p className="text-[9px] text-slate-500 mt-1.5 italic font-medium leading-normal font-mono">

@@ -56,7 +56,8 @@ import {
   Video as VideoIcon,
   Activity,
   Info,
-  Notebook
+  Notebook,
+  FileSearch
 } from "lucide-react";
 import { TEMPLATES } from "../data/templates";
 import { TemplatePreview } from "./TemplatePreview";
@@ -148,6 +149,7 @@ interface BIMWorkspacePanelProps {
   onOpenFiniture?: () => void;
   onEditArea?: (id: string) => void;
   onOpen3DView?: () => void;
+  onOpenAnalyzer?: () => void;
 }
 
 // Shoelace formula helper
@@ -196,7 +198,8 @@ export function BIMWorkspacePanel({
   onOpenIdraulico,
   onOpenFiniture,
   onEditArea,
-  onOpen3DView
+  onOpen3DView,
+  onOpenAnalyzer
 }: BIMWorkspacePanelProps) {
   const [customRoomName, setCustomRoomName] = useState<string>("");
   const [open2DSection, setOpen2DSection] = useState<boolean>(false);
@@ -772,11 +775,26 @@ export function BIMWorkspacePanel({
         </p>
         <div className="grid grid-cols-2 gap-2 mt-4">
           <button 
+            onClick={() => setShowFamilyPropertyDialog("Ponteggio")}
+            className="col-span-2 w-full bg-gradient-to-r from-orange-600 to-orange-500 hover:from-orange-500 hover:to-orange-400 text-white font-black py-3 rounded-lg flex items-center justify-center gap-2 text-[11px] tracking-wider uppercase transition-all shadow-[0_10px_20px_rgba(234,88,12,0.25)] cursor-pointer border border-orange-400/30 font-sans"
+            title="Apri Suite Sicurezza Ponteggi, Relazione FEM e Pi.M.U.S."
+          >
+            🛡️ Relazioni Ponteggio & Pi.M.U.S. (FEM)
+          </button>
+          <button 
             onClick={onOpen3DView}
             className="w-full bg-cyan-400 hover:bg-cyan-300 text-slate-950 font-black py-2.5 rounded-lg flex items-center justify-center gap-1.5 text-[10px] tracking-wider uppercase transition-all shadow-[0_10px_20px_rgba(34,211,238,0.15)] cursor-pointer"
           >
             <BoxIcon size={14} />
             Visione 3D
+          </button>
+          <button 
+            onClick={onOpenAnalyzer}
+            className="w-full bg-indigo-500 hover:bg-indigo-400 text-white font-black py-2.5 rounded-lg flex items-center justify-center gap-1.5 text-[10px] tracking-wider uppercase transition-all shadow-[0_10px_20px_rgba(79,70,229,0.15)] cursor-pointer"
+            title="Analizza Pacchetti Dati (JSON/TXT)"
+          >
+            <FileSearch size={14} />
+            Analizza Pacchetto
           </button>
           <button 
             onClick={() => {
@@ -2011,6 +2029,18 @@ export function BIMWorkspacePanel({
           family={showFamilyPropertyDialog}
           entities={entities}
           onClose={() => setShowFamilyPropertyDialog(null)}
+          onUpdateEntityProperties={(ids, properties) => {
+            setEntities((prev) => {
+              const next = prev.map((ent) => {
+                if (ids.includes(ent.id)) {
+                  return { ...ent, ...properties } as any;
+                }
+                return ent;
+              });
+              onCommitHistory?.(next);
+              return next;
+            });
+          }}
         />
       )}
     </div>

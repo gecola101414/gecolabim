@@ -17,14 +17,16 @@ import { LineEditorDialog } from "./components/LineEditorDialog";
 import { LineEntity } from "./types";
 import { TemplatePreview } from "./components/TemplatePreview";
 import { BIMElementDialog, FinestreDialog, FloorManagerDialog } from "./components/BIMDialogs";
-import { BIMWorkspacePanel } from "./components/BIMWorkspacePanel";
+import { PriceListImporter } from "./components/PriceListImporter";
+import { BIMDataAnalyzerDialog } from "./components/BIMDataAnalyzerDialog";
 import { BIMTopBarControls } from "./components/BIMTopBarControls";
 import { BIM3DViewer } from "./components/BIM3DViewer";
 import { GecolaPrezzarioPanel } from "./components/GecolaPrezzarioPanel";
+import { BIMWorkspacePanel } from "./components/BIMWorkspacePanel";
 import { TEMPLATES } from './data/templates';
 import { GUIDE_DATABASE, GuideItem } from './data/guides';
-import { PREZZARIO_GECOLA, PrezzarioItem } from './data/prezzario';
-import { Entity, Point, Layer, Measurement, Tavola, Floor } from "./types";
+import { PREZZARIO_GECOLA } from './data/prezzario';
+import { Entity, Point, Layer, Measurement, Tavola, Floor, PrezzarioItem, BIMRenderingStyle } from "./types";
 import { mergeAllSegments } from "./utils/entityUtils";
 import { trimEntities } from "./utils";
 import { parseScriptToEntities, updateScriptVariables } from "./utils/parametricParser";
@@ -467,7 +469,7 @@ export default function App() {
     };
   });
   const [eraserRadius, setEraserRadius] = useState(() => Number(localStorage.getItem('eraserRadius')) || 4);
-  const [eraserType, setEraserType] = useState<'pencil' | 'all' | 'lametta'>(() => (localStorage.getItem('eraserType') as 'pencil' | 'all' | 'lametta') || 'pencil');
+  const [eraserType, setEraserType] = useState<'miracolo' | 'pencil' | 'all' | 'lametta'>(() => (localStorage.getItem('eraserType') as any) || 'miracolo');
   const [eraserIntensity, setEraserIntensity] = useState(() => Number(localStorage.getItem('eraserIntensity')) || 55);
   const [favoritePanels, setFavoritePanels] = useState<Array<{ id: string; tools: string[]; x: number; y: number; isDocked: 'left' | 'right' | 'top' | null }>>(() => {
     const saved = localStorage.getItem('favoritePanels');
@@ -483,7 +485,7 @@ export default function App() {
     }
     return [
       { id: "fav-left", tools: ["Orto", "Tecnigrafo", "Polilinea"], x: 10, y: 150, isDocked: 'left' },
-      { id: "fav-right", tools: ["Trim", "Eraser", "Cancella", "Move", "Copy", "Join"], x: 1200, y: 150, isDocked: 'right' },
+      { id: "fav-right", tools: ["SNAP", "Line", "Trim", "Eraser", "Cancella", "Move", "Copy", "Join"], x: 1200, y: 150, isDocked: 'right' },
       { id: "fav-top", tools: ["Specchio", "Hatch", "Raccordo"], x: 450, y: 80, isDocked: 'top' }
     ];
   });
@@ -618,6 +620,7 @@ const MASONRY_TYPES = [
   const [activePreviewTavolaId, setActivePreviewTavolaId] = useState<string | null>(null);
   const [rulerStyle, setRulerStyle] = useState<"tecnigrafo" | "crosshair">(() => (localStorage.getItem('rulerStyle') as any) || "crosshair");
   const [orthoMode, setOrthoMode] = useState(() => localStorage.getItem('orthoMode') === 'true');
+  const [isSnapActive, setIsSnapActive] = useState(() => localStorage.getItem('isSnapActive') !== 'false'); // Default to true
   const [isTecnigrafoActive, setIsTecnigrafoActive] = useState(false);
   const [isContinuousMode, setIsContinuousMode] = useState(false);
   const [isShiftOrFDown, setIsShiftOrFDown] = useState(false);
@@ -628,6 +631,23 @@ const MASONRY_TYPES = [
   const [showProperties, setShowProperties] = useState(() => localStorage.getItem('showProperties') === 'true');
   const [selectedCategory, setSelectedCategory] = useState(() => localStorage.getItem('selectedCategory') || "Disegno");
   const [isPrezzarioOpen, setIsPrezzarioOpen] = useState(true);
+  const [isPriceListImporterOpen, setIsPriceListImporterOpen] = useState(false);
+  const [isAnalyzerOpen, setIsAnalyzerOpen] = useState(false);
+  const [dynamicPrezzario, setDynamicPrezzario] = useState<PrezzarioItem[]>(() => {
+    const saved = localStorage.getItem('bim_custom_prezzario');
+    const custom = saved ? JSON.parse(saved) : [];
+    return [...PREZZARIO_GECOLA, ...custom];
+  });
+
+  const handleImportPriceList = (newItems: PrezzarioItem[]) => {
+    const saved = localStorage.getItem('bim_custom_prezzario');
+    const existingCustom = saved ? JSON.parse(saved) : [];
+    const updatedCustom = [...existingCustom, ...newItems];
+    localStorage.setItem('bim_custom_prezzario', JSON.stringify(updatedCustom));
+    setDynamicPrezzario([...PREZZARIO_GECOLA, ...updatedCustom]);
+    setShortcutToast(`Importate ${newItems.length} voci nel catalogo! 📖`);
+    setTimeout(() => setShortcutToast(null), 3000);
+  };
 
   // File System State
   const [fileHandle, setFileHandle] = useState<any>(null);
@@ -766,6 +786,10 @@ const MASONRY_TYPES = [
   useEffect(() => {
     localStorage.setItem('orthoMode', orthoMode.toString());
   }, [orthoMode]);
+
+  useEffect(() => {
+    localStorage.setItem('isSnapActive', isSnapActive.toString());
+  }, [isSnapActive]);
 
   useEffect(() => {
     localStorage.setItem('showProperties', showProperties.toString());
@@ -990,10 +1014,12 @@ const MASONRY_TYPES = [
     objectWidth?: number;
     hatch: 'SOLID' | 'ANSI31' | 'CROSS' | 'NONE';
     bimRenderMode?: 'solid' | 'transparent' | 'parete_verticale' | 'parete_orizzontale';
+    renderingStyle?: BIMRenderingStyle;
     duplicate?: boolean;
     overlay?: boolean;
     sideSign?: number;
     duplicateConnectedFinishes?: boolean;
+    cost_5d?: any;
   }) => {
     if (!detectedAreaPoints) return;
 
@@ -1008,8 +1034,12 @@ const MASONRY_TYPES = [
               bimFamilyId: data.familyId,
               bimAreaType: data.familyId,
               bimSubFamily: data.subFamily || data.familyId,
-              bimData: undefined,
-              bimName: data.name,
+              bimData: {
+                ...((e as any).bimData || {}),
+                renderingStyle: data.renderingStyle
+              },
+              renderingStyle: data.renderingStyle,
+              bimName: data.cost_5d?.prezzarioDescrizione || data.name,
               backgroundColor: data.color,
               color: data.color,
               bimHatchPattern: data.hatch as any,
@@ -1021,7 +1051,12 @@ const MASONRY_TYPES = [
               bimZPlane: data.zPlane,
               bimZElevation: data.zElevation,
               bimRenderMode: data.bimRenderMode || 'solid',
-              sideSign: data.sideSign !== undefined ? data.sideSign : (e as any).sideSign
+              sideSign: data.sideSign !== undefined ? data.sideSign : (e as any).sideSign,
+              cost_5d: data.cost_5d, // Save cost data
+              prezzarioCodice: data.cost_5d?.prezzarioCodice,
+              prezzarioDescrizione: data.cost_5d?.prezzarioDescrizione,
+              prezzarioUnita: data.cost_5d?.prezzarioUnita,
+              prezzarioPrezzo: data.cost_5d?.prezzarioPrezzo
             };
           }
           return e;
@@ -1075,7 +1110,7 @@ const MASONRY_TYPES = [
           bimAreaType: data.familyId,
           bimSubFamily: data.subFamily || data.familyId,
           bimData: undefined,
-          bimName: data.name,
+          bimName: data.cost_5d?.prezzarioDescrizione || data.name,
           backgroundColor: data.color,
           color: data.color,
           bimHatchPattern: data.hatch as any,
@@ -1088,6 +1123,11 @@ const MASONRY_TYPES = [
           bimZElevation: data.zElevation + (data.overlay ? 0.1 : 0),
           bimRenderMode: data.bimRenderMode || 'solid',
           sideSign: data.sideSign !== undefined ? data.sideSign : (original as any).sideSign,
+          cost_5d: data.cost_5d, // Save cost data
+          prezzarioCodice: data.cost_5d?.prezzarioCodice,
+          prezzarioDescrizione: data.cost_5d?.prezzarioDescrizione,
+          prezzarioUnita: data.cost_5d?.prezzarioUnita,
+          prezzarioPrezzo: data.cost_5d?.prezzarioPrezzo,
           timestamp: Date.now(),
           isOverlay: data.overlay,
           // Shift to imply "successive" position
@@ -1201,7 +1241,7 @@ const MASONRY_TYPES = [
         bimFamilyId: data.familyId,
         bimAreaType: data.familyId,
         bimSubFamily: data.subFamily || data.familyId,
-        bimName: polys.length > 1 ? `${data.name} ${idx + 1}` : data.name,
+        bimName: data.cost_5d?.prezzarioDescrizione || (polys.length > 1 ? `${data.name} ${idx + 1}` : data.name),
         backgroundColor: data.color,
         bimHatchPattern: data.hatch as any,
         pattern: data.hatch === 'NONE' ? 'SOLID' : data.hatch as any,
@@ -1212,7 +1252,13 @@ const MASONRY_TYPES = [
         bimZPlane: data.zPlane,
         bimZElevation: data.zElevation,
         bimRenderMode: data.bimRenderMode || 'solid',
+        renderingStyle: data.renderingStyle || 'none',
         sideSign: data.sideSign !== undefined ? data.sideSign : (poly.sideSign !== undefined ? poly.sideSign : 1),
+        cost_5d: data.cost_5d, // Save cost data
+        prezzarioCodice: data.cost_5d?.prezzarioCodice,
+        prezzarioDescrizione: data.cost_5d?.prezzarioDescrizione,
+        prezzarioUnita: data.cost_5d?.prezzarioUnita,
+        prezzarioPrezzo: data.cost_5d?.prezzarioPrezzo,
         isFaceAligned: poly.isFaceAligned,
         rotationX: poly.rotationX !== undefined ? poly.rotationX : 0,
         rotationY: poly.rotationY !== undefined ? poly.rotationY : 0,
@@ -1843,6 +1889,12 @@ const MASONRY_TYPES = [
       }
     } else if (tool === "Orto") {
       setOrthoMode(prev => !prev);
+    } else if (tool === "SNAP") {
+      const next = !isSnapActive;
+      setIsSnapActive(next);
+      setOrthoMode(next);
+      setShortcutToast(next ? "SNAP & ORTO: Attivati 🟢" : "SNAP & ORTO: Disattivati 🔴");
+      setTimeout(() => setShortcutToast(null), 2000);
     } else if (tool === "Tecnigrafo") {
       const next = !isTecnigrafoActive;
       setIsTecnigrafoActive(next);
@@ -1914,6 +1966,7 @@ const MASONRY_TYPES = [
       name: "Disegno",
       icon: DraftingCompass,
       tools: [
+        { name: "SNAP", icon: Target },
         { name: "Line", icon: Minus },
         { name: "Filo", icon: FiloIcon },
         { name: "Muro", icon: Building },
@@ -1924,7 +1977,7 @@ const MASONRY_TYPES = [
         { name: "Testo", icon: Type },
         { name: "Trim", icon: Scissors },
         { name: "Allunga", icon: AllungaIcon },
-        { name: "Eraser", icon: Eraser },
+        { name: "Gomma", icon: Sparkles },
         { name: "Parallel", icon: ParallelIcon },
         { name: "RotateScale", icon: RotateScaleIcon },
         { name: "CopiaVideo", icon: Monitor },
@@ -2977,6 +3030,7 @@ const MASONRY_TYPES = [
             setEraserIntensity={setEraserIntensity}
             rulerStyle={rulerStyle}
             orthoMode={orthoMode}
+            snapEnabled={isSnapActive}
             setOrthoMode={setOrthoMode}
             isContinuousMode={isContinuousMode}
             cancelTrigger={cancelTrigger}
@@ -3415,10 +3469,19 @@ const MASONRY_TYPES = [
                   objectWidth: (e as any).bimWidth || (e as any).width,
                   hatch: (e as any).bimHatchPattern || 'SOLID',
                   bimRenderMode: (e as any).bimRenderMode || 'solid',
+                  renderingStyle: (e as any).renderingStyle || 'none',
                   sideSign: (e as any).sideSign,
                   parentEntityId: (e as any).parentEntityId,
                   normalY: (e as any).normalY,
-                  isHorizontal: (e as any).isHorizontal
+                  isHorizontal: (e as any).isHorizontal,
+                  cost_5d: (e as any).cost_5d || {
+                    prezzarioCodice: (e as any).prezzarioCodice,
+                    prezzarioDescrizione: (e as any).prezzarioDescrizione,
+                    prezzarioUnita: (e as any).prezzarioUnita,
+                    prezzarioPrezzo: (e as any).prezzarioPrezzo,
+                    incidenzaManodopera: (e as any).incidenzaManodopera || 0,
+                    prezzarioNome: (e as any).prezzarioNome
+                  }
                 };
               })() : (detectedAreaPoints?.from3DFace ? (() => {
                 const parentId = detectedAreaPoints.parentEntityId;
@@ -3468,6 +3531,7 @@ const MASONRY_TYPES = [
               onToggleMultiAreaMode={setIsMultiAreaMode}
               entities={entities}
               editingEntityId={editingEntityId}
+              prezzarioItems={dynamicPrezzario}
             />
           )}
 
@@ -3629,6 +3693,46 @@ const MASONRY_TYPES = [
               }}
             />
           )}
+
+          <BIMDataAnalyzerDialog 
+            isOpen={isAnalyzerOpen}
+            onClose={() => setIsAnalyzerOpen(false)}
+            onAnalyzeResult={(data) => {
+              // Extract articles from Gecola format or generic array
+              let articlesToImport: PrezzarioItem[] = [];
+              if (data.gecolaData && data.gecolaData.articles) {
+                articlesToImport = data.gecolaData.articles.map((art: any) => ({
+                  codice: art.code || art.codice,
+                  descrizione: art.description || art.descrizione,
+                  unita: art.unit || art.unita,
+                  prezzo: art.unitPrice || art.prezzo,
+                  categoria: art.categoryCode || art.categoria || "Importato",
+                  original: art
+                }));
+              } else if (Array.isArray(data)) {
+                articlesToImport = data.map((art: any) => ({
+                  codice: art.code || art.codice || "GENERIC",
+                  descrizione: art.description || art.descrizione || art.label,
+                  unita: art.unit || art.unita || "u",
+                  prezzo: art.unitPrice || art.prezzo || 0,
+                  categoria: art.category || "Importato",
+                  original: art
+                }));
+              }
+
+              if (articlesToImport.length > 0) {
+                setDynamicPrezzario(prev => {
+                  const combined = [...prev, ...articlesToImport];
+                  // Basic deduplication by code
+                  const unique = Array.from(new Map(combined.map(item => [item.codice + item.descrizione, item])).values());
+                  localStorage.setItem('bim_custom_prezzario', JSON.stringify(unique));
+                  return unique;
+                });
+                setShortcutToast(`${articlesToImport.length} voci caricate nel prezzario! 🚀`);
+                setTimeout(() => setShortcutToast(null), 3000);
+              }
+            }}
+          />
           
           {doubleClickedTavolaId && !pdfPreviewUrl && (
             <div className="absolute inset-0 bg-black/20 flex items-center justify-center p-4 z-50 pointer-events-auto">
@@ -4004,6 +4108,7 @@ const MASONRY_TYPES = [
                       const isToolActive = 
                         selectedTool === toolName ||
                         (toolName === "Orto" && effectiveOrthoMode) ||
+                        (toolName === "SNAP" && isSnapActive) ||
                         (toolName === "Tecnigrafo" && isTecnigrafoActive) ||
                         (toolName === "Polilinea" && isContinuousMode);
 
@@ -4385,6 +4490,7 @@ const MASONRY_TYPES = [
                   onOpenFiniture={() => setIsBIMFinitureOpen(true)}
                   onEditArea={handleEditBIMElement}
                   onOpen3DView={() => setIs3DViewOpen(true)}
+                  onOpenAnalyzer={() => setIsAnalyzerOpen(true)}
                 />
               ) : selectedTool === 'Muro' ? (
                 <div className="space-y-4">
@@ -5672,6 +5778,19 @@ const MASONRY_TYPES = [
                           <p className="text-[10px] font-black text-neutral-400 uppercase tracking-widest">Tipo di Gomma Attiva</p>
                           <div className="space-y-2">
                             <button
+                              onClick={() => setEraserType('miracolo')}
+                              className={`w-full p-2.5 rounded-xl border text-left cursor-pointer transition-all flex flex-col gap-1 ${eraserType === 'miracolo' ? 'bg-white/10 border-indigo-400 ring-2 ring-indigo-100' : 'bg-white border-neutral-200 hover:bg-neutral-50 shadow-xs'}`}
+                            >
+                              <div className="flex items-center gap-2">
+                                <span className="w-5 h-5 rounded-full bg-white border border-neutral-300 shadow-md flex items-center justify-center">
+                                  <Sparkles size={12} className="text-indigo-500" />
+                                </span>
+                                <span className={`text-[10px] font-black uppercase tracking-wider ${eraserType === 'miracolo' ? 'text-indigo-800' : 'text-neutral-500'}`}>Pulisci Eccedenze</span>
+                              </div>
+                              <span className="text-[9px] text-neutral-400 leading-normal">Elimina automaticamente i segmenti che eccedono rispetto alle intersezioni.</span>
+                            </button>
+
+                            <button
                               onClick={() => setEraserType('pencil')}
                               className={`w-full p-2.5 rounded-xl border text-left cursor-pointer transition-all flex flex-col gap-1 ${eraserType === 'pencil' ? 'bg-neutral-100 border-neutral-400 ring-2 ring-neutral-200' : 'bg-white border-neutral-200 hover:bg-neutral-50 shadow-xs'}`}
                             >
@@ -6762,6 +6881,14 @@ const MASONRY_TYPES = [
         onClose={() => setIsPrezzarioOpen(false)}
         setShortcutToast={setShortcutToast}
         floors={floors}
+        prezzarioItems={dynamicPrezzario}
+        onOpenImporter={() => setIsPriceListImporterOpen(true)}
+      />
+
+      <PriceListImporter 
+        isOpen={isPriceListImporterOpen}
+        onClose={() => setIsPriceListImporterOpen(false)}
+        onImport={handleImportPriceList}
       />
 
       {/* BIM Dialog Submenus were removed and redesigned in the inline top bars for higher efficiency */}

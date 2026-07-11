@@ -1,10 +1,4 @@
-export interface PrezzarioItem {
-  codice: string;
-  descrizione: string;
-  unita: string;
-  prezzo: number;
-  categoria: string;
-}
+import { PrezzarioItem } from '../types';
 
 export const PREZZARIO_GECOLA: PrezzarioItem[] = [
   {

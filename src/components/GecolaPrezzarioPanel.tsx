@@ -1,6 +1,6 @@
 import React, { useState, useMemo } from "react";
-import { PREZZARIO_GECOLA, PrezzarioItem } from "../data/prezzario";
-import { DimensionEntity, Entity, Floor } from "../types";
+import { PREZZARIO_GECOLA } from "../data/prezzario";
+import { DimensionEntity, Entity, Floor, PrezzarioItem } from "../types";
 import { computeMetrics } from "../utils/bimMetrics";
 import { BIM_FAMILIES } from "../data/bimFamilies";
 import { 
@@ -17,7 +17,9 @@ import {
   ChevronDown,
   ChevronUp,
   FileSpreadsheet,
-  AlertCircle
+  AlertCircle,
+  FileJson,
+  Save
 } from "lucide-react";
 
 // Converts numbers to Italian word format (e.g. 4533.28 -> Quattromilacinquecentotrentatre/28)
@@ -135,6 +137,8 @@ interface GecolaPrezzarioPanelProps {
   onClose: () => void;
   setShortcutToast: (msg: string | null) => void;
   floors?: Floor[];
+  prezzarioItems?: PrezzarioItem[];
+  onOpenImporter?: () => void;
 }
 
 export const GecolaPrezzarioPanel: React.FC<GecolaPrezzarioPanelProps> = ({
@@ -145,7 +149,9 @@ export const GecolaPrezzarioPanel: React.FC<GecolaPrezzarioPanelProps> = ({
   isOpen,
   onClose,
   setShortcutToast,
-  floors = []
+  floors = [],
+  prezzarioItems = PREZZARIO_GECOLA,
+  onOpenImporter
 }) => {
   const [activeTab, setActiveTab] = useState<"prezzario" | "computo">("prezzario");
   const [searchQuery, setSearchQuery] = useState("");
@@ -167,10 +173,10 @@ export const GecolaPrezzarioPanel: React.FC<GecolaPrezzarioPanelProps> = ({
   const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
 
   // Filter categories
-  const categories = ["Tutte", ...Array.from(new Set(PREZZARIO_GECOLA.map(item => item.categoria)))];
+  const categories = ["Tutte", ...Array.from(new Set(prezzarioItems.map(item => item.categoria)))];
 
   // Filter price list items
-  const filteredPrezzario = PREZZARIO_GECOLA.filter(item => {
+  const filteredPrezzario = prezzarioItems.filter(item => {
     const matchesSearch = item.codice.toLowerCase().includes(searchQuery.toLowerCase()) || 
                           item.descrizione.toLowerCase().includes(searchQuery.toLowerCase());
     const matchesCategory = selectedCategory === "Tutte" || item.categoria === selectedCategory;
@@ -269,7 +275,7 @@ export const GecolaPrezzarioPanel: React.FC<GecolaPrezzarioPanelProps> = ({
           label = (e as any).bimName || "Muratura Portante";
           defaultCode = "RM.OP04.010";
           defaultDesc = "Muratura portante eseguita in blocchi di laterizio termico o mattoni pieni, allettata con malta cementizia, compreso ponteggi e finiture.";
-          defaultUm = "mc"; // MC - volume-based with 3 dimensions!
+          defaultUm = "mc"; 
           defaultPrice = 150.00;
           qty = metrics.volumeMc || (metrics.perimetroM * (metrics.spessoreCm || 30)/100 * metrics.altezzaM) || 5.0;
         } else if (familyLower.includes("muro") || familyLower.includes("parete") || familyLower.includes("tramezz") || (e as any).bimType === "wall") {
@@ -283,7 +289,7 @@ export const GecolaPrezzarioPanel: React.FC<GecolaPrezzarioPanelProps> = ({
           label = (e as any).bimName || "Massetto Sottofondo";
           defaultCode = "NP.OP08.015b";
           defaultDesc = "Massetto autolivellante a base cementizia per interni, tirato in piano, spessore medio 5 cm, idoneo per posa di pavimenti.";
-          defaultUm = "mq"; // MQ - horizontal surface with 2 dimensions!
+          defaultUm = "mq";
           defaultPrice = 24.50;
           qty = metrics.areaMq || 15;
         } else if (familyLower.includes("intonac")) {
@@ -292,7 +298,7 @@ export const GecolaPrezzarioPanel: React.FC<GecolaPrezzarioPanelProps> = ({
           defaultDesc = "Intonaco rustico e di finitura tirato in piano con malta bastarda o premiscelata per interni, spessore medio 1.5 cm.";
           defaultUm = "mq";
           defaultPrice = 22.50;
-          qty = metrics.perimetroM * metrics.altezzaM || metrics.areaMq || 10;
+          qty = (metrics.perimetroM * metrics.altezzaM) || metrics.areaMq || 10;
         } else if (familyLower.includes("pittur") || familyLower.includes("tintegg") || familyLower.includes("pittura")) {
           label = (e as any).bimName || "Tinteggiatura";
           defaultCode = "NP.OP05.001";
@@ -405,13 +411,30 @@ export const GecolaPrezzarioPanel: React.FC<GecolaPrezzarioPanelProps> = ({
           defaultUm = "mq";
           defaultPrice = 45.00;
           qty = metrics.areaMq || 15;
+        } else if (familyLower.includes("ponteggio")) {
+          label = (e as any).bimName || "Allestimento Ponteggio";
+          defaultCode = "NP.OP14.100";
+          defaultDesc = "Allestimento e noleggio di ponteggio metallico fisso a telai prefabbricati per lavori di facciata, compreso montaggio, smontaggio e ancoraggi di sicurezza.";
+          defaultUm = "mq";
+          defaultPrice = 35.00;
+          qty = metrics.perimetroM * (metrics.altezzaM || 12.0) || 45.0;
+        } else if (familyLower.includes("mantovana")) {
+          label = (e as any).bimName || "Mantovana di Sicurezza (Parasassi)";
+          defaultCode = "NP.OP14.110";
+          defaultDesc = "Fornitura, posa in opera e smontaggio di mantovana di sicurezza parasassi (catch fan) in lamiera zincata ondulata sporgente, completa di staffe metalliche di sostegno ancorate al ponteggio.";
+          defaultUm = "m";
+          defaultPrice = 28.50;
+          qty = metrics.perimetroM || 15.0;
         }
 
         // Overrides if set explicitly on entity
-        const code = (e as any).prezzarioCodice || defaultCode;
-        const desc = (e as any).prezzarioDescrizione || defaultDesc;
-        const um = ((e as any).prezzarioUnita || defaultUm).toLowerCase();
-        const price = (e as any).prezzarioPrezzo !== undefined ? (e as any).prezzarioPrezzo : defaultPrice;
+        const code = (e as any).prezzarioCodice || (e as any).cost_5d?.prezzarioCodice || defaultCode;
+        const desc = (e as any).prezzarioDescrizione || (e as any).cost_5d?.prezzarioDescrizione || defaultDesc;
+        const um = ((e as any).prezzarioUnita || (e as any).cost_5d?.prezzarioUnita || defaultUm).toLowerCase();
+        const price = (e as any).prezzarioPrezzo !== undefined ? (e as any).prezzarioPrezzo : ((e as any).cost_5d?.prezzarioPrezzo !== undefined ? (e as any).cost_5d?.prezzarioPrezzo : defaultPrice);
+        
+        // CRITICAL: If we have prezzario data, prioritize it for labeling
+        const effectiveLabel = (e as any).prezzarioDescrizione || (e as any).cost_5d?.prezzarioDescrizione || (e as any).bimName || label;
         
         // Handle custom multiplier/factor if specified
         const mult = (e as any).moltiplicatore ?? 1.0;
@@ -583,7 +606,7 @@ export const GecolaPrezzarioPanel: React.FC<GecolaPrezzarioPanelProps> = ({
         let partiUguali = mult;
 
         // Custom label generation for finishes (finiture)
-        let finalLabel = label;
+        let finalLabel = effectiveLabel;
         const isFinishElement = (ent: any) => {
           const famId = ent.bimFamilyId || ent.bimAreaType || ent.bimFamily || "";
           const famIdLower = famId.toLowerCase();
@@ -729,7 +752,9 @@ export const GecolaPrezzarioPanel: React.FC<GecolaPrezzarioPanelProps> = ({
 
   // Handle Drag Start from Price List
   const handleDragStart = (e: React.DragEvent, item: PrezzarioItem) => {
-    e.dataTransfer.setData("text/plain", JSON.stringify(item));
+    const dataString = JSON.stringify(item);
+    e.dataTransfer.setData("application/json", dataString);
+    e.dataTransfer.setData("text/plain", dataString);
     e.dataTransfer.effectAllowed = "copy";
   };
 
@@ -749,8 +774,18 @@ export const GecolaPrezzarioPanel: React.FC<GecolaPrezzarioPanelProps> = ({
           prezzarioDescrizione: item.descrizione,
           prezzarioUnita: item.unita,
           prezzarioPrezzo: item.prezzo,
-          includeInComputo: true
-        });
+          bimName: item.descrizione,
+          name: item.descrizione,
+          includeInComputo: true,
+          cost_5d: {
+            prezzarioCodice: item.codice,
+            prezzarioDescrizione: item.descrizione,
+            prezzarioUnita: item.unita,
+            prezzarioPrezzo: item.prezzo,
+            incidenzaManodopera: item.incidenzaManodopera || 0,
+            prezzarioNome: item.prezzario || ""
+          }
+        } as any);
         setShortcutToast(`Voce ${item.codice} associata con successo! 📋`);
         setTimeout(() => setShortcutToast(null), 2500);
       }
@@ -781,8 +816,18 @@ export const GecolaPrezzarioPanel: React.FC<GecolaPrezzarioPanelProps> = ({
             prezzarioDescrizione: item.descrizione,
             prezzarioUnita: item.unita,
             prezzarioPrezzo: item.prezzo,
-            includeInComputo: true
-          });
+            bimName: item.descrizione,
+            name: item.descrizione,
+            includeInComputo: true,
+            cost_5d: {
+              prezzarioCodice: item.codice,
+              prezzarioDescrizione: item.descrizione,
+              prezzarioUnita: item.unita,
+              prezzarioPrezzo: item.prezzo,
+              incidenzaManodopera: item.incidenzaManodopera || 0,
+              prezzarioNome: item.prezzario || ""
+            }
+          } as any);
         });
         setShortcutToast(`Aggiornato gruppo ${group.codice} con nuova voce ${item.codice}! 📋`);
         setTimeout(() => setShortcutToast(null), 2500);
@@ -835,6 +880,105 @@ export const GecolaPrezzarioPanel: React.FC<GecolaPrezzarioPanelProps> = ({
     link.click();
     
     setShortcutToast("Computo Metrico esportato con successo! 📥");
+    setTimeout(() => setShortcutToast(null), 2500);
+  };
+
+  // Export Computo to JSON format requested by the user
+  const handleExportComputoJSON = () => {
+    const activeGroups = groupedComputoItems.filter(g => g.totaleQuantita > 0);
+    if (activeGroups.length === 0) {
+      setShortcutToast("Nessun elemento attivo nel computo!");
+      setTimeout(() => setShortcutToast(null), 2500);
+      return;
+    }
+
+    // Generate categories from unique category names found in the articles
+    const uniqueCategories = Array.from(new Set(activeGroups.map(g => {
+      // Find one of the subItems to get its original category if possible
+      const firstItem = g.subItems[0];
+      return (firstItem.original as any).categoria || "Opere Varie";
+    })));
+
+    const categories = uniqueCategories.map((cat, idx) => ({
+      id: `cat_${(idx + 1).toString().padStart(2, '0')}`,
+      code: `WBS.${(idx + 1).toString().padStart(2, '0')}`,
+      name: cat,
+      isEnabled: true,
+      isLocked: false,
+      type: "work",
+      soaCategory: "OG1" // Default
+    }));
+
+    const articles = activeGroups.map((group, idx) => {
+      // Find category code for this article
+      const itemCat = (group.subItems[0].original as any).categoria || "Opere Varie";
+      const catObj = categories.find(c => c.name === itemCat);
+      
+      const measurements = group.subItems
+        .filter(sub => sub.includeInComputo)
+        .map(sub => ({
+          id: sub.id,
+          description: sub.label,
+          type: "positive",
+          parts: sub.partiUguali || 1,
+          length: sub.lunghezza || undefined,
+          width: sub.larghezza || undefined,
+          height: sub.altezza || undefined
+        }));
+
+      return {
+        id: `art_${idx}_${Date.now()}`,
+        categoryCode: catObj ? catObj.code : "WBS.01",
+        code: group.codice,
+        priceListSource: prezzarioName,
+        description: group.descrizione,
+        unit: group.unita,
+        unitPrice: group.prezzo,
+        laborRate: (group.subItems[0].original as any).incidenzaManodopera || 0,
+        soaCategory: (group.subItems[0].original as any).soaCategory || "OG1",
+        measurements: measurements,
+        quantity: group.totaleQuantita,
+        displayMode: 0
+      };
+    });
+
+    const exportData = {
+      gecolaData: {
+        projectInfo: {
+          title: projectName,
+          client: committente,
+          designer: progettista,
+          location: localita,
+          date: computoDate,
+          priceList: prezzarioName,
+          region: "Lombardia", // Default
+          year: new Date().getFullYear().toString(),
+          vatRate: 10,
+          safetyRate: 3.5,
+          fontSizeTitle: 28,
+          fontSizeClient: 15,
+          fontSizeTotals: 22,
+          tariffColumnWidth: 135,
+          fontSizeMeasurements: 12,
+          fontSizeWbsSidebar: 14,
+          showLaborIncidenceInSummary: true,
+          descriptionLength: "full"
+        },
+        categories: categories,
+        articles: articles,
+        analyses: []
+      },
+      exportedAt: new Date().toISOString(),
+      app: "GeCoLa Cloud"
+    };
+
+    const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: "application/json;charset=utf-8" });
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(blob);
+    link.download = `Computo_Gecola_${Date.now()}.json`;
+    link.click();
+    
+    setShortcutToast("Computo JSON esportato con successo! 📥");
     setTimeout(() => setShortcutToast(null), 2500);
   };
 
@@ -964,6 +1108,15 @@ export const GecolaPrezzarioPanel: React.FC<GecolaPrezzarioPanelProps> = ({
                 {searchQuery && (
                   <button onClick={() => setSearchQuery("")} className="text-neutral-500 hover:text-neutral-300">
                     <X size={12} />
+                  </button>
+                )}
+                {onOpenImporter && (
+                  <button 
+                    onClick={onOpenImporter}
+                    className="p-1.5 bg-indigo-500/10 hover:bg-indigo-500/20 text-indigo-400 rounded-md transition-colors border border-indigo-500/20"
+                    title="Importa Prezzario Esterno"
+                  >
+                    <Plus size={12} />
                   </button>
                 )}
               </div>
@@ -1186,6 +1339,14 @@ export const GecolaPrezzarioPanel: React.FC<GecolaPrezzarioPanelProps> = ({
                   >
                     <Download size={10} />
                     TXT
+                  </button>
+                  <button
+                    onClick={handleExportComputoJSON}
+                    className="flex items-center gap-1 bg-indigo-600 hover:bg-indigo-500 text-white font-bold px-2 py-1.5 rounded-lg border border-indigo-400/30 transition-all shadow-lg shadow-indigo-500/10 text-[9px] font-sans"
+                    title="Salva Computo per Software Professionale (JSON)"
+                  >
+                    <FileJson size={10} />
+                    JSON
                   </button>
                   <button
                     onClick={() => setShowPrimusModal(true)}

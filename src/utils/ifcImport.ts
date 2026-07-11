@@ -486,23 +486,27 @@ export function parseIFCContent(content: string): Entity[] {
   let hasPoints = false;
   
   importedEntities.forEach(ent => {
-    ent.points.forEach(p => {
-      if (p.x < minX) minX = p.x;
-      if (p.y < minY) minY = p.y;
-      if (p.x > maxX) maxX = p.x;
-      if (p.y > maxY) maxY = p.y;
-      hasPoints = true;
-    });
+    if ((ent as any).points) {
+      (ent as any).points.forEach((p: any) => {
+        if (p.x < minX) minX = p.x;
+        if (p.y < minY) minY = p.y;
+        if (p.x > maxX) maxX = p.x;
+        if (p.y > maxY) maxY = p.y;
+        hasPoints = true;
+      });
+    }
   });
 
   if (hasPoints) {
     const cx = (minX + maxX) / 2;
     const cy = (minY + maxY) / 2;
     importedEntities.forEach(ent => {
-      ent.points = ent.points.map(p => ({
-        x: p.x - cx,
-        y: p.y - cy
-      }));
+      if ((ent as any).points) {
+        (ent as any).points = (ent as any).points.map((p: any) => ({
+          x: p.x - cx,
+          y: p.y - cy
+        }));
+      }
     });
   }
 

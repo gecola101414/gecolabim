@@ -5,7 +5,7 @@ import * as THREE from 'three';
  * Procedural texture generator for realistic BIM materials
  */
 export const createBIMMaterialTexture = (
-  type: 'concrete' | 'masonry' | 'partition' | 'plaster' | 'plaster_rustic' | 'stone' | 'insulation' | 'tiles' | 'casseri',
+  type: 'concrete' | 'masonry' | 'partition' | 'plaster' | 'plaster_rustic' | 'stone' | 'insulation' | 'tiles' | 'casseri' | 'solaio_pignatte',
   variant: 'side' | 'top' = 'side',
   color?: string,
   orientation: 'horizontal' | 'vertical' = 'horizontal'
@@ -16,7 +16,95 @@ export const createBIMMaterialTexture = (
   canvas.height = size;
   const ctx = canvas.getContext('2d')!;
 
-  if (type === 'concrete') {
+  if (type === 'solaio_pignatte') {
+    if (variant === 'top') {
+        // Concrete look (top of the slab)
+        ctx.fillStyle = '#94a3b8';
+        ctx.fillRect(0, 0, size, size);
+        
+        // Add some concrete grain/noise
+        ctx.fillStyle = 'rgba(255,255,255,0.07)';
+        for (let i = 0; i < 2000; i++) {
+          const rx = Math.random() * size;
+          const ry = Math.random() * size;
+          const rsize = 1 + Math.random() * 2;
+          ctx.fillRect(rx, ry, rsize, rsize);
+        }
+        ctx.fillStyle = 'rgba(0,0,0,0.08)';
+        for (let i = 0; i < 2000; i++) {
+          const rx = Math.random() * size;
+          const ry = Math.random() * size;
+          const rsize = 1 + Math.random() * 2;
+          ctx.fillRect(rx, ry, rsize, rsize);
+        }
+    } else {
+        // Brick/Pignatte look - Represents exactly 60cm x 60cm block
+        // Terracotta brick background
+        ctx.fillStyle = '#D2B48C'; // Warm brick color
+        ctx.fillRect(0, 0, size, size);
+
+        // Add terracotta texture/noise
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.05)';
+        for (let i = 0; i < 1000; i++) {
+          const rx = Math.random() * size;
+          const ry = Math.random() * size;
+          ctx.fillRect(rx, ry, 1, 1);
+        }
+
+        // Draw the concrete beam (travetto) on the left side
+        // width of beam is 12cm, which is 12/60 * 512 = ~102 pixels
+        const beamWidth = 102;
+        ctx.fillStyle = '#9ca3af'; // Grey concrete
+        ctx.fillRect(0, 0, beamWidth, size);
+
+        // Concrete texture/grain for beam
+        ctx.fillStyle = 'rgba(255,255,255,0.1)';
+        for (let i = 0; i < 300; i++) {
+          const rx = Math.random() * beamWidth;
+          const ry = Math.random() * size;
+          ctx.fillRect(rx, ry, 1, 1);
+        }
+        ctx.fillStyle = 'rgba(0,0,0,0.1)';
+        for (let i = 0; i < 300; i++) {
+          const rx = Math.random() * beamWidth;
+          const ry = Math.random() * size;
+          ctx.fillRect(rx, ry, 1, 1);
+        }
+
+        // Dark separation border between beam and brick
+        ctx.strokeStyle = '#4b5563';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(beamWidth, 0);
+        ctx.lineTo(beamWidth, size);
+        ctx.stroke();
+
+        // Brick horizontal joint lines (every 25 cm, which is 25/60 * 512 = ~213 pixels)
+        ctx.strokeStyle = '#854d0e'; // Dark brown for brick lines
+        ctx.lineWidth = 3;
+        const brickHeight = 213;
+        for (let y = brickHeight; y < size; y += brickHeight) {
+            ctx.beginPath();
+            ctx.moveTo(beamWidth, y);
+            ctx.lineTo(size, y);
+            ctx.stroke();
+        }
+
+        // Internal brick stripes (pignatte have vertical ribs)
+        ctx.strokeStyle = 'rgba(133, 77, 14, 0.35)';
+        ctx.lineWidth = 1.5;
+        // Draw 3 internal ribs inside the brick area
+        const brickAreaWidth = size - beamWidth;
+        const ribSpacing = brickAreaWidth / 4;
+        for (let x = beamWidth + ribSpacing; x < size; x += ribSpacing) {
+            ctx.beginPath();
+            ctx.moveTo(x, 0);
+            ctx.lineTo(x, size);
+            ctx.stroke();
+        }
+    }
+  }
+  else if (type === 'concrete') {
     // Base color: Concrete Grey
     ctx.fillStyle = '#94a3b8';
     ctx.fillRect(0, 0, size, size);

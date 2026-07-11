@@ -32,5 +32,7 @@ export const BIM_FAMILIES: BIMFamily[] = [
   { id: 'solaio_interpiano', name: 'Solaio Interpiano', description: 'Solai in laterocemento o legno', defaultColor: '#1f2937', category: 'struttura' },
   { id: 'coperture', name: 'Coperture', description: 'Tetti a falde o piani', defaultColor: '#065f46', category: 'architettura' },
   { id: 'casseri_ca', name: 'Casseri C.A.', description: 'Casseri per cemento armato con tiranti', defaultColor: '#854d0e', category: 'struttura' },
-  { id: 'pavimenti_50x100', name: 'Pavimenti 50x100', description: 'Gres porcellanato formato 50x100 cm', defaultColor: '#92400e', category: 'finiture' }
+  { id: 'pavimenti_50x100', name: 'Pavimenti 50x100', description: 'Gres porcellanato formato 50x100 cm', defaultColor: '#92400e', category: 'finiture' },
+  { id: 'ponteggio', name: 'Ponteggio', description: 'Ponteggio metallico fisso a telai prefabbricati', defaultColor: '#ea580c', category: 'esterno' },
+  { id: 'mantovana', name: 'Mantovana di Sicurezza', description: 'Mantovana di sicurezza in lamiera metallica per ponteggi', defaultColor: '#1e293b', category: 'esterno' }
 ];

@@ -7,6 +7,8 @@ export interface InkPoint {
   alpha: number;
 }
 
+export type BIMRenderingStyle = 'none' | 'calcestruzzo' | 'mattone_portante' | 'tramezzo' | 'solaio_pignatte' | 'ponteggio' | 'mantovana';
+
 export interface BIMObject {
   guid: string;
   ifc_class: string;
@@ -18,10 +20,19 @@ export interface BIMObject {
   properties: {
     dimensions: Record<string, any>;
     analytical: Record<string, any>;
-    cost_5d: Record<string, any>;
+    cost_5d: {
+      prezzarioCodice?: string;
+      prezzarioDescrizione?: string;
+      prezzarioUnita?: string;
+      prezzarioPrezzo?: number;
+      incidenzaManodopera?: number;
+      prezzarioNome?: string;
+      [key: string]: any;
+    };
     facility_7d: Record<string, any>;
   };
   relations: string[];
+  renderingStyle?: BIMRenderingStyle;
 }
 
 export type EntityType = 'line' | 'circle' | 'rectangle' | 'dimension' | 'arc' | 'point' | 'text' | 'hatch' | 'image' | 'bim-csg' | 'camera';
@@ -51,6 +62,7 @@ export interface CADEntity {
   };
   // BIM-specific
   bimData?: BIMObject;
+  renderingStyle?: BIMRenderingStyle;
   isBIM?: boolean;
   isVisible?: boolean;  // BIM-specific visibility state
   isFrozen?: boolean;   // BIM-specific frozen state
@@ -97,6 +109,9 @@ export interface CADEntity {
   rotationX?: number;
   rotationY?: number;
   rotationZ?: number;
+  hasMantovana?: boolean;
+  mantovanaAngle?: number;
+  mantovanaHeight?: number;
 }
 
 export interface LineEntity extends CADEntity {
@@ -244,6 +259,16 @@ export interface Tavola {
   measuredCalibrationMm?: number;
   gridType?: 'none' | '1cm' | '10cm' | '100cm';
   gridColor?: string;
+}
+
+export interface PrezzarioItem {
+  codice: string;
+  descrizione: string;
+  unita: string;
+  prezzo: number;
+  categoria: string;
+  incidenzaManodopera?: number;
+  prezzario?: string;
 }
 
 export interface Floor {
