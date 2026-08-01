@@ -854,7 +854,7 @@ export function BIMWorkspacePanel({
 
         <div className="max-h-[350px] overflow-y-auto divide-y divide-slate-100">
           {Object.entries(elementsByFamily).length > 0 ? (
-            Object.entries(elementsByFamily).map(([family, members]) => {
+            (Object.entries(elementsByFamily) as [string, Entity[]][]).map(([family, members]) => {
               const isExpanded = expandedFamilies.has(family);
               const allVisible = members.every(m => (m as any).isVisible !== false);
               const allFrozen = members.every(m => (m as any).isFrozen === true);

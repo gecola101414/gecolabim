@@ -112,6 +112,8 @@ export interface CADEntity {
   hasMantovana?: boolean;
   mantovanaAngle?: number;
   mantovanaHeight?: number;
+  teloLato?: 'none' | 'esterno' | 'interno' | 'entrambi';
+  tavoleFermapiedeCount?: number;
 }
 
 export interface LineEntity extends CADEntity {
@@ -269,6 +271,7 @@ export interface PrezzarioItem {
   categoria: string;
   incidenzaManodopera?: number;
   prezzario?: string;
+  bimFamilyId?: string; // Links this item to a specific BIM Family's mini-listino
 }
 
 export interface Floor {

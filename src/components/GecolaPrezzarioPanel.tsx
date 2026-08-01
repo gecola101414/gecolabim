@@ -131,6 +131,7 @@ interface GroupedComputo {
 interface GecolaPrezzarioPanelProps {
   entities: Entity[];
   updateEntity: (id: string, updates: Partial<Entity>) => void;
+  updateEntitiesWithHistory?: (newEntities: React.SetStateAction<Entity[]>) => void;
   selectedId: string | null;
   setSelectedId: (id: string | null) => void;
   isOpen: boolean;
@@ -144,6 +145,7 @@ interface GecolaPrezzarioPanelProps {
 export const GecolaPrezzarioPanel: React.FC<GecolaPrezzarioPanelProps> = ({
   entities,
   updateEntity,
+  updateEntitiesWithHistory,
   selectedId,
   setSelectedId,
   isOpen,
@@ -157,6 +159,7 @@ export const GecolaPrezzarioPanel: React.FC<GecolaPrezzarioPanelProps> = ({
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedCategory, setSelectedCategory] = useState("Tutte");
   const [isMinimized, setIsMinimized] = useState(false);
+  const [isDraggingOverComputo, setIsDraggingOverComputo] = useState(false);
 
   // Primus Document configuration states
   const [showPrimusModal, setShowPrimusModal] = useState(false);
@@ -439,164 +442,182 @@ export const GecolaPrezzarioPanel: React.FC<GecolaPrezzarioPanelProps> = ({
         // Handle custom multiplier/factor if specified
         const mult = (e as any).moltiplicatore ?? 1.0;
 
+        const isManual = !!(e as any).isManualComputo;
+
         // DYNAMIC CALCULATION based on overridden unit 'um' and entity shape
         qty = 1.0;
-        let lunghezza: number | null = null;
-        let larghezza: number | null = null;
-        let altezza: number | null = null;
+        let lunghezza: number | null = isManual ? ((e as any).lunghezza ?? 1.0) : null;
+        let larghezza: number | null = isManual ? ((e as any).larghezza ?? null) : null;
+        let altezza: number | null = isManual ? ((e as any).altezza ?? null) : null;
 
-        const isWallFamily = familyLower.includes("muro") || familyLower.includes("parete") || familyLower.includes("tramezz") || familyLower.includes("cartongesso") || familyLower.includes("cappotto") || (e as any).bimType === "wall";
-        const isPlasterOrPaint = familyLower.includes("intonac") || familyLower.includes("pittur") || familyLower.includes("tintegg") || familyLower.includes("rivestiment");
-        const isColumnFamily = familyLower.includes("pilastri") || familyLower.includes("struttur") || (e as any).bimType === "column";
-        const isDoorOrWindow = (e as any).bimType === "door" || (e as any).bimType === "window";
-
-        // Bounding box for polygons/points if available
-        const points = (e as any).bimPoints || (e as any).points || [];
-        let bbWidth = 1.0;
-        let bbHeight = 1.0;
-        if (points && points.length > 0) {
-          const xs = points.map((p: any) => p.x);
-          const ys = points.map((p: any) => p.y);
-          const minX = Math.min(...xs);
-          const maxX = Math.max(...xs);
-          const minY = Math.min(...ys);
-          const maxY = Math.max(...ys);
-          bbWidth = Math.max(0.1, (maxX - minX) / 100);
-          bbHeight = Math.max(0.1, (maxY - minY) / 100);
-        }
-
-        if (um === "mc") {
-          // Volume
-          if (e.type === "line") {
-            const line = e as any;
-            const start = line.start || { x: 0, y: 0 };
-            const end = line.end || { x: 0, y: 0 };
-            lunghezza = Math.hypot(end.x - start.x, end.y - start.y) / 100;
-            larghezza = (metrics.spessoreCm || 15) / 100;
-            altezza = metrics.altezzaM || 2.70;
-            qty = lunghezza * larghezza * altezza;
-          } else if (e.type === "rectangle") {
-            const rect = e as any;
-            lunghezza = Math.abs(rect.p2.x - rect.p1.x) / 100;
-            larghezza = Math.abs(rect.p2.y - rect.p1.y) / 100;
-            altezza = metrics.altezzaM || 2.70;
-            qty = lunghezza * larghezza * altezza;
-          } else if (points && points.length > 2) {
-            lunghezza = bbWidth;
-            // set larghezza so that lunghezza * larghezza = areaMq
-            larghezza = metrics.areaMq / bbWidth;
-            altezza = metrics.altezzaM || 2.70;
-            qty = metrics.areaMq * altezza;
-          } else if (isDoorOrWindow) {
-            const wCm = (e as any).bimWidth || (e as any).width || 80;
-            const hCm = (e as any).bimWindowHeight || (e as any).bimHeight || ((e as any).bimType === 'door' ? 210 : 140);
-            lunghezza = wCm / 100;
-            larghezza = 0.15; // default wall depth
-            altezza = hCm / 100;
-            qty = lunghezza * larghezza * altezza;
+        if (isManual) {
+          const uLower = um.toLowerCase();
+          const L = lunghezza ?? 1.0;
+          const W = larghezza ?? 1.0;
+          const H = altezza ?? 1.0;
+          if (uLower === "mc") {
+            qty = L * W * H;
+          } else if (uLower === "mq") {
+            qty = L * (larghezza !== null ? W : (altezza !== null ? H : 1.0));
+          } else if (uLower === "m") {
+            qty = L;
           } else {
-            lunghezza = metrics.areaMq > 0 ? metrics.areaMq : 1.0;
-            larghezza = 1.0;
-            altezza = metrics.altezzaM || 2.70;
-            qty = metrics.volumeMc || (lunghezza * larghezza * altezza);
+            qty = 1.0;
           }
-        } else if (um === "mq") {
-          // Surface Area
-          // Check if it is a vertical surface (wall, plaster, paint) or horizontal surface (floor, ceiling, slab)
-          const isVertical = isWallFamily || isPlasterOrPaint;
-          
-          if (isVertical) {
-            // Vertical surface: needs exactly TWO measurements: length and height. width/depth is null.
-            if (e.type === "line") {
-              const line = e as any;
-              const start = line.start || { x: 0, y: 0 };
-              const end = line.end || { x: 0, y: 0 };
-              lunghezza = Math.hypot(end.x - start.x, end.y - start.y) / 100;
-              larghezza = null;
-              altezza = metrics.altezzaM || 2.70;
-              qty = lunghezza * altezza;
-            } else if (e.type === "rectangle") {
-              const rect = e as any;
-              // For a wall drawn as rectangle, the length is the longer dimension
-              const w = Math.abs(rect.p2.x - rect.p1.x) / 100;
-              const d = Math.abs(rect.p2.y - rect.p1.y) / 100;
-              lunghezza = Math.max(w, d);
-              larghezza = null;
-              altezza = metrics.altezzaM || 2.70;
-              qty = lunghezza * altezza;
-            } else if (points && points.length > 2) {
-              // Plaster or wall perimeter
-              lunghezza = metrics.perimetroM;
-              larghezza = null;
-              altezza = metrics.altezzaM || 2.70;
-              qty = lunghezza * altezza;
-            } else if (isDoorOrWindow) {
-              const wCm = (e as any).bimWidth || (e as any).width || 80;
-              const hCm = (e as any).bimWindowHeight || (e as any).bimHeight || ((e as any).bimType === 'door' ? 210 : 140);
-              lunghezza = wCm / 100;
-              larghezza = null;
-              altezza = hCm / 100;
-              qty = lunghezza * altezza;
-            } else {
-              lunghezza = metrics.perimetroM || 5.0;
-              larghezza = null;
-              altezza = metrics.altezzaM || 2.70;
-              qty = lunghezza * altezza;
-            }
-          } else {
-            // Horizontal surface: needs exactly TWO measurements: length and width. height is null.
+        } else {
+          const isWallFamily = familyLower.includes("muro") || familyLower.includes("parete") || familyLower.includes("tramezz") || familyLower.includes("cartongesso") || familyLower.includes("cappotto") || (e as any).bimType === "wall";
+          const isPlasterOrPaint = familyLower.includes("intonac") || familyLower.includes("pittur") || familyLower.includes("tintegg") || familyLower.includes("rivestiment");
+          const isColumnFamily = familyLower.includes("pilastri") || familyLower.includes("struttur") || (e as any).bimType === "column";
+          const isDoorOrWindow = (e as any).bimType === "door" || (e as any).bimType === "window";
+
+          // Bounding box for polygons/points if available
+          const points = (e as any).bimPoints || (e as any).points || [];
+          let bbWidth = 1.0;
+          let bbHeight = 1.0;
+          if (points && points.length > 0) {
+            const xs = points.map((p: any) => p.x);
+            const ys = points.map((p: any) => p.y);
+            const minX = Math.min(...xs);
+            const maxX = Math.max(...xs);
+            const minY = Math.min(...ys);
+            const maxY = Math.max(...ys);
+            bbWidth = Math.max(0.1, (maxX - minX) / 100);
+            bbHeight = Math.max(0.1, (maxY - minY) / 100);
+          }
+
+          if (um === "mc") {
+            // Volume
             if (e.type === "line") {
               const line = e as any;
               const start = line.start || { x: 0, y: 0 };
               const end = line.end || { x: 0, y: 0 };
               lunghezza = Math.hypot(end.x - start.x, end.y - start.y) / 100;
               larghezza = (metrics.spessoreCm || 15) / 100;
-              altezza = null;
-              qty = lunghezza * larghezza;
+              altezza = metrics.altezzaM || 2.70;
+              qty = lunghezza * larghezza * altezza;
             } else if (e.type === "rectangle") {
               const rect = e as any;
               lunghezza = Math.abs(rect.p2.x - rect.p1.x) / 100;
               larghezza = Math.abs(rect.p2.y - rect.p1.y) / 100;
-              altezza = null;
-              qty = lunghezza * larghezza;
+              altezza = metrics.altezzaM || 2.70;
+              qty = lunghezza * larghezza * altezza;
             } else if (points && points.length > 2) {
               lunghezza = bbWidth;
+              // set larghezza so that lunghezza * larghezza = areaMq
               larghezza = metrics.areaMq / bbWidth;
-              altezza = null;
-              qty = metrics.areaMq;
+              altezza = metrics.altezzaM || 2.70;
+              qty = metrics.areaMq * altezza;
             } else if (isDoorOrWindow) {
               const wCm = (e as any).bimWidth || (e as any).width || 80;
               const hCm = (e as any).bimWindowHeight || (e as any).bimHeight || ((e as any).bimType === 'door' ? 210 : 140);
               lunghezza = wCm / 100;
-              larghezza = hCm / 100;
-              altezza = null;
-              qty = lunghezza * larghezza;
+              larghezza = 0.15; // default wall depth
+              altezza = hCm / 100;
+              qty = lunghezza * larghezza * altezza;
             } else {
-              lunghezza = metrics.areaMq || 1.0;
-              larghezza = 1.00;
-              altezza = null;
-              qty = lunghezza;
+              lunghezza = metrics.areaMq > 0 ? metrics.areaMq : 1.0;
+              larghezza = 1.0;
+              altezza = metrics.altezzaM || 2.70;
+              qty = metrics.volumeMc || (lunghezza * larghezza * altezza);
             }
-          }
-        } else if (um === "m") {
-          // Length
-          if (e.type === "line") {
-            const line = e as any;
-            const start = line.start || { x: 0, y: 0 };
-            const end = line.end || { x: 0, y: 0 };
-            lunghezza = Math.hypot(end.x - start.x, end.y - start.y) / 100;
+          } else if (um === "mq") {
+            // Surface Area
+            // Check if it is a vertical surface (wall, plaster, paint) or horizontal surface (floor, ceiling, slab)
+            const isVertical = isWallFamily || isPlasterOrPaint || familyLower.includes("ponteggio") || familyLower.includes("parapett");
+            
+            if (isVertical) {
+              // Vertical surface: needs exactly TWO measurements: length and height. width/depth is null.
+              if (e.type === "line") {
+                const line = e as any;
+                const start = line.start || { x: 0, y: 0 };
+                const end = line.end || { x: 0, y: 0 };
+                lunghezza = Math.hypot(end.x - start.x, end.y - start.y) / 100;
+                larghezza = null;
+                altezza = metrics.altezzaM || 2.70;
+                qty = lunghezza * altezza;
+              } else if (e.type === "rectangle") {
+                const rect = e as any;
+                // For a wall drawn as rectangle, the length is the longer dimension
+                const w = Math.abs(rect.p2.x - rect.p1.x) / 100;
+                const d = Math.abs(rect.p2.y - rect.p1.y) / 100;
+                lunghezza = Math.max(w, d);
+                larghezza = null;
+                altezza = metrics.altezzaM || 2.70;
+                qty = lunghezza * altezza;
+              } else if (points && points.length > 2) {
+                // Plaster or wall perimeter
+                lunghezza = metrics.perimetroM;
+                larghezza = null;
+                altezza = metrics.altezzaM || 2.70;
+                qty = lunghezza * altezza;
+              } else if (isDoorOrWindow) {
+                const wCm = (e as any).bimWidth || (e as any).width || 80;
+                const hCm = (e as any).bimWindowHeight || (e as any).bimHeight || ((e as any).bimType === 'door' ? 210 : 140);
+                lunghezza = wCm / 100;
+                larghezza = null;
+                altezza = hCm / 100;
+                qty = lunghezza * altezza;
+              } else {
+                lunghezza = metrics.perimetroM || 5.0;
+                larghezza = null;
+                altezza = metrics.altezzaM || 2.70;
+                qty = lunghezza * altezza;
+              }
+            } else {
+              // Horizontal surface: needs exactly TWO measurements: length and width. height is null.
+              if (e.type === "line") {
+                const line = e as any;
+                const start = line.start || { x: 0, y: 0 };
+                const end = line.end || { x: 0, y: 0 };
+                lunghezza = Math.hypot(end.x - start.x, end.y - start.y) / 100;
+                larghezza = (metrics.spessoreCm || 15) / 100;
+                altezza = null;
+                qty = lunghezza * larghezza;
+              } else if (e.type === "rectangle") {
+                const rect = e as any;
+                lunghezza = Math.abs(rect.p2.x - rect.p1.x) / 100;
+                larghezza = Math.abs(rect.p2.y - rect.p1.y) / 100;
+                altezza = null;
+                qty = lunghezza * larghezza;
+              } else if (points && points.length > 2) {
+                lunghezza = bbWidth;
+                larghezza = metrics.areaMq / bbWidth;
+                altezza = null;
+                qty = metrics.areaMq;
+              } else if (isDoorOrWindow) {
+                const wCm = (e as any).bimWidth || (e as any).width || 80;
+                const hCm = (e as any).bimWindowHeight || (e as any).bimHeight || ((e as any).bimType === 'door' ? 210 : 140);
+                lunghezza = wCm / 100;
+                larghezza = hCm / 100;
+                altezza = null;
+                qty = lunghezza * larghezza;
+              } else {
+                lunghezza = metrics.areaMq || 1.0;
+                larghezza = 1.00;
+                altezza = null;
+                qty = lunghezza;
+              }
+            }
+          } else if (um === "m") {
+            // Length
+            if (e.type === "line") {
+              const line = e as any;
+              const start = line.start || { x: 0, y: 0 };
+              const end = line.end || { x: 0, y: 0 };
+              lunghezza = Math.hypot(end.x - start.x, end.y - start.y) / 100;
+            } else {
+              lunghezza = metrics.perimetroM || 1.0;
+            }
+            larghezza = null;
+            altezza = null;
+            qty = lunghezza;
           } else {
-            lunghezza = metrics.perimetroM || 1.0;
+            // CAD, PCS, etc. (counted items)
+            lunghezza = null;
+            larghezza = null;
+            altezza = null;
+            qty = 1.0;
           }
-          larghezza = null;
-          altezza = null;
-          qty = lunghezza;
-        } else {
-          // CAD, PCS, etc. (counted items)
-          lunghezza = null;
-          larghezza = null;
-          altezza = null;
-          qty = 1.0;
         }
 
         const finalQty = qty * mult;
@@ -667,25 +688,29 @@ export const GecolaPrezzarioPanel: React.FC<GecolaPrezzarioPanelProps> = ({
           return matchedFloor.name;
         };
 
-        const floorName = getEntityFloorName(e);
-        if (isFinishElement(e)) {
-          const parentEntity = (e as any).parentEntityId ? entities.find((ent: any) => ent.id === (e as any).parentEntityId) : null;
-          const parentName = parentEntity ? ((parentEntity as any).bimName || (parentEntity as any).name || "Elemento Principale") : "";
-          
-          if (parentName) {
-            finalLabel = `${floorName} - ${parentName} - ${label}`;
+        if (isManual) {
+          finalLabel = (e as any).bimName || (e as any).name || "Voce Manuale";
+        } else {
+          const floorName = getEntityFloorName(e);
+          if (isFinishElement(e)) {
+            const parentEntity = (e as any).parentEntityId ? entities.find((ent: any) => ent.id === (e as any).parentEntityId) : null;
+            const parentName = parentEntity ? ((parentEntity as any).bimName || (parentEntity as any).name || "Elemento Principale") : "";
+            
+            if (parentName) {
+              finalLabel = `${floorName} - ${parentName} - ${label}`;
+            } else {
+              finalLabel = `${floorName} - ${label}`;
+            }
           } else {
             finalLabel = `${floorName} - ${label}`;
           }
-        } else {
-          finalLabel = `${floorName} - ${label}`;
         }
 
         return [{
           id: e.id,
           label: finalLabel,
           isBIM: true,
-          subType: familyId || (e as any).bimType || "element",
+          subType: isManual ? "manual" : (familyId || (e as any).bimType || "element"),
           quantity: finalQty,
           unita: um,
           codice: code,
@@ -776,6 +801,7 @@ export const GecolaPrezzarioPanel: React.FC<GecolaPrezzarioPanelProps> = ({
           prezzarioPrezzo: item.prezzo,
           bimName: item.descrizione,
           name: item.descrizione,
+          bimFamily: item.categoria || item.prezzario || "Importati",
           includeInComputo: true,
           cost_5d: {
             prezzarioCodice: item.codice,
@@ -818,6 +844,7 @@ export const GecolaPrezzarioPanel: React.FC<GecolaPrezzarioPanelProps> = ({
             prezzarioPrezzo: item.prezzo,
             bimName: item.descrizione,
             name: item.descrizione,
+            bimFamily: item.categoria || item.prezzario || "Importati",
             includeInComputo: true,
             cost_5d: {
               prezzarioCodice: item.codice,
@@ -834,6 +861,66 @@ export const GecolaPrezzarioPanel: React.FC<GecolaPrezzarioPanelProps> = ({
       }
     } catch (err) {
       console.error(err);
+    }
+  };
+
+  const handleDropNewManualItem = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDraggingOverComputo(false);
+    try {
+      const rawData = e.dataTransfer.getData("text/plain");
+      const item = JSON.parse(rawData) as PrezzarioItem;
+      if (item && item.codice) {
+        // Create manual virtual BIM entity
+        const newManualEntity: any = {
+          id: `manual_${Date.now()}_${Math.random().toString(36).substring(2, 5)}`,
+          type: "text",
+          point: { x: 0, y: 0 },
+          text: item.descrizione,
+          fontFamily: "Inter",
+          fontSize: 12,
+          fontWeight: "normal",
+          textAlign: "left",
+          color: "#ffffff",
+          lineWidth: 1,
+          layer: "manual_computo",
+          hideIn2D: true,
+          isBIM: true,
+          isManualComputo: true,
+          bimName: item.descrizione,
+          name: item.descrizione,
+          bimFamily: item.categoria || item.prezzario || "Importati",
+          prezzarioCodice: item.codice,
+          prezzarioDescrizione: item.descrizione,
+          prezzarioUnita: item.unita,
+          prezzarioPrezzo: item.prezzo,
+          includeInComputo: true,
+          moltiplicatore: 1.0,
+          lunghezza: 1.0,
+          larghezza: item.unita.toLowerCase() === "mc" ? 1.0 : null,
+          altezza: (item.unita.toLowerCase() === "mc" || item.unita.toLowerCase() === "mq") ? 1.0 : null,
+          cost_5d: {
+            prezzarioCodice: item.codice,
+            prezzarioDescrizione: item.descrizione,
+            prezzarioUnita: item.unita,
+            prezzarioPrezzo: item.prezzo,
+            incidenzaManodopera: item.incidenzaManodopera || 0,
+            prezzarioNome: item.prezzario || ""
+          }
+        };
+
+        if (updateEntitiesWithHistory) {
+          updateEntitiesWithHistory((prev: Entity[]) => [...prev, newManualEntity]);
+          setSelectedId(newManualEntity.id);
+          setShortcutToast(`Nuova voce manuale ${item.codice} aggiunta al computo! 📋`);
+          setTimeout(() => setShortcutToast(null), 2500);
+        } else {
+          setShortcutToast("Azione non consentita: perno di inserimento non configurato.");
+          setTimeout(() => setShortcutToast(null), 2500);
+        }
+      }
+    } catch (err) {
+      console.error("Error dropping manual item:", err);
     }
   };
 
@@ -1078,6 +1165,10 @@ export const GecolaPrezzarioPanel: React.FC<GecolaPrezzarioPanelProps> = ({
             </button>
             <button
               onClick={() => setActiveTab("computo")}
+              onDragOver={(e) => {
+                e.preventDefault();
+                setActiveTab("computo");
+              }}
               className={`flex-1 py-1.5 text-[10.5px] font-black rounded-lg uppercase tracking-wide transition-all flex items-center justify-center gap-1.5 ${
                 activeTab === "computo" 
                   ? "bg-amber-500 text-neutral-950 shadow-md font-bold" 
@@ -1150,9 +1241,9 @@ export const GecolaPrezzarioPanel: React.FC<GecolaPrezzarioPanelProps> = ({
                     Nessuna voce trovata.
                   </div>
                 ) : (
-                  filteredPrezzario.map(item => (
+                  filteredPrezzario.map((item, idx) => (
                     <div
-                      key={item.codice}
+                      key={`${item.codice}-${idx}`}
                       draggable={true}
                       onDragStart={(e) => handleDragStart(e, item)}
                       className="bg-neutral-950 hover:bg-neutral-850 border border-neutral-800 hover:border-amber-500/40 p-2 rounded-xl transition-all cursor-grab active:cursor-grabbing group relative"
@@ -1204,6 +1295,27 @@ export const GecolaPrezzarioPanel: React.FC<GecolaPrezzarioPanelProps> = ({
                 </div>
               </div>
 
+              {/* Drop zone to add manual items directly from the Price list */}
+              <div 
+                onDragOver={handleDragOver}
+                onDragEnter={() => setIsDraggingOverComputo(true)}
+                onDragLeave={() => setIsDraggingOverComputo(false)}
+                onDrop={handleDropNewManualItem}
+                className={`border border-dashed rounded-xl p-2.5 mb-2 flex flex-col items-center justify-center text-center transition-all cursor-pointer ${
+                  isDraggingOverComputo 
+                    ? "border-amber-500 bg-amber-500/15 text-amber-400" 
+                    : "border-neutral-800 bg-neutral-950/40 text-neutral-400 hover:border-neutral-700 hover:text-neutral-300"
+                }`}
+              >
+                <Plus size={14} className={`mb-0.5 ${isDraggingOverComputo ? "animate-bounce text-amber-400" : "text-neutral-500"}`} />
+                <span className="text-[9px] font-black uppercase tracking-wider">
+                  Trascina e rilascia qui una voce
+                </span>
+                <span className="text-[8px] text-neutral-500 font-sans mt-0.5">
+                  per aggiungerla direttamente come voce manuale nel computo
+                </span>
+              </div>
+
               {/* LIST OF DRAWN MEASUREMENTS GROUPED BY PRICE CODE */}
               <div className="flex-1 overflow-y-auto space-y-2 pr-1.5 scrollbar-thin">
                 {computableItems.length === 0 ? (
@@ -1211,16 +1323,17 @@ export const GecolaPrezzarioPanel: React.FC<GecolaPrezzarioPanelProps> = ({
                     <AlertCircle size={20} className="text-neutral-600" />
                     <span>Nessun elemento computabile tracciato.</span>
                     <span className="text-[9.5px]">Traccia quote o crea elementi BIM (es. pilastri, muri).</span>
+                    <span className="text-[8px] text-neutral-500">Oppure trascina una voce dal prezzario in alto per aggiungerla qui!</span>
                   </div>
                 ) : (
-                  groupedComputoItems.map((group) => {
+                  groupedComputoItems.map((group, idx) => {
                     const allChecked = group.subItems.every(s => s.includeInComputo);
                     const someChecked = group.subItems.some(s => s.includeInComputo);
                     const isGroupSelected = group.subItems.some(s => s.id === selectedId);
 
                     return (
                       <div
-                        key={group.codice}
+                        key={`${group.codice}-${idx}`}
                         onDragOver={handleDragOver}
                         onDrop={(e) => handleDropOnGroup(e, group)}
                         className={`p-2.5 rounded-xl border transition-all ${
@@ -1242,7 +1355,7 @@ export const GecolaPrezzarioPanel: React.FC<GecolaPrezzarioPanelProps> = ({
                             onChange={(e) => {
                               handleToggleGroup(group, e.target.checked);
                             }}
-                            className="mt-1 accent-amber-500 w-3.5 h-3.5 cursor-pointer"
+                            className="mt-1 accent-amber-500 w-3.5 h-3.5 cursor-pointer shrink-0"
                           />
                           
                           <div className="flex-1 min-w-0">
@@ -1266,44 +1379,173 @@ export const GecolaPrezzarioPanel: React.FC<GecolaPrezzarioPanelProps> = ({
                             const isSelected = selectedId === sub.id;
 
                             return (
-                              <div
-                                key={sub.id}
-                                onDragOver={handleDragOver}
-                                onDrop={(e) => {
-                                  e.stopPropagation();
-                                  handleDropOnRow(e, sub.id);
-                                }}
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  setSelectedId(sub.id);
-                                }}
-                                className={`flex items-center justify-between p-1 rounded-lg transition-all cursor-pointer text-[9.5px] ${
-                                  isSelected 
-                                    ? "bg-amber-500/15 text-white font-bold" 
-                                    : "text-neutral-400 hover:text-neutral-200 hover:bg-neutral-900"
-                                }`}
-                              >
-                                <div className="flex items-center gap-1.5 min-w-0">
-                                  <input
-                                    type="checkbox"
-                                    checked={sub.includeInComputo}
-                                    onChange={(e) => {
-                                      e.stopPropagation();
-                                      updateEntity(sub.id, { includeInComputo: e.target.checked });
-                                    }}
-                                    className="accent-amber-500 w-3 h-3 cursor-pointer"
-                                  />
-                                  <span className="shrink-0">{sub.isBIM ? "🧱" : "📏"}</span>
-                                  <span className="truncate">{sub.label}</span>
-                                  {(sub.original as any).moltiplicatore && (sub.original as any).moltiplicatore !== 1 && (
-                                    <span className="text-[8px] bg-neutral-900 px-1 rounded text-neutral-500">
-                                      {(sub.original as any).moltiplicatore.toFixed(1)}x
+                              <div key={sub.id} className="flex flex-col">
+                                <div
+                                  onDragOver={handleDragOver}
+                                  onDrop={(e) => {
+                                    e.stopPropagation();
+                                    handleDropOnRow(e, sub.id);
+                                  }}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setSelectedId(sub.id);
+                                  }}
+                                  className={`flex items-center justify-between p-1 px-1.5 rounded-lg transition-all cursor-pointer text-[9.5px] ${
+                                    isSelected 
+                                      ? "bg-amber-500/15 text-white font-bold" 
+                                      : "text-neutral-400 hover:text-neutral-200 hover:bg-neutral-900"
+                                  }`}
+                                >
+                                  <div className="flex items-center gap-1.5 min-w-0">
+                                    <input
+                                      type="checkbox"
+                                      checked={sub.includeInComputo}
+                                      onChange={(e) => {
+                                        e.stopPropagation();
+                                        updateEntity(sub.id, { includeInComputo: e.target.checked });
+                                      }}
+                                      className="accent-amber-500 w-3 h-3 cursor-pointer shrink-0"
+                                    />
+                                    <span className="shrink-0">
+                                      {sub.original?.isManualComputo ? "✏️" : (sub.isBIM ? "🧱" : "📏")}
                                     </span>
-                                  )}
+                                    <span className="truncate">{sub.label}</span>
+                                    {(sub.original as any).moltiplicatore && (sub.original as any).moltiplicatore !== 1 && (
+                                      <span className="text-[8px] bg-neutral-900 px-1 rounded text-neutral-500 shrink-0">
+                                        {(sub.original as any).moltiplicatore.toFixed(1)}x
+                                      </span>
+                                    )}
+                                  </div>
+                                  <div className="font-mono text-right shrink-0 pl-1">
+                                    {sub.quantity.toFixed(2)} {group.unita}
+                                  </div>
                                 </div>
-                                <div className="font-mono text-right shrink-0 pl-1">
-                                  {sub.quantity.toFixed(2)} {group.unita}
-                                </div>
+
+                                {isSelected && (
+                                  <div 
+                                    onClick={(e) => e.stopPropagation()} 
+                                    className="mt-1 mb-2 ml-4 p-2 bg-neutral-900/95 rounded-lg border border-neutral-800 space-y-2 text-[9.5px]"
+                                  >
+                                    <div className="flex flex-col gap-1">
+                                      <label className="text-neutral-500 font-bold uppercase tracking-wider text-[8px]">Descrizione della misurazione:</label>
+                                      <input
+                                        type="text"
+                                        value={sub.original?.isManualComputo ? (sub.original.bimName || "") : sub.label}
+                                        disabled={!sub.original?.isManualComputo}
+                                        onChange={(e) => {
+                                          updateEntity(sub.id, { bimName: e.target.value, name: e.target.value });
+                                        }}
+                                        placeholder="E.g. Massetto camera"
+                                        className="bg-neutral-950 border border-neutral-800 rounded px-1.5 py-1 text-white outline-none focus:border-amber-500 w-full"
+                                      />
+                                      {!sub.original?.isManualComputo && (
+                                        <span className="text-[8px] text-neutral-500 italic">La descrizione degli elementi grafici è derivata dal disegno</span>
+                                      )}
+                                    </div>
+
+                                    <div className="grid grid-cols-4 gap-1.5">
+                                      <div className="flex flex-col gap-1">
+                                        <label className="text-neutral-500 font-bold uppercase tracking-wider text-[8px]" title="Parti Uguali">Par. ug.</label>
+                                        <input
+                                          type="number"
+                                          step="any"
+                                          value={(sub.original as any).moltiplicatore ?? 1}
+                                          onChange={(e) => {
+                                            const val = parseFloat(e.target.value) || 1;
+                                            updateEntity(sub.id, { moltiplicatore: val });
+                                          }}
+                                          className="bg-neutral-950 border border-neutral-800 rounded px-1 py-0.5 text-white outline-none text-center"
+                                        />
+                                      </div>
+                                      
+                                      <div className="flex flex-col gap-1">
+                                        <label className="text-neutral-500 font-bold uppercase tracking-wider text-[8px]">Lung.</label>
+                                        <input
+                                          type="number"
+                                          step="any"
+                                          disabled={!sub.original?.isManualComputo || (group.unita !== "mc" && group.unita !== "mq" && group.unita !== "m")}
+                                          value={sub.lunghezza !== null ? sub.lunghezza : ""}
+                                          onChange={(e) => {
+                                            const val = parseFloat(e.target.value) || 0;
+                                            updateEntity(sub.id, { lunghezza: val } as any);
+                                          }}
+                                          className="bg-neutral-950 border border-neutral-800 rounded px-1 py-0.5 text-white outline-none text-center disabled:opacity-30 disabled:cursor-not-allowed"
+                                        />
+                                      </div>
+
+                                      <div className="flex flex-col gap-1">
+                                        <label className="text-neutral-500 font-bold uppercase tracking-wider text-[8px]">Larg.</label>
+                                        <input
+                                          type="number"
+                                          step="any"
+                                          disabled={!sub.original?.isManualComputo || group.unita !== "mc"}
+                                          value={sub.larghezza !== null ? sub.larghezza : ""}
+                                          onChange={(e) => {
+                                            const val = parseFloat(e.target.value) || 0;
+                                            updateEntity(sub.id, { larghezza: val } as any);
+                                          }}
+                                          className="bg-neutral-950 border border-neutral-800 rounded px-1 py-0.5 text-white outline-none text-center disabled:opacity-30 disabled:cursor-not-allowed"
+                                        />
+                                      </div>
+
+                                      <div className="flex flex-col gap-1">
+                                        <label className="text-neutral-500 font-bold uppercase tracking-wider text-[8px]">Alt.</label>
+                                        <input
+                                          type="number"
+                                          step="any"
+                                          disabled={!sub.original?.isManualComputo || (group.unita !== "mc" && group.unita !== "mq")}
+                                          value={sub.altezza !== null ? sub.altezza : ""}
+                                          onChange={(e) => {
+                                            const val = parseFloat(e.target.value) || 0;
+                                            updateEntity(sub.id, { altezza: val } as any);
+                                          }}
+                                          className="bg-neutral-950 border border-neutral-800 rounded px-1 py-0.5 text-white outline-none text-center disabled:opacity-30 disabled:cursor-not-allowed"
+                                        />
+                                      </div>
+                                    </div>
+
+                                    {sub.original?.isManualComputo && (
+                                      <div className="flex justify-between items-center pt-1 border-t border-neutral-850">
+                                        <div className="flex items-center gap-1 text-[8.5px]">
+                                          <span className="text-neutral-500 font-bold uppercase">Prezzo Overr:</span>
+                                          <input
+                                            type="number"
+                                            step="any"
+                                            value={(sub.original as any).prezzarioPrezzo ?? ""}
+                                            onChange={(e) => {
+                                              const val = parseFloat(e.target.value) || 0;
+                                              updateEntity(sub.id, { 
+                                                prezzarioPrezzo: val,
+                                                cost_5d: {
+                                                  ...((sub.original as any).cost_5d || {}),
+                                                  prezzarioPrezzo: val
+                                                }
+                                              } as any);
+                                            }}
+                                            placeholder={group.prezzo.toFixed(2)}
+                                            className="w-16 bg-neutral-950 border border-neutral-800 rounded px-1 py-0.5 text-white outline-none text-right font-mono"
+                                          />
+                                        </div>
+                                        <button
+                                          onClick={() => {
+                                            if (updateEntitiesWithHistory) {
+                                              updateEntitiesWithHistory((prev: Entity[]) => prev.filter(ent => ent.id !== sub.id));
+                                            } else {
+                                              updateEntity(sub.id, { includeInComputo: false });
+                                            }
+                                            setSelectedId(null);
+                                            setShortcutToast("Voce manuale rimossa dal computo!");
+                                            setTimeout(() => setShortcutToast(null), 2000);
+                                          }}
+                                          className="flex items-center gap-1 px-1.5 py-0.5 bg-red-950/40 hover:bg-red-900/40 text-red-400 rounded border border-red-500/20 text-[8.5px]"
+                                        >
+                                          <Trash2 size={9} />
+                                          Elimina
+                                        </button>
+                                      </div>
+                                    )}
+                                  </div>
+                                )}
                               </div>
                             );
                           })}
@@ -1571,7 +1813,7 @@ export const GecolaPrezzarioPanel: React.FC<GecolaPrezzarioPanelProps> = ({
                       if (activeSubs.length === 0) return null;
 
                       return (
-                        <React.Fragment key={group.codice}>
+                        <React.Fragment key={`${group.codice}-${groupIdx}`}>
                           {/* Row 1: The general tariff and description */}
                           <div className="flex border-b border-black text-xs font-serif leading-tight">
                             {/* Num Ord */}
@@ -1757,13 +1999,13 @@ export const GecolaPrezzarioPanel: React.FC<GecolaPrezzarioPanelProps> = ({
                       </tr>
                     </thead>
                     <tbody>
-                      {groupedComputoItems.map((group) => {
+                      {groupedComputoItems.map((group, idx) => {
                         const activeSubs = group.subItems.filter(s => s.includeInComputo);
                         if (activeSubs.length === 0) return null;
                         
                         const laborCost = group.totaleImporto * 0.28; // Standard Italian labor incidence
                         return (
-                          <tr key={group.codice} className="h-10 text-[11px]">
+                          <tr key={`${group.codice}-${idx}`} className="h-10 text-[11px]">
                             <td className="border border-black px-2 text-center font-mono font-bold text-neutral-800 bg-neutral-50/30">{group.codice}</td>
                             <td className="border border-black px-3 text-left font-serif leading-relaxed text-neutral-800 py-2">
                               {group.descrizione.length > 120 ? `${group.descrizione.substring(0, 120)}...` : group.descrizione}

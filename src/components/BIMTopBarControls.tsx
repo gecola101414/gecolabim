@@ -33,7 +33,8 @@ import {
   Video,
   Cuboid,
   Square,
-  FolderOpen
+  FolderOpen,
+  Scissors
 } from 'lucide-react';
 
 const PolylineIcon = ({ size = 13, className }: { size?: number; className?: string }) => (
@@ -59,6 +60,7 @@ import { TEMPLATES, Template } from '../data/templates';
 import { Entity } from '../types';
 import { exportEntitiesToIFC } from '../utils/ifcExport';
 import { parseIFCContent } from '../utils/ifcImport';
+import { splitAllLinesAtIntersections, smartCleanDrawing } from '../utils/entityUtils';
 
 interface BIMTopBarControlsProps {
   selectedTool: string | null;
@@ -848,6 +850,30 @@ export const BIMTopBarControls: React.FC<BIMTopBarControlsProps> = ({
         title="Esporta in formato IFC (BIM)"
       >
         <ArrowDownToLine size={14} className="text-white drop-shadow-sm" />
+      </button>
+
+      <button
+        onClick={() => {
+          if (setEntities) {
+            setEntities(prev => splitAllLinesAtIntersections(prev));
+          }
+        }}
+        className="w-7 h-7 rounded-lg bg-orange-600 hover:bg-orange-700 text-white font-extrabold flex justify-center items-center shadow-md transition hover:scale-105 cursor-pointer ml-2"
+        title="Atomizzazione Segmenti (Dividi tutto in Spezzoni Reali)"
+      >
+        <Scissors size={14} className="text-white drop-shadow-sm" />
+      </button>
+
+      <button
+        onClick={() => {
+          if (setEntities) {
+            setEntities(prev => smartCleanDrawing(prev));
+          }
+        }}
+        className="w-7 h-7 rounded-lg bg-pink-600 hover:bg-pink-700 text-white font-extrabold flex justify-center items-center shadow-md transition hover:scale-105 cursor-pointer ml-2"
+        title="Super Pulizia Smart (Spezzoni + Trim + Snap Reali)"
+      >
+        <Sparkles size={14} className="text-white drop-shadow-sm" />
       </button>
 
       <button

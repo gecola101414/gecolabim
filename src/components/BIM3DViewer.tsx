@@ -5,9 +5,12 @@ import { OrbitControls, PerspectiveCamera, OrthographicCamera, Grid, Stars, Floa
 import * as THREE from 'three';
 import { Entity, Point, LineEntity, RectEntity, Floor, CircleEntity, ArcEntity, TextEntity, DimensionEntity, PointEntity, HatchEntity, ImageEntity, BIMRenderingStyle } from '../types';
 import { createBIMMaterialTexture } from '../utils/materialTextures';
-import { X, ZoomIn, ZoomOut, RotateCw, Box, Layers, Database, Maximize, Home, Compass, Eye, EyeOff, Lightbulb, LightbulbOff, Info, Settings, MousePointer2, Move, Scissors, Play, Pause, RefreshCw, ArrowDown, ArrowUp, ArrowLeft, ArrowRight, Edit, Trash2, Wand2, Lock, Unlock, FolderTree, ChevronDown, ChevronRight, Sliders, Layers3, Camera, Sparkles, Zap } from 'lucide-react';
+import { motion, AnimatePresence } from 'motion/react';
+import { X, ZoomIn, ZoomOut, RotateCw, Box, Layers, Database, Maximize, Home, Compass, Eye, EyeOff, Lightbulb, LightbulbOff, Info, Settings, MousePointer2, Move, Scissors, Play, Pause, RefreshCw, ArrowDown, ArrowUp, ArrowLeft, ArrowRight, Edit, Trash2, Wand2, Lock, Unlock, FolderTree, ChevronDown, ChevronRight, Sliders, Layers3, Camera, Sparkles, Zap, Activity, CheckCircle2, Target, Filter, Building, Link, Check } from 'lucide-react';
 import { BIMElementDialog, PorteDialog, FinestreDialog } from './BIMDialogs';
 import { BIMPropertyCardDialog } from './BIMPropertyCardDialog';
+import { PREZZARIO_GECOLA } from '../data/prezzario';
+import { BIM_FAMILIES } from '../data/bimFamilies';
 import polygonClipping from 'polygon-clipping';
 
 
@@ -1304,6 +1307,8 @@ interface Scaffolding3DProps {
   mantovanaAngle?: number;
   mantovanaHeight?: number;
   lightweight?: boolean;
+  teloLato?: 'none' | 'esterno' | 'interno' | 'entrambi';
+  tavoleFermapiedeCount?: number;
 }
 
 export const Scaffolding3D = React.memo(({
@@ -1316,43 +1321,141 @@ export const Scaffolding3D = React.memo(({
   hasMantovana = true,
   mantovanaAngle = 45,
   mantovanaHeight = 4.5,
-  lightweight = true
+  lightweight = false,
+  teloLato = 'esterno',
+  tavoleFermapiedeCount = 1
 }: Scaffolding3DProps) => {
-  // Convert all dimensions to meters
   const h = height / 100;
   const zBase = baseZ / 100;
-  
-  // Standard interpiano lift height is 2.0m
   const numLevels = Math.max(1, Math.round(h / 2.0));
+  const uprightHeight = numLevels * 2.0;
   
-  // Extract horizontal segments
-  const segments = useMemo(() => {
-    const list = [];
-    if (!points || points.length < 2) return [];
+  const segmentsData = useMemo(() => {
+    let effectivePoints = points;
+    let effectiveIsLinear = isLinear;
     
-    const count = isLinear ? points.length - 1 : points.length;
-    for (let i = 0; i < count; i++) {
-      const p1 = points[i];
-      const p2 = points[(i + 1) % points.length];
+    if (!isLinear && points && points.length === 4) {
+      const p = points;
+      const d01 = Math.hypot(p[1].x - p[0].x, p[1].y - p[0].y);
+      const d12 = Math.hypot(p[2].x - p[1].x, p[2].y - p[1].y);
+      const d23 = Math.hypot(p[3].x - p[2].x, p[3].y - p[2].y);
+      const d30 = Math.hypot(p[0].x - p[3].x, p[0].y - p[3].y);
       
+      if ((d01 + d23) / 2 >= (d12 + d30) / 2) {
+        effectivePoints = [
+          { x: (p[0].x + p[3].x) / 2, y: (p[0].y + p[3].y) / 2 },
+          { x: (p[1].x + p[2].x) / 2, y: (p[1].y + p[2].y) / 2 }
+        ];
+      } else {
+        effectivePoints = [
+          { x: (p[0].x + p[1].x) / 2, y: (p[0].y + p[1].y) / 2 },
+          { x: (p[3].x + p[2].x) / 2, y: (p[3].y + p[2].y) / 2 }
+        ];
+      }
+      effectiveIsLinear = true;
+    }
+
+    const list = [];
+    if (!effectivePoints || effectivePoints.length < 2) return [];
+    
+    const count = effectiveIsLinear ? effectivePoints.length - 1 : effectivePoints.length;
+    for (let i = 0; i < count; i++) {
+      const p1 = effectivePoints[i];
+      const p2 = effectivePoints[(i + 1) % effectivePoints.length];
       const dx = (p2.x - p1.x) / 100;
       const dy = (p2.y - p1.y) / 100;
       const len = Math.hypot(dx, dy);
       
       if (len > 0.1) {
-        list.push({
-          p1: { x: p1.x / 100, y: p1.y / 100 },
-          p2: { x: p2.x / 100, y: p2.y / 100 },
-          length: len,
-          dx,
-          dy
-        });
+        const uX = dx / len;
+        const uZ = -dy / len;
+        const nX = -uZ;
+        const nZ = uX;
+        const angle = Math.atan2(dy, dx);
+        const numSpans = Math.max(1, Math.round(len / 1.8));
+        const actualS = len / numSpans;
+
+        const frames = [];
+        for (let j = 0; j <= numSpans; j++) {
+          const t = j / numSpans;
+          const x = (p1.x / 100) + t * (p2.x / 100 - p1.x / 100);
+          const z = -((p1.y / 100) + t * (p2.y / 100 - p1.y / 100));
+          frames.push({ x_inner: x - nX * 0.5, z_inner: z - nZ * 0.5, x_outer: x + nX * 0.5, z_outer: z + nZ * 0.5, x, z });
+        }
+        list.push({ length: len, dx, dy, uX, uZ, nX, nZ, angle, numSpans, actualS, frames, p1, p2 });
       }
     }
     return list;
   }, [points, isLinear]);
 
-  // CylinderBetweenPoints utility to place braces or structural beams
+  const instances = useMemo(() => {
+    const standards: THREE.Matrix4[] = [];
+    const transoms: THREE.Matrix4[] = [];
+    const planks: THREE.Matrix4[] = [];
+    const guardrails: THREE.Matrix4[] = [];
+    const dummy = new THREE.Object3D();
+
+    segmentsData.forEach((seg) => {
+      seg.frames.forEach((f) => {
+        const showInner = !clippingPlanes.some(p => p.distanceToPoint(new THREE.Vector3(f.x_inner, zBase, f.z_inner)) < 0);
+        const showOuter = !clippingPlanes.some(p => p.distanceToPoint(new THREE.Vector3(f.x_outer, zBase, f.z_outer)) < 0);
+        if (showInner) {
+          dummy.position.set(f.x_inner, zBase + uprightHeight / 2, f.z_inner);
+          dummy.rotation.set(0, 0, 0);
+          dummy.scale.set(1, 1, 1);
+          dummy.updateMatrix();
+          standards.push(dummy.matrix.clone());
+        }
+        if (showOuter) {
+          dummy.position.set(f.x_outer, zBase + uprightHeight / 2, f.z_outer);
+          dummy.rotation.set(0, 0, 0);
+          dummy.scale.set(1, 1, 1);
+          dummy.updateMatrix();
+          standards.push(dummy.matrix.clone());
+        }
+        for (let l = 1; l <= numLevels; l++) {
+          const y = zBase + l * 2.0;
+          const x_mid = (f.x_inner + f.x_outer) / 2;
+          const z_mid = (f.z_inner + f.z_outer) / 2;
+          if (!clippingPlanes.some(p => p.distanceToPoint(new THREE.Vector3(x_mid, y, z_mid)) < 0)) {
+            dummy.position.set(x_mid, y, z_mid);
+            dummy.rotation.set(Math.PI / 2, 0, Math.atan2(seg.nX, seg.nZ));
+            dummy.scale.set(1, 1, 1);
+            dummy.updateMatrix();
+            transoms.push(dummy.matrix.clone());
+          }
+        }
+      });
+      for (let s = 0; s < seg.numSpans; s++) {
+        const f1 = seg.frames[s];
+        const f2 = seg.frames[s + 1];
+        const x_mid = (f1.x + f2.x) / 2;
+        const z_mid = (f1.z + f2.z) / 2;
+        for (let l = 1; l <= numLevels; l++) {
+          const y = zBase + l * 2.0;
+          if (clippingPlanes.some(p => p.distanceToPoint(new THREE.Vector3(x_mid, y, z_mid)) < 0)) continue;
+          const offsets = [-0.375, -0.125, 0.125, 0.375];
+          offsets.forEach((off) => {
+            dummy.position.set(x_mid + seg.nX * off, y - 0.025, z_mid + seg.nZ * off);
+            dummy.rotation.set(0, -seg.angle, 0);
+            dummy.scale.set(seg.actualS, 1, 1);
+            dummy.updateMatrix();
+            planks.push(dummy.matrix.clone());
+          });
+          [0.5, 1.0].forEach(goff => {
+            dummy.position.set(x_mid + seg.nX * 0.5, y + goff, z_mid + seg.nZ * 0.5);
+            dummy.rotation.set(Math.PI / 2, 0, -seg.angle);
+            dummy.scale.set(1, seg.actualS, 1);
+            dummy.updateMatrix();
+            guardrails.push(dummy.matrix.clone());
+          });
+        }
+      }
+    });
+    return { standards, transoms, planks, guardrails };
+  }, [segmentsData, zBase, uprightHeight, numLevels, clippingPlanes]);
+
+  // Helper to draw a cylinder (tube) between two 3D points
   const CylinderBetweenPoints = useCallback(({ p1, p2, radius, tubeColor }: {
     p1: { x: number; y: number; z: number };
     p2: { x: number; y: number; z: number };
@@ -1366,11 +1469,9 @@ export const Scaffolding3D = React.memo(({
     if (len < 0.01) return null;
 
     const midpoint = new THREE.Vector3(p1.x + dx / 2, p1.y + dy / 2, p1.z + dz / 2);
-    
-    // Check clipping
     if (clippingPlanes && clippingPlanes.length > 0) {
       if (clippingPlanes.some(plane => plane.distanceToPoint(midpoint) < 0)) {
-        return null; // clipped
+        return null;
       }
     }
 
@@ -1387,286 +1488,244 @@ export const Scaffolding3D = React.memo(({
           color={tubeColor} 
           metalness={0.8} 
           roughness={0.2} 
-          clippingPlanes={clippingPlanes} 
-          clipShadows={true} 
+          clippingPlanes={clippingPlanes}
         />
       </mesh>
     );
   }, [clippingPlanes]);
 
-  // If there are no segments, we can't draw anything
-  if (segments.length === 0) return null;
+  if (segmentsData.length === 0) return null;
 
+  const frameColor = color && color !== '#3b82f6' ? color : '#ea580c';
+  const galvanisedColor = '#cbd5e1';
+  const woodenColor = '#d97706'; // wood ochre for planks and toe-boards
+  const netColor = '#047857'; // safety green
+
+  // Helper to draw a detailed base jack (basotto regolabile con vitone)
+  const renderBaseJack = (x: number, z: number) => {
+    if (clippingPlanes && clippingPlanes.length > 0) {
+      if (clippingPlanes.some(plane => plane.distanceToPoint(new THREE.Vector3(x, zBase, z)) < 0)) {
+        return null;
+      }
+    }
+    return (
+      <group position={[x, zBase, z]}>
+        {/* Yellow safety anti-slip base plate */}
+        <mesh position={[0, 0.01, 0]} castShadow receiveShadow>
+          <boxGeometry args={[0.18, 0.02, 0.18]} />
+          <meshStandardMaterial color="#eab308" roughness={0.6} metalness={0.1} clippingPlanes={clippingPlanes} />
+        </mesh>
+        {/* Threaded screw stem (vitone) */}
+        <mesh position={[0, 0.18, 0]} castShadow receiveShadow>
+          <cylinderGeometry args={[0.018, 0.018, 0.32, 6]} />
+          <meshStandardMaterial color="#cbd5e1" metalness={0.8} roughness={0.2} clippingPlanes={clippingPlanes} />
+        </mesh>
+        {/* Thread rings to simulate "vitone" threading */}
+        {Array.from({ length: 8 }).map((_, rIdx) => (
+          <mesh key={`thread-${rIdx}`} position={[0, 0.04 + rIdx * 0.03, 0]}>
+            <cylinderGeometry args={[0.021, 0.021, 0.006, 6]} />
+            <meshStandardMaterial color="#cbd5e1" metalness={0.9} roughness={0.1} clippingPlanes={clippingPlanes} />
+          </mesh>
+        ))}
+        {/* Regulation Collar Nut (ghiera) */}
+        <mesh position={[0, 0.16, 0]} castShadow receiveShadow>
+          <cylinderGeometry args={[0.03, 0.03, 0.02, 6]} />
+          <meshStandardMaterial color="#475569" metalness={0.8} roughness={0.4} clippingPlanes={clippingPlanes} />
+        </mesh>
+        {/* Collar handles */}
+        <mesh position={[0, 0.16, 0]} rotation={[0, 0, Math.PI / 2]} castShadow receiveShadow>
+          <cylinderGeometry args={[0.006, 0.006, 0.08, 6]} />
+          <meshStandardMaterial color="#475569" metalness={0.8} roughness={0.4} clippingPlanes={clippingPlanes} />
+        </mesh>
+        {/* Red safety plastic joint cover (coprigiunto rosso con striscia gialla) */}
+        <mesh position={[0, 0.11, 0]} castShadow receiveShadow>
+          <cylinderGeometry args={[0.035, 0.035, 0.18, 12]} />
+          <meshStandardMaterial color="#ef4444" roughness={0.5} metalness={0.1} clippingPlanes={clippingPlanes} />
+        </mesh>
+        <mesh position={[0, 0.16, 0]} castShadow receiveShadow>
+          <cylinderGeometry args={[0.036, 0.036, 0.03, 12]} />
+          <meshStandardMaterial color="#eab308" roughness={0.4} metalness={0.1} clippingPlanes={clippingPlanes} />
+        </mesh>
+      </group>
+    );
+  };
+
+  // 1. If lightweight, render optimized instanced geometry
   if (lightweight) {
     return (
       <group>
-        {segments.map((seg, segIdx) => {
-          // Horizontal direction unit vectors
-          const uX = seg.dx / seg.length;
-          const uZ = -seg.dy / seg.length;
-          
-          // Horizontal normal vector
-          const nX = -uZ;
-          const nZ = uX;
-          
-          const angle = Math.atan2(seg.dy, seg.dx);
-          const numSpans = Math.max(1, Math.round(seg.length / 1.8));
-          const actualS = seg.length / numSpans;
-          
-          const frames = [];
-          for (let j = 0; j <= numSpans; j++) {
-            const t = j / numSpans;
-            const x = seg.p1.x + t * (seg.p2.x - seg.p1.x);
-            const z = -(seg.p1.y + t * (seg.p2.y - seg.p1.y));
-            
-            const x_inner = x + nX * 0.05;
-            const z_inner = z + nZ * 0.05;
-            const x_outer = x + nX * 0.85;
-            const z_outer = z + nZ * 0.85;
-            
-            frames.push({ x_inner, z_inner, x_outer, z_outer, x, z });
-          }
-
-          const uprightHeight = numLevels * 2.0;
-          const y_upright = zBase + uprightHeight / 2;
-          const frameColor = color && color !== '#3b82f6' ? color : '#ea580c';
-          const galvanisedColor = '#cbd5e1';
-          const netColor = '#047857';
-
+        <ScaffoldingInstances 
+          instances={instances} 
+          uprightHeight={uprightHeight} 
+          frameColor={frameColor} 
+          galvanisedColor={galvanisedColor} 
+          clippingPlanes={clippingPlanes} 
+        />
+        {segmentsData.map((seg, idx) => {
+          const x_net = (seg.p1.x / 100 + seg.p2.x / 100) / 2 + seg.nX * 0.52;
+          const z_net = -(seg.p1.y / 100 + seg.p2.y / 100) / 2 + seg.nZ * 0.52;
+          const y_net = zBase + uprightHeight / 2;
+          if (clippingPlanes.some(p => p.distanceToPoint(new THREE.Vector3(x_net, y_net, z_net)) < 0)) return null;
           return (
-            <group key={`scaffold-seg-light-${segIdx}`}>
-              {/* 1. Vertical Uprights - Simple Box Meshes instead of Cylinders (extremely low vertex/mesh footprint) */}
-              {frames.map((f, fIdx) => {
-                const showInner = !clippingPlanes.some(p => p.distanceToPoint(new THREE.Vector3(f.x_inner, zBase, f.z_inner)) < 0);
-                const showOuter = !clippingPlanes.some(p => p.distanceToPoint(new THREE.Vector3(f.x_outer, zBase, f.z_outer)) < 0);
-
-                return (
-                  <group key={`frame-uprights-light-${fIdx}`}>
-                    {showInner && (
-                      <mesh position={[f.x_inner, y_upright, f.z_inner]} castShadow receiveShadow>
-                        <boxGeometry args={[0.048, uprightHeight, 0.048]} />
-                        <meshStandardMaterial color={frameColor} metalness={0.4} roughness={0.5} clippingPlanes={clippingPlanes} />
-                      </mesh>
-                    )}
-                    {showOuter && (
-                      <mesh position={[f.x_outer, y_upright, f.z_outer]} castShadow receiveShadow>
-                        <boxGeometry args={[0.048, uprightHeight, 0.048]} />
-                        <meshStandardMaterial color={frameColor} metalness={0.4} roughness={0.5} clippingPlanes={clippingPlanes} />
-                      </mesh>
-                    )}
-                  </group>
-                );
-              })}
-
-              {/* 2. Platform levels: single box deck per level & thin box guardrail (instant render) */}
-              {frames.slice(0, -1).map((_, sIdx) => {
-                const f1 = frames[sIdx];
-                const f2 = frames[sIdx + 1];
-                
-                const x_mid_seg = (f1.x + f2.x) / 2;
-                const z_mid_seg = (f1.z + f2.z) / 2;
-
-                return (
-                  <group key={`span-light-${sIdx}`}>
-                    {Array.from({ length: numLevels }).map((_, lIdx) => {
-                      const y_floor = zBase + (lIdx + 1) * 2.0;
-                      
-                      const x_plat = x_mid_seg + nX * 0.45;
-                      const z_plat = z_mid_seg + nZ * 0.45;
-                      const y_plat = y_floor - 0.025;
-
-                      const isClipped = clippingPlanes.some(p => p.distanceToPoint(new THREE.Vector3(x_plat, y_floor, z_plat)) < 0);
-                      if (isClipped) return null;
-
-                      return (
-                        <group key={`level-light-${lIdx}`}>
-                          {/* Consolidated platform deck */}
-                          <mesh position={[x_plat, y_plat, z_plat]} rotation={[0, -angle, 0]} castShadow receiveShadow>
-                            <boxGeometry args={[actualS, 0.04, 0.8]} />
-                            <meshStandardMaterial color={galvanisedColor} metalness={0.6} roughness={0.4} clippingPlanes={clippingPlanes} />
-                          </mesh>
-
-                          {/* Simplified horizontal guardrail bar */}
-                          <mesh position={[x_mid_seg + nX * 0.85, y_floor + 1.0, z_mid_seg + nZ * 0.85]} rotation={[0, -angle, 0]} castShadow>
-                            <boxGeometry args={[actualS, 0.04, 0.03]} />
-                            <meshStandardMaterial color={galvanisedColor} metalness={0.6} roughness={0.4} clippingPlanes={clippingPlanes} />
-                          </mesh>
-                          
-                          {/* Simplified mid-rail bar */}
-                          <mesh position={[x_mid_seg + nX * 0.85, y_floor + 0.5, z_mid_seg + nZ * 0.85]} rotation={[0, -angle, 0]} castShadow>
-                            <boxGeometry args={[actualS, 0.02, 0.02]} />
-                            <meshStandardMaterial color={galvanisedColor} metalness={0.6} roughness={0.4} clippingPlanes={clippingPlanes} />
-                          </mesh>
-                        </group>
-                      );
-                    })}
-                  </group>
-                );
-              })}
-
-              {/* 3. Protective safety net */}
-              {(() => {
-                const x_mid_seg = (seg.p1.x + seg.p2.x) / 2;
-                const z_mid_seg = -(seg.p1.y + seg.p2.y) / 2;
-                const x_net = x_mid_seg + nX * 0.88;
-                const z_net = z_mid_seg + nZ * 0.88;
-                const y_net = zBase + (numLevels * 2.0) / 2;
-                const netHeight = numLevels * 2.0;
-                
-                const isClipped = clippingPlanes.some(p => p.distanceToPoint(new THREE.Vector3(x_net, y_net, z_net)) < 0);
-                if (isClipped) return null;
-
-                return (
-                  <mesh position={[x_net, y_net, z_net]} rotation={[0, -angle, 0]} castShadow receiveShadow>
-                    <boxGeometry args={[seg.length, netHeight, 0.002]} />
-                    <meshStandardMaterial 
-                      color={netColor} 
-                      transparent={true} 
-                      opacity={0.3} 
-                      roughness={0.9} 
-                      metalness={0.1} 
-                      side={THREE.DoubleSide} 
-                      clippingPlanes={clippingPlanes}
-                    />
-                  </mesh>
-                );
-              })()}
-            </group>
+            <mesh key={`scaffold-net-${idx}`} position={[x_net, y_net, z_net]} rotation={[0, -seg.angle, 0]}>
+              <boxGeometry args={[seg.length, uprightHeight, 0.002]} />
+              <meshStandardMaterial color={netColor} transparent opacity={0.3} side={THREE.DoubleSide} clippingPlanes={clippingPlanes} />
+            </mesh>
           );
         })}
       </group>
     );
   }
 
+  // 2. Otherwise, render FULL high-quality detailed scaffolding with boards, toe-boards and ladders!
+  const tubeRadius = 0.024; // 48mm tube diameter
+  const braceRadius = 0.015; // 30mm tube diameter
+
   return (
     <group>
-      {segments.map((seg, segIdx) => {
-        // Horizontal direction unit vectors
-        const uX = seg.dx / seg.length;
-        const uZ = -seg.dy / seg.length; // Negated Y in standard plan maps to Z in Three.js
+      {/* Standards (vertical poles), transoms and ledgers */}
+      {segmentsData.map((seg, segIdx) => {
+        const frames = seg.frames;
         
-        // Horizontal normal vector (offset direction, outwards/perpendicular)
-        const nX = -uZ;
-        const nZ = uX;
-        
-        const angle = Math.atan2(seg.dy, seg.dx); // 2D angle
-        
-        // Standard span spacing: 1.8m
-        const numSpans = Math.max(1, Math.round(seg.length / 1.8));
-        const actualS = seg.length / numSpans;
-        
-        const frames = [];
-        for (let j = 0; j <= numSpans; j++) {
-          const t = j / numSpans;
-          const x = seg.p1.x + t * (seg.p2.x - seg.p1.x);
-          const z = -(seg.p1.y + t * (seg.p2.y - seg.p1.y));
-          
-          // Inner: slightly offset (5cm) to prevent overlapping walls
-          const x_inner = x + nX * 0.05;
-          const z_inner = z + nZ * 0.05;
-          
-          // Outer: offset by 0.85m total (80cm width scaffolding)
-          const x_outer = x + nX * 0.85;
-          const z_outer = z + nZ * 0.85;
-          
-          frames.push({ x_inner, z_inner, x_outer, z_outer, x, z });
-        }
-
-        const tubeRadius = 0.024; // 48mm tube diameter
-        const braceRadius = 0.015; // 30mm tube diameter
-        
-        // Frame colors (classical construction red/orange/blue or custom)
-        const frameColor = color && color !== '#3b82f6' ? color : '#ea580c'; // default scaffolding orange
-        const galvanisedColor = '#d1d5db'; // shiny silver
-        const woodenColor = '#d97706'; // wood ochre
-        const netColor = '#047857'; // safety green
-
-        // For rendering, we will iterate over frames and levels
         return (
-          <group key={`scaffold-seg-${segIdx}`}>
-            {/* 1. Base Plates & Screw Jacks & Vertical Uprights */}
+          <group key={`seg-detailed-${segIdx}`}>
+            {/* Render frames (vertical standards and transoms) */}
             {frames.map((f, fIdx) => {
-              const uprightHeight = numLevels * 2.0;
-              const y_upright = zBase + uprightHeight / 2;
-              
-              // Inner screw jack baseplate
               const showInner = !clippingPlanes.some(p => p.distanceToPoint(new THREE.Vector3(f.x_inner, zBase, f.z_inner)) < 0);
               const showOuter = !clippingPlanes.some(p => p.distanceToPoint(new THREE.Vector3(f.x_outer, zBase, f.z_outer)) < 0);
-
+              
               return (
-                <group key={`frame-uprights-${fIdx}`}>
-                  {/* Inner Upright Tube */}
-                  {showInner && (
-                    <group>
-                      {/* Base plate */}
-                      <mesh position={[f.x_inner, zBase + 0.01, f.z_inner]} castShadow receiveShadow>
-                        <boxGeometry args={[0.15, 0.02, 0.15]} />
-                        <meshStandardMaterial color="#cca300" metalness={0.8} roughness={0.3} clippingPlanes={clippingPlanes} />
-                      </mesh>
-                      {/* Spindle collar */}
-                      <mesh position={[f.x_inner, zBase + 0.1, f.z_inner]} castShadow receiveShadow>
-                        <cylinderGeometry args={[0.03, 0.03, 0.2, 6]} />
-                        <meshStandardMaterial color="#cca300" metalness={0.8} roughness={0.3} clippingPlanes={clippingPlanes} />
-                      </mesh>
-                      {/* Continuous Upright tube */}
-                      <mesh position={[f.x_inner, y_upright, f.z_inner]} castShadow receiveShadow>
-                        <cylinderGeometry args={[tubeRadius, tubeRadius, uprightHeight, 6]} />
-                        <meshStandardMaterial color={frameColor} metalness={0.7} roughness={0.4} clippingPlanes={clippingPlanes} clipShadows={true} />
-                      </mesh>
-                    </group>
-                  )}
+                <group key={`frame-${fIdx}`}>
+                  {/* Base Jacks at standard bottoms (piedritti con le vitone classiche e piastra gialla) */}
+                  {showInner && renderBaseJack(f.x_inner, f.z_inner)}
+                  {showOuter && renderBaseJack(f.x_outer, f.z_outer)}
 
-                  {/* Outer Upright Tube */}
+                  {/* Inner Standard */}
+                  {showInner && (
+                    <mesh position={[f.x_inner, zBase + uprightHeight / 2, f.z_inner]} castShadow receiveShadow>
+                      <cylinderGeometry args={[tubeRadius, tubeRadius, uprightHeight, 6]} />
+                      <meshStandardMaterial color={frameColor} metalness={0.7} roughness={0.3} clippingPlanes={clippingPlanes} />
+                    </mesh>
+                  )}
+                  {/* Outer Standard */}
                   {showOuter && (
                     <group>
-                      {/* Base plate */}
-                      <mesh position={[f.x_outer, zBase + 0.01, f.z_outer]} castShadow receiveShadow>
-                        <boxGeometry args={[0.15, 0.02, 0.15]} />
-                        <meshStandardMaterial color="#cca300" metalness={0.8} roughness={0.3} clippingPlanes={clippingPlanes} />
-                      </mesh>
-                      {/* Spindle collar */}
-                      <mesh position={[f.x_outer, zBase + 0.1, f.z_outer]} castShadow receiveShadow>
-                        <cylinderGeometry args={[0.03, 0.03, 0.2, 6]} />
-                        <meshStandardMaterial color="#cca300" metalness={0.8} roughness={0.3} clippingPlanes={clippingPlanes} />
-                      </mesh>
-                      {/* Continuous Upright tube */}
-                      <mesh position={[f.x_outer, y_upright, f.z_outer]} castShadow receiveShadow>
+                      <mesh position={[f.x_outer, zBase + uprightHeight / 2, f.z_outer]} castShadow receiveShadow>
                         <cylinderGeometry args={[tubeRadius, tubeRadius, uprightHeight, 6]} />
-                        <meshStandardMaterial color={frameColor} metalness={0.7} roughness={0.4} clippingPlanes={clippingPlanes} clipShadows={true} />
+                        <meshStandardMaterial color={frameColor} metalness={0.7} roughness={0.3} clippingPlanes={clippingPlanes} />
                       </mesh>
+
+                      {/* Night warning lighting attached (luci notturne rosse fisse su montanti esterni) */}
+                      {fIdx % 2 === 0 && (
+                        <group position={[f.x_outer + seg.nX * 0.1, zBase + 2.0, f.z_outer + seg.nZ * 0.1]}>
+                          {/* Clamp coupling to standard */}
+                          <mesh position={[-seg.nX * 0.06, 0, -seg.nZ * 0.06]}>
+                            <boxGeometry args={[0.03, 0.04, 0.06]} />
+                            <meshStandardMaterial color="#475569" metalness={0.8} roughness={0.2} clippingPlanes={clippingPlanes} />
+                          </mesh>
+                          {/* Red warning battery casing */}
+                          <mesh position={[0, -0.08, 0]} castShadow receiveShadow>
+                            <boxGeometry args={[0.08, 0.12, 0.08]} />
+                            <meshStandardMaterial color="#b91c1c" roughness={0.4} metalness={0.1} clippingPlanes={clippingPlanes} />
+                          </mesh>
+                          {/* Glowing translucent light dome (Red) */}
+                          <mesh position={[0, 0.04, 0]} castShadow receiveShadow>
+                            <sphereGeometry args={[0.04, 16, 16]} />
+                            <meshStandardMaterial 
+                              color="#ef4444" 
+                              emissive="#ef4444" 
+                              emissiveIntensity={3.5} 
+                              roughness={0.1} 
+                              metalness={0.1} 
+                              clippingPlanes={clippingPlanes} 
+                            />
+                          </mesh>
+                          {/* Real PointLight to cast warm red night glow */}
+                          <pointLight color="#ef4444" intensity={0.6} distance={3.0} decay={2.0} />
+                        </group>
+                      )}
                     </group>
                   )}
                   
-                  {/* Horizontal Transoms for each frame level (Connecting inner and outer) */}
+                  {/* Transoms (horizontal bearers at each level l, connecting inner & outer standards) */}
                   {Array.from({ length: numLevels }).map((_, lIdx) => {
                     const y_level = zBase + (lIdx + 1) * 2.0;
                     const x_mid = (f.x_inner + f.x_outer) / 2;
                     const z_mid = (f.z_inner + f.z_outer) / 2;
-                    const transomLen = 0.80;
                     
-                    const isClipped = clippingPlanes.some(p => p.distanceToPoint(new THREE.Vector3(x_mid, y_level, z_mid)) < 0);
-                    if (isClipped) return null;
+                    if (clippingPlanes.some(p => p.distanceToPoint(new THREE.Vector3(x_mid, y_level, z_mid)) < 0)) return null;
+                    
+                    return (
+                      <mesh key={`transom-${lIdx}`} position={[x_mid, y_level, z_mid]} rotation={[Math.PI / 2, 0, Math.atan2(seg.nX, seg.nZ)]} castShadow receiveShadow>
+                        <cylinderGeometry args={[tubeRadius, tubeRadius, 1.0, 6]} />
+                        <meshStandardMaterial color={frameColor} metalness={0.7} roughness={0.3} clippingPlanes={clippingPlanes} />
+                      </mesh>
+                    );
+                  })}
+
+                  {/* Small diagonal corner braces (supporti diagonali grandi di accoppiamento montante-traverso, lunghi il doppio, solo sotto il traverso) */}
+                  {Array.from({ length: numLevels }).map((_, lIdx) => {
+                    const y_level = zBase + (lIdx + 1) * 2.0;
+                    
+                    const p_transom_inner_r = { x: f.x_inner + seg.nX * 0.32, y: y_level, z: f.z_inner + seg.nZ * 0.32 };
+                    const p_transom_outer_l = { x: f.x_outer - seg.nX * 0.32, y: y_level, z: f.z_outer - seg.nZ * 0.32 };
 
                     return (
-                      <group key={`transoms-${lIdx}`}>
-                        {/* Top Ledger of frame */}
-                        <mesh position={[x_mid, y_level, z_mid]} rotation={[Math.PI / 2, 0, Math.atan2(nX, nZ)]} castShadow receiveShadow>
-                          <cylinderGeometry args={[tubeRadius, tubeRadius, transomLen, 6]} />
-                          <meshStandardMaterial color={frameColor} metalness={0.7} roughness={0.4} clippingPlanes={clippingPlanes} clipShadows={true} />
+                      <group key={`braces-${lIdx}`}>
+                        {/* Inner corner brace (only at the upper part of each level, i.e. under the top transom) */}
+                        {showInner && (
+                          <CylinderBetweenPoints 
+                            p1={p_transom_inner_r} 
+                            p2={{ x: f.x_inner, y: y_level - 0.32, z: f.z_inner }} 
+                            radius={0.012} 
+                            tubeColor={frameColor} 
+                          />
+                        )}
+                        {/* Outer corner brace (only at the upper part of each level, i.e. under the top transom) */}
+                        {showOuter && (
+                          <CylinderBetweenPoints 
+                            p1={p_transom_outer_l} 
+                            p2={{ x: f.x_outer, y: y_level - 0.32, z: f.z_outer }} 
+                            radius={0.012} 
+                            tubeColor={frameColor} 
+                          />
+                        )}
+                      </group>
+                    );
+                  })}
+
+                  {/* Wall ties (ancoraggi a parete, un supporto ogni 20 mq per la stabilità) */}
+                  {Array.from({ length: numLevels }).map((_, lIdx) => {
+                    const y_level = zBase + (lIdx + 1) * 2.0;
+                    
+                    // Wall tie spacing: every 3rd frame on odd levels, or middle of short runs
+                    const isWallTie = (fIdx % 3 === 0 && lIdx % 2 === 1) || 
+                                      (seg.numSpans <= 2 && fIdx === Math.floor(seg.numSpans / 2) && lIdx === Math.min(1, numLevels - 1));
+                    
+                    if (!isWallTie || !showInner) return null;
+                    
+                    const p_start = { x: f.x_inner, y: y_level, z: f.z_inner };
+                    const p_end = { x: f.x_inner - seg.nX * 0.45, y: y_level, z: f.z_inner - seg.nZ * 0.45 };
+                    
+                    return (
+                      <group key={`wall-tie-${lIdx}`}>
+                        {/* Anchor horizontal tie rod */}
+                        <CylinderBetweenPoints p1={p_start} p2={p_end} radius={0.02} tubeColor={galvanisedColor} />
+                        
+                        {/* Orthogonal double clamp coupler at standard pole */}
+                        <mesh position={[f.x_inner, y_level, f.z_inner]} castShadow receiveShadow>
+                          <boxGeometry args={[0.07, 0.07, 0.07]} />
+                          <meshStandardMaterial color="#475569" metalness={0.8} roughness={0.3} clippingPlanes={clippingPlanes} />
                         </mesh>
-                        {/* Lower reinforcement rod of modular frame (30cm below top ledger) */}
-                        <mesh position={[x_mid, y_level - 0.3, z_mid]} rotation={[Math.PI / 2, 0, Math.atan2(nX, nZ)]} castShadow receiveShadow>
-                          <cylinderGeometry args={[braceRadius, braceRadius, transomLen, 6]} />
-                          <meshStandardMaterial color={frameColor} metalness={0.7} roughness={0.4} clippingPlanes={clippingPlanes} clipShadows={true} />
+                        
+                        {/* Wall anchor plug (tassello rosso d'ancoraggio e piastra) */}
+                        <mesh position={[p_end.x, p_end.y, p_end.z]} rotation={[Math.PI / 2, 0, Math.atan2(seg.nX, seg.nZ)]} castShadow receiveShadow>
+                          <cylinderGeometry args={[0.03, 0.03, 0.04, 6]} />
+                          <meshStandardMaterial color="#ef4444" roughness={0.5} metalness={0.1} clippingPlanes={clippingPlanes} />
                         </mesh>
-                        {/* Gusset plates in the frame corners for reinforcement */}
-                        <mesh position={[f.x_inner + nX * 0.1, y_level - 0.15, f.z_inner + nZ * 0.1]} rotation={[0, -angle, 0]} castShadow>
-                          <boxGeometry args={[0.02, 0.15, 0.08]} />
-                          <meshStandardMaterial color={frameColor} metalness={0.6} roughness={0.5} clippingPlanes={clippingPlanes} />
-                        </mesh>
-                        <mesh position={[f.x_outer - nX * 0.1, y_level - 0.15, f.z_outer - nZ * 0.1]} rotation={[0, -angle, 0]} castShadow>
-                          <boxGeometry args={[0.02, 0.15, 0.08]} />
-                          <meshStandardMaterial color={frameColor} metalness={0.6} roughness={0.5} clippingPlanes={clippingPlanes} />
+                        <mesh position={[p_end.x + seg.nX * 0.01, p_end.y, p_end.z + seg.nZ * 0.01]} rotation={[Math.PI / 2, 0, Math.atan2(seg.nX, seg.nZ)]} castShadow receiveShadow>
+                          <cylinderGeometry args={[0.05, 0.05, 0.01, 6]} />
+                          <meshStandardMaterial color="#94a3b8" roughness={0.3} metalness={0.8} clippingPlanes={clippingPlanes} />
                         </mesh>
                       </group>
                     );
@@ -1675,162 +1734,273 @@ export const Scaffolding3D = React.memo(({
               );
             })}
 
-            {/* 2. Walkway Platform Decks, Guardrails, Toe-Boards, and Diagonals (Spanned between frames) */}
-            {frames.slice(0, -1).map((_, sIdx) => {
+            {/* Render Spans (Ledgers, Braces, Planks, Guardrails, Toe-boards, and Ladders/Stairs) */}
+            {Array.from({ length: seg.numSpans }).map((_, sIdx) => {
               const f1 = frames[sIdx];
               const f2 = frames[sIdx + 1];
-              
               const x_mid_seg = (f1.x + f2.x) / 2;
               const z_mid_seg = (f1.z + f2.z) / 2;
               
+              const isLadderSpan = sIdx === 0; // place a ladder/stair inside the first span of each level
+
               return (
                 <group key={`span-${sIdx}`}>
+                  {/* Safety net (Telo/Rete antipolvere di protezione) */}
+                  {(teloLato === 'esterno' || teloLato === 'entrambi') && (
+                    <mesh 
+                      position={[
+                        (f1.x_outer + f2.x_outer) / 2, 
+                        zBase + uprightHeight / 2, 
+                        (f1.z_outer + f2.z_outer) / 2
+                      ]} 
+                      rotation={[0, -seg.angle, 0]} 
+                      castShadow 
+                      receiveShadow
+                    >
+                      <planeGeometry args={[seg.actualS, uprightHeight]} />
+                      <meshStandardMaterial 
+                        color="#047857" 
+                        transparent 
+                        opacity={0.65} 
+                        roughness={0.9}
+                        metalness={0.1}
+                        side={THREE.DoubleSide}
+                        clippingPlanes={clippingPlanes} 
+                      />
+                    </mesh>
+                  )}
+                  {(teloLato === 'interno' || teloLato === 'entrambi') && (
+                    <mesh 
+                      position={[
+                        (f1.x_inner + f2.x_inner) / 2, 
+                        zBase + uprightHeight / 2, 
+                        (f1.z_inner + f2.z_inner) / 2
+                      ]} 
+                      rotation={[0, -seg.angle, 0]} 
+                      castShadow 
+                      receiveShadow
+                    >
+                      <planeGeometry args={[seg.actualS, uprightHeight]} />
+                      <meshStandardMaterial 
+                        color="#047857" 
+                        transparent 
+                        opacity={0.65} 
+                        roughness={0.9}
+                        metalness={0.1}
+                        side={THREE.DoubleSide}
+                        clippingPlanes={clippingPlanes} 
+                      />
+                    </mesh>
+                  )}
+
                   {Array.from({ length: numLevels }).map((_, lIdx) => {
                     const y_floor = zBase + (lIdx + 1) * 2.0;
-                    
-                    // Midpoint for this platform span
-                    const x_plat = x_mid_seg + nX * 0.45;
-                    const z_plat = z_mid_seg + nZ * 0.45;
+                    const x_plat = x_mid_seg;
+                    const z_plat = z_mid_seg;
                     const y_plat = y_floor - 0.025; // Sits just below the transom level
-
-                    // Skip drawing if this platform midpoint is clipped
+                    
                     const isClipped = clippingPlanes.some(p => p.distanceToPoint(new THREE.Vector3(x_plat, y_floor, z_plat)) < 0);
                     if (isClipped) return null;
 
-                    // Draw 3 side-by-side metal walkway decks for absolute extreme realism!
-                    const planks = [-0.25, 0, 0.25];
-                    const plankWidth = 0.23; // slightly thinner to leave a tiny gap
-                    const plankThickness = 0.05;
+                    // Ledgers: horizontal lengthwise poles connecting frame standards from frame sIdx to sIdx+1
+                    const innerLedgerP1 = { x: f1.x_inner, y: y_floor, z: f1.z_inner };
+                    const innerLedgerP2 = { x: f2.x_inner, y: y_floor, z: f2.z_inner };
+                    const outerLedgerP1 = { x: f1.x_outer, y: y_floor, z: f1.z_outer };
+                    const outerLedgerP2 = { x: f2.x_outer, y: y_floor, z: f2.z_outer };
 
-                    // Inside ladder check (Let's draw a beautiful ladder hatch in the 1st span of each segment)
-                    const isLadderSpan = sIdx === 0;
+                    // Diagonal bracing on the outer side for stability
+                    const diagP1 = { x: f1.x_outer, y: y_floor - 2.0, z: f1.z_outer };
+                    const diagP2 = { x: f2.x_outer, y: y_floor, z: f2.z_outer };
+                    // Diagonal bracing on the inner side
+                    const innerDiagP1 = { x: f1.x_inner, y: y_floor - 2.0, z: f1.z_inner };
+                    const innerDiagP2 = { x: f2.x_inner, y: y_floor, z: f2.z_inner };
+
+                    // Double guardrails on the outer side for safety
+                    const outerGuardrailLowP1 = { x: f1.x_outer, y: y_floor + 0.5, z: f1.z_outer };
+                    const outerGuardrailLowP2 = { x: f2.x_outer, y: y_floor + 0.5, z: f2.z_outer };
+                    const outerGuardrailHighP1 = { x: f1.x_outer, y: y_floor + 1.0, z: f1.z_outer };
+                    const outerGuardrailHighP2 = { x: f2.x_outer, y: y_floor + 1.0, z: f2.z_outer };
 
                     return (
                       <group key={`level-${lIdx}`}>
-                        {/* Walkway Planks */}
-                        {planks.map((offsetVal, pIdx) => {
-                          // If it is a ladder span, let's omit the middle plank to leave a hatch opening!
-                          if (isLadderSpan && pIdx === 1) {
-                            // Render a nice open hatch frame with hinges!
-                            return (
-                              <group key={`hatch-${pIdx}`}>
-                                {/* Open safety door frame */}
-                                <mesh position={[x_plat + nX * offsetVal, y_plat + 0.01, z_plat + nZ * offsetVal]} rotation={[0, -angle, 0]} castShadow>
-                                  <boxGeometry args={[actualS, 0.02, plankWidth]} />
-                                  <meshStandardMaterial color="#475569" metalness={0.9} roughness={0.3} clippingPlanes={clippingPlanes} />
-                                </mesh>
-                                {/* Modular safety staircase ramp (Scala a rampa interna conforme a norma) */}
-                                {(() => {
-                                  const stepsCount = 7;
-                                  const stairWidth = 0.20; // fits perfectly inside hatch opening
-                                  
-                                  const x_b = x_plat + nX * offsetVal - uX * (actualS * 0.45);
-                                  const z_b = z_plat + nZ * offsetVal - uZ * (actualS * 0.45);
-                                  const y_b = y_floor - 2.0;
+                        {/* Ledgers */}
+                        <CylinderBetweenPoints p1={innerLedgerP1} p2={innerLedgerP2} radius={tubeRadius} tubeColor={galvanisedColor} />
+                        <CylinderBetweenPoints p1={outerLedgerP1} p2={outerLedgerP2} radius={tubeRadius} tubeColor={galvanisedColor} />
+                        
+                        {/* Diagonal braces (alternate direction based on level index) - OUTER SIDE */}
+                        {lIdx % 2 === 0 ? (
+                          <CylinderBetweenPoints p1={diagP1} p2={diagP2} radius={braceRadius} tubeColor={galvanisedColor} />
+                        ) : (
+                          <CylinderBetweenPoints 
+                            p1={{ x: f1.x_outer, y: y_floor, z: f1.z_outer }} 
+                            p2={{ x: f2.x_outer, y: y_floor - 2.0, z: f2.z_outer }} 
+                            radius={braceRadius} 
+                            tubeColor={galvanisedColor} 
+                          />
+                        )}
 
-                                  const x_t = x_plat + nX * offsetVal + uX * (actualS * 0.45);
-                                  const z_t = z_plat + nZ * offsetVal + uZ * (actualS * 0.45);
-                                  const y_t = y_floor;
+                        {/* Diagonal braces (alternate direction based on level index) - INNER SIDE */}
+                        {lIdx % 2 === 0 ? (
+                          <CylinderBetweenPoints p1={innerDiagP1} p2={innerDiagP2} radius={braceRadius} tubeColor={galvanisedColor} />
+                        ) : (
+                          <CylinderBetweenPoints 
+                            p1={{ x: f1.x_inner, y: y_floor, z: f1.z_inner }} 
+                            p2={{ x: f2.x_inner, y: y_floor - 2.0, z: f2.z_inner }} 
+                            radius={braceRadius} 
+                            tubeColor={galvanisedColor} 
+                          />
+                        )}
+
+                        {/* Outer Guardrails */}
+                        <CylinderBetweenPoints p1={outerGuardrailLowP1} p2={outerGuardrailLowP2} radius={braceRadius} tubeColor={galvanisedColor} />
+                        <CylinderBetweenPoints p1={outerGuardrailHighP1} p2={outerGuardrailHighP2} radius={braceRadius} tubeColor={galvanisedColor} />
+
+                        {/* Planks, hatches, toe-boards and ladder are only present on levels BELOW the top protective level */}
+                        {lIdx < numLevels - 1 && (
+                          <group>
+                            {/* Planks (Wooden boards, Tavole permapiede in abete con botola per scale) */}
+                            {(() => {
+                              const planksOffsets = [-0.375, -0.125, 0.125, 0.375];
+                              const plankWidth = 0.24; 
+                              const plankThickness = 0.05;
+                              const gapHalfLen = Math.min(0.35, seg.actualS * 0.25);
+
+                              return planksOffsets.map((off, pIdx) => {
+                                // If this is a ladder span, the two inner planks (off === -0.125 and -0.375)
+                                // have a cutout in the middle for the 90-degree rotated stairs!
+                                if (isLadderSpan && (off === -0.125 || off === -0.375)) {
+                                  const leftLen = seg.actualS / 2 - gapHalfLen;
+                                  const leftOffset = -(seg.actualS / 2 + gapHalfLen) / 2;
+                                  const rightLen = seg.actualS / 2 - gapHalfLen;
+                                  const rightOffset = +(seg.actualS / 2 + gapHalfLen) / 2;
 
                                   return (
-                                    <group>
-                                      {/* Left structural stringer (Cosciale sinistro) */}
-                                      <CylinderBetweenPoints 
-                                        p1={{ x: x_b - nX * 0.10, y: y_b, z: z_b - nZ * 0.10 }}
-                                        p2={{ x: x_t - nX * 0.10, y: y_t, z: z_t - nZ * 0.10 }}
-                                        radius={0.015}
-                                        tubeColor={galvanisedColor}
-                                      />
-                                      {/* Right structural stringer (Cosciale destro) */}
-                                      <CylinderBetweenPoints 
-                                        p1={{ x: x_b + nX * 0.10, y: y_b, z: z_b + nZ * 0.10 }}
-                                        p2={{ x: x_t + nX * 0.10, y: y_t, z: z_t + nZ * 0.10 }}
-                                        radius={0.015}
-                                        tubeColor={galvanisedColor}
-                                      />
-                                      {/* Horizontal steps (Gradini antisdrucciolo) */}
-                                      {Array.from({ length: stepsCount }).map((_, stIdx) => {
-                                        const ratio = (stIdx + 0.5) / stepsCount;
-                                        const xs = x_b + ratio * (x_t - x_b);
-                                        const zs = z_b + ratio * (z_t - z_b);
-                                        const ys = y_b + ratio * (y_t - y_b);
-                                        
-                                        return (
-                                          <mesh key={`stair-step-${stIdx}`} position={[xs, ys, zs]} rotation={[0, -angle, 0]} castShadow>
-                                            <boxGeometry args={[0.20, 0.012, stairWidth]} />
-                                            <meshStandardMaterial color="#cbd5e1" metalness={0.8} roughness={0.3} clippingPlanes={clippingPlanes} />
-                                          </mesh>
-                                        );
-                                      })}
-                                      {/* Safe diagonal handrail (Corrimano rampa scale) */}
-                                      <CylinderBetweenPoints 
-                                        p1={{ x: x_b + nX * 0.11, y: y_b + 0.8, z: z_b + nZ * 0.11 }}
-                                        p2={{ x: x_t + nX * 0.11, y: y_t + 0.8, z: z_t + nZ * 0.11 }}
-                                        radius={0.012}
-                                        tubeColor={galvanisedColor}
-                                      />
+                                    <group key={`plank-cutout-${pIdx}`}>
+                                      {/* Left Piece */}
+                                      {leftLen > 0.05 && (
+                                        <mesh position={[x_plat + seg.nX * off + seg.uX * leftOffset, y_plat, z_plat + seg.nZ * off + seg.uZ * leftOffset]} rotation={[0, -seg.angle, 0]} castShadow receiveShadow>
+                                          <boxGeometry args={[leftLen, plankThickness, plankWidth]} />
+                                          <meshStandardMaterial color={woodenColor} metalness={0.1} roughness={0.8} clippingPlanes={clippingPlanes} />
+                                        </mesh>
+                                      )}
+                                      {/* Right Piece */}
+                                      {rightLen > 0.05 && (
+                                        <mesh position={[x_plat + seg.nX * off + seg.uX * rightOffset, y_plat, z_plat + seg.nZ * off + seg.uZ * rightOffset]} rotation={[0, -seg.angle, 0]} castShadow receiveShadow>
+                                          <boxGeometry args={[rightLen, plankThickness, plankWidth]} />
+                                          <meshStandardMaterial color={woodenColor} metalness={0.1} roughness={0.8} clippingPlanes={clippingPlanes} />
+                                        </mesh>
+                                      )}
                                     </group>
                                   );
-                                })()}
-                              </group>
-                            );
-                          }
+                                }
 
-                          return (
-                            <mesh 
-                              key={`plank-${pIdx}`} 
-                              position={[x_plat + nX * offsetVal, y_plat, z_plat + nZ * offsetVal]} 
-                              rotation={[0, -angle, 0]} 
-                              castShadow 
-                              receiveShadow
-                            >
-                              <boxGeometry args={[actualS, plankThickness, plankWidth]} />
-                              <meshStandardMaterial 
-                                color={galvanisedColor} 
-                                metalness={0.9} 
-                                roughness={0.25} 
-                                clippingPlanes={clippingPlanes}
-                                clipShadows={true}
-                              />
-                            </mesh>
-                          );
-                        })}
+                                // Otherwise, normal solid plank
+                                return (
+                                  <mesh key={`plank-${pIdx}`} position={[x_plat + seg.nX * off, y_plat, z_plat + seg.nZ * off]} rotation={[0, -seg.angle, 0]} castShadow receiveShadow>
+                                    <boxGeometry args={[seg.actualS, plankThickness, plankWidth]} />
+                                    <meshStandardMaterial color={woodenColor} metalness={0.1} roughness={0.8} clippingPlanes={clippingPlanes} />
+                                  </mesh>
+                                );
+                              });
+                            })()}
 
-                        {/* Outer Safety Guardrails (Double security correnti at 0.5m and 1.0m above platform) */}
-                        {/* Upper Guardrail (1.0m) */}
-                        <mesh position={[x_mid_seg + nX * 0.85, y_floor + 1.0, z_mid_seg + nZ * 0.85]} rotation={[Math.PI / 2, 0, -angle]} castShadow receiveShadow>
-                          <cylinderGeometry args={[0.015, 0.015, actualS, 6]} />
-                          <meshStandardMaterial color={galvanisedColor} metalness={0.9} roughness={0.2} clippingPlanes={clippingPlanes} clipShadows={true} />
-                        </mesh>
-                        {/* Intermediate Guardrail (0.5m) */}
-                        <mesh position={[x_mid_seg + nX * 0.85, y_floor + 0.5, z_mid_seg + nZ * 0.85]} rotation={[Math.PI / 2, 0, -angle]} castShadow receiveShadow>
-                          <cylinderGeometry args={[0.015, 0.015, actualS, 6]} />
-                          <meshStandardMaterial color={galvanisedColor} metalness={0.9} roughness={0.2} clippingPlanes={clippingPlanes} clipShadows={true} />
-                        </mesh>
+                            {/* Open Hatch Cover (la botola aperta che si apre verso l'alto) */}
+                            {isLadderSpan && (() => {
+                              const gapHalfLen = Math.min(0.35, seg.actualS * 0.25);
+                              return (
+                                <group position={[x_plat + seg.uX * gapHalfLen - seg.nX * 0.25, y_plat + 0.01, z_plat + seg.uZ * gapHalfLen - seg.nZ * 0.25]} rotation={[0, -seg.angle, 0]}>
+                                  {/* Open rotation: 80 degrees upwards */}
+                                  <group rotation={[0, 0, -1.35]}>
+                                    <mesh position={[-gapHalfLen, 0.0075, 0]} castShadow receiveShadow>
+                                      <boxGeometry args={[gapHalfLen * 2, 0.015, 0.48]} />
+                                      <meshStandardMaterial color={woodenColor} metalness={0.1} roughness={0.8} clippingPlanes={clippingPlanes} />
+                                    </mesh>
+                                    {/* Small metal ring handle on the hatch */}
+                                    <mesh position={[-gapHalfLen * 1.5, 0.015, 0]}>
+                                      <torusGeometry args={[0.02, 0.004, 6, 12]} />
+                                      <meshStandardMaterial color="#475569" metalness={0.8} roughness={0.2} clippingPlanes={clippingPlanes} />
+                                    </mesh>
+                                  </group>
+                                </group>
+                              );
+                            })()}
 
-                        {/* Wooden Toe-Board (Tavola Fermapiede) - wooden yellow 20cm height */}
-                        <mesh position={[x_mid_seg + nX * 0.83, y_floor + 0.1, z_mid_seg + nZ * 0.83]} rotation={[0, -angle, 0]} castShadow receiveShadow>
-                          <boxGeometry args={[actualS, 0.20, 0.03]} />
-                          <meshStandardMaterial color={woodenColor} roughness={0.8} metalness={0.1} clippingPlanes={clippingPlanes} clipShadows={true} />
-                        </mesh>
+                            {/* Safety Toe-boards (Fermapiede in legno spessore 2.5cm altezza 15cm) */}
+                            {Array.from({ length: tavoleFermapiedeCount }).map((_, boardIdx) => {
+                              const y_offset = 0.075 + boardIdx * 0.15;
+                              return (
+                                <mesh 
+                                  key={`toe-board-${boardIdx}`}
+                                  position={[x_plat + seg.nX * 0.48, y_floor + y_offset, z_plat + seg.nZ * 0.48]} 
+                                  rotation={[0, -seg.angle, 0]} 
+                                  castShadow 
+                                  receiveShadow
+                                >
+                                  <boxGeometry args={[seg.actualS, 0.15, 0.025]} />
+                                  <meshStandardMaterial color={woodenColor} metalness={0.1} roughness={0.8} clippingPlanes={clippingPlanes} />
+                                </mesh>
+                              );
+                            })}
 
-                        {/* Diagonal Bracing (Zigzag pattern along outer face) */}
-                        {((sIdx + lIdx) % 2 === 0) ? (
-                          // Diagonal from bottom-left to top-right
-                          <CylinderBetweenPoints 
-                            p1={{ x: f1.x_outer, y: y_floor - 2.0, z: f1.z_outer }}
-                            p2={{ x: f2.x_outer, y: y_floor, z: f2.z_outer }}
-                            radius={braceRadius}
-                            tubeColor={galvanisedColor}
-                          />
-                        ) : (
-                          // Diagonal from bottom-right to top-left
-                          <CylinderBetweenPoints 
-                            p1={{ x: f2.x_outer, y: y_floor - 2.0, z: f2.z_outer }}
-                            p2={{ x: f1.x_outer, y: y_floor, z: f1.z_outer }}
-                            radius={braceRadius}
-                            tubeColor={galvanisedColor}
-                          />
+                            {/* Ladder / Stairs (Scala metallica inclinata ruotata di 90 gradi con rami e pioli) */}
+                            {isLadderSpan && (() => {
+                              const stepsCount = 8;
+                              const stairWidth = 0.32; // fits inside the open hatch cutout
+
+                              // 90-degree rotated stairs slope along the length / span direction (uX, uZ)
+                              // Bottom of ladder is shifted along -uX / -uZ, top is shifted along +uX / +uZ
+                              const len_b = -seg.actualS * 0.35;
+                              const len_t = seg.actualS * 0.15;
+
+                              // Centers in depth (around -0.25 normal offset, matching the cutout planks)
+                              const off_h = -0.25;
+
+                              const x_b = x_plat + seg.uX * len_b + seg.nX * off_h;
+                              const z_b = z_plat + seg.uZ * len_b + seg.nZ * off_h;
+                              const y_b = y_floor - 2.0;
+
+                              const x_t = x_plat + seg.uX * len_t + seg.nX * off_h;
+                              const z_t = z_plat + seg.uZ * len_t + seg.nZ * off_h;
+                              const y_t = y_floor - 0.1;
+
+                              // Left and Right rails of the ladder (separated along the NORMAL direction nX, nZ)
+                              const rail1_b = { x: x_b - seg.nX * (stairWidth / 2), y: y_b, z: z_b - seg.nZ * (stairWidth / 2) };
+                              const rail1_t = { x: x_t - seg.nX * (stairWidth / 2), y: y_t, z: z_t - seg.nZ * (stairWidth / 2) };
+                              const rail2_b = { x: x_b + seg.nX * (stairWidth / 2), y: y_b, z: z_b + seg.nZ * (stairWidth / 2) };
+                              const rail2_t = { x: x_t + seg.nX * (stairWidth / 2), y: y_t, z: z_t + seg.nZ * (stairWidth / 2) };
+
+                              return (
+                                <group key="ladder-rotated-90">
+                                  {/* Left Rail */}
+                                  <CylinderBetweenPoints p1={rail1_b} p2={rail1_t} radius={0.015} tubeColor={galvanisedColor} />
+                                  {/* Right Rail */}
+                                  <CylinderBetweenPoints p1={rail2_b} p2={rail2_t} radius={0.015} tubeColor={galvanisedColor} />
+
+                                  {/* Ladder Rungs (Pioli) */}
+                                  {Array.from({ length: stepsCount }).map((_, stIdx) => {
+                                    const ratio = (stIdx + 0.5) / stepsCount;
+                                    const xs_mid = x_b + ratio * (x_t - x_b);
+                                    const zs_mid = z_b + ratio * (z_t - z_b);
+                                    const ys_mid = y_b + ratio * (y_t - y_b);
+
+                                    // Steps connect left and right rails along the nX, nZ normal direction
+                                    const stepP1 = { x: xs_mid - seg.nX * (stairWidth / 2), y: ys_mid, z: zs_mid - seg.nZ * (stairWidth / 2) };
+                                    const stepP2 = { x: xs_mid + seg.nX * (stairWidth / 2), y: ys_mid, z: zs_mid + seg.nZ * (stairWidth / 2) };
+
+                                    return (
+                                      <CylinderBetweenPoints 
+                                        key={`rung-${stIdx}`} 
+                                        p1={stepP1} 
+                                        p2={stepP2} 
+                                        radius={0.008} 
+                                        tubeColor={galvanisedColor} 
+                                      />
+                                    );
+                                  })}
+                                </group>
+                              );
+                            })()}
+                          </group>
                         )}
                       </group>
                     );
@@ -1838,45 +2008,77 @@ export const Scaffolding3D = React.memo(({
                 </group>
               );
             })}
-
-            {/* 3. Protective Safety Netting (Draped completely on the outer face) */}
-            {(() => {
-              // The net covers the outer face of this entire segment
-              const x_mid_seg = (seg.p1.x + seg.p2.x) / 2;
-              const z_mid_seg = -(seg.p1.y + seg.p2.y) / 2;
-              const x_net = x_mid_seg + nX * 0.88;
-              const z_net = z_mid_seg + nZ * 0.88;
-              const y_net = zBase + (numLevels * 2.0) / 2;
-              const netHeight = numLevels * 2.0;
-              
-              const isClipped = clippingPlanes.some(p => p.distanceToPoint(new THREE.Vector3(x_net, y_net, z_net)) < 0);
-              if (isClipped) return null;
-
-              return (
-                <mesh position={[x_net, y_net, z_net]} rotation={[0, -angle, 0]} castShadow receiveShadow>
-                  <boxGeometry args={[seg.length, netHeight, 0.002]} />
-                  <meshStandardMaterial 
-                    color={netColor} 
-                    transparent={true} 
-                    opacity={0.4} 
-                    roughness={0.9} 
-                    metalness={0.1} 
-                    side={THREE.DoubleSide} 
-                    clippingPlanes={clippingPlanes}
-                    clipShadows={true}
-                  />
-                </mesh>
-              );
-            })()}
-
-            {/* Removed nested mantovana logic to model it as a separate BIM object */}
           </group>
+        );
+      })}
+
+      {/* Safety green net wrapping the exterior ONLY (one side of scaffolding) */}
+      {segmentsData.map((seg, idx) => {
+        const x_net = (seg.p1.x / 100 + seg.p2.x / 100) / 2 + seg.nX * 0.52;
+        const z_net = -(seg.p1.y / 100 + seg.p2.y / 100) / 2 + seg.nZ * 0.52;
+        const y_net = zBase + uprightHeight / 2;
+        if (clippingPlanes.some(p => p.distanceToPoint(new THREE.Vector3(x_net, y_net, z_net)) < 0)) return null;
+        return (
+          <mesh key={`scaffold-net-${idx}`} position={[x_net, y_net, z_net]} rotation={[0, -seg.angle, 0]}>
+            <boxGeometry args={[seg.length, uprightHeight, 0.002]} />
+            <meshStandardMaterial color={netColor} transparent opacity={0.3} side={THREE.DoubleSide} clippingPlanes={clippingPlanes} />
+          </mesh>
         );
       })}
     </group>
   );
 });
+
 Scaffolding3D.displayName = 'Scaffolding3D';
+
+// Optimization: Dedicated component for high-performance instanced meshes
+const ScaffoldingInstances = React.memo(({ instances, uprightHeight, frameColor, galvanisedColor, clippingPlanes }: any) => {
+  const stdRef = useRef<THREE.InstancedMesh>(null);
+  const traRef = useRef<THREE.InstancedMesh>(null);
+  const plaRef = useRef<THREE.InstancedMesh>(null);
+  const guaRef = useRef<THREE.InstancedMesh>(null);
+
+  useEffect(() => {
+    if (stdRef.current) {
+      instances.standards.forEach((m: any, i: number) => stdRef.current!.setMatrixAt(i, m));
+      stdRef.current.instanceMatrix.needsUpdate = true;
+    }
+    if (traRef.current) {
+      instances.transoms.forEach((m: any, i: number) => traRef.current!.setMatrixAt(i, m));
+      traRef.current.instanceMatrix.needsUpdate = true;
+    }
+    if (plaRef.current) {
+      instances.planks.forEach((m: any, i: number) => plaRef.current!.setMatrixAt(i, m));
+      plaRef.current.instanceMatrix.needsUpdate = true;
+    }
+    if (guaRef.current) {
+      instances.guardrails.forEach((m: any, i: number) => guaRef.current!.setMatrixAt(i, m));
+      guaRef.current.instanceMatrix.needsUpdate = true;
+    }
+  }, [instances]);
+
+  return (
+    <group>
+      <instancedMesh ref={stdRef} args={[null as any, null as any, instances.standards.length]} castShadow receiveShadow>
+        <boxGeometry args={[0.048, uprightHeight, 0.048]} />
+        <meshStandardMaterial color={frameColor} metalness={0.6} roughness={0.4} clippingPlanes={clippingPlanes} />
+      </instancedMesh>
+      <instancedMesh ref={traRef} args={[null as any, null as any, instances.transoms.length]} castShadow receiveShadow>
+        <cylinderGeometry args={[0.024, 0.024, 1.0, 6]} />
+        <meshStandardMaterial color={frameColor} metalness={0.6} roughness={0.4} clippingPlanes={clippingPlanes} />
+      </instancedMesh>
+      <instancedMesh ref={plaRef} args={[null as any, null as any, instances.planks.length]} castShadow receiveShadow>
+        <boxGeometry args={[1, 0.05, 0.24]} />
+        <meshStandardMaterial color={galvanisedColor} metalness={0.8} roughness={0.3} clippingPlanes={clippingPlanes} />
+      </instancedMesh>
+      <instancedMesh ref={guaRef} args={[null as any, null as any, instances.guardrails.length]} castShadow receiveShadow>
+        <cylinderGeometry args={[0.015, 0.015, 1, 6]} />
+        <meshStandardMaterial color={galvanisedColor} metalness={0.9} roughness={0.2} clippingPlanes={clippingPlanes} />
+      </instancedMesh>
+    </group>
+  );
+});
+ScaffoldingInstances.displayName = 'ScaffoldingInstances';
 
 interface Mantovana3DProps {
   points: Point[];
@@ -2030,7 +2232,7 @@ export const Mantovana3D = React.memo(({
           <group key={`mantovana-seg-${segIdx}`}>
             {/* 1. Metal cantilever brackets & high oblique tie-rods */}
             {frames.map((f, fIdx) => {
-              const startOffset = 0.85; // starts from the outer standards of the 85cm scaffolding
+              const startOffset = 0.5; // starts from the outer standards of the centered 1m scaffolding
               const x_start = f.x + nX * startOffset;
               const z_start = f.z + nZ * startOffset;
               const y_start = zBase;
@@ -2067,7 +2269,7 @@ export const Mantovana3D = React.memo(({
               const f1 = frames[sIdx];
               const f2 = frames[sIdx + 1];
 
-              const startOffset = 0.85; // starts from the outer face of scaffolding
+              const startOffset = 0.5; // starts from the outer face of scaffolding
 
               // We render 4 separate wood boards laid parallel along the support arm
               const steps = [0.15, 0.40, 0.65, 0.90];
@@ -2194,7 +2396,9 @@ export const Room = ({
   hasMantovana = true,
   mantovanaAngle = 45,
   mantovanaHeight = 4.5,
-  isScaffoldLightweight = true
+  isScaffoldLightweight = false,
+  teloLato = 'esterno',
+  tavoleFermapiedeCount = 1
 }: { 
   points: Point[], 
   holes?: Point[][], 
@@ -2234,7 +2438,9 @@ export const Room = ({
   hasMantovana?: boolean,
   mantovanaAngle?: number,
   mantovanaHeight?: number,
-  isScaffoldLightweight?: boolean
+  isScaffoldLightweight?: boolean,
+  teloLato?: 'none' | 'esterno' | 'interno' | 'entrambi',
+  tavoleFermapiedeCount?: number
 }) => {
   if (renderingStyle === 'ponteggio') {
     return (
@@ -2249,6 +2455,8 @@ export const Room = ({
         mantovanaAngle={mantovanaAngle}
         mantovanaHeight={mantovanaHeight}
         lightweight={isScaffoldLightweight}
+        teloLato={teloLato}
+        tavoleFermapiedeCount={tavoleFermapiedeCount}
       />
     );
   }
@@ -2524,21 +2732,6 @@ export const Room = ({
             </mesh>
           </group>
         ))}
-
-        {name && (
-          <Text
-            position={center as [number, number, number]}
-            fontSize={0.16}
-            color="white"
-            anchorX="center"
-            anchorY="middle"
-            outlineWidth={0.02}
-            outlineColor="#0f172a"
-            visible={clippingPlanes.length === 0 || clippingPlanes.every(p => p.distanceToPoint(new THREE.Vector3(...(center as [number, number, number]))) >= 0)}
-          >
-            {name}
-          </Text>
-        )}
       </group>
     );
   }
@@ -2713,20 +2906,7 @@ export const Room = ({
           </mesh>
         )}
 
-        {name && (
-          <Text
-            position={center as [number, number, number]}
-            fontSize={0.16}
-            color="white"
-            anchorX="center"
-            anchorY="middle"
-            outlineWidth={0.02}
-            outlineColor="#0f172a"
-            visible={clippingPlanes.length === 0 || clippingPlanes.every(p => p.distanceToPoint(new THREE.Vector3(...(center as [number, number, number]))) >= 0)}
-          >
-            {name}
-          </Text>
-        )}
+
       </group>
 
       {/* Flat section cap matching the sliced segment perfectly */}
@@ -3814,7 +3994,7 @@ const renderPoint = (entity: PointEntity) => {
   );
 };
 
-const CADHatch3D = ({ entity }: { entity: HatchEntity }) => {
+const CADHatch3D: React.FC<{ entity: HatchEntity }> = ({ entity }) => {
   const [textureObj, setTextureObj] = useState<{ tex: THREE.CanvasTexture } | null>(null);
 
   useEffect(() => {
@@ -4224,7 +4404,7 @@ const CADHatch3D = ({ entity }: { entity: HatchEntity }) => {
   );
 };
 
-const CADImage3D = ({ entity }: { entity: ImageEntity }) => {
+const CADImage3D: React.FC<{ entity: ImageEntity }> = ({ entity }) => {
   const [texture, setTexture] = useState<THREE.Texture | null>(null);
 
   useEffect(() => {
@@ -4594,6 +4774,64 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
   const [cameraPreset, setCameraPreset] = useState<'FRONT' | 'BACK' | 'LEFT' | 'RIGHT' | 'TOP' | 'BOTTOM' | 'ISO' | null>(null);
   const [cameraViewMode, setCameraViewMode] = useState<'FRONT' | 'BACK' | 'LEFT' | 'RIGHT' | 'TOP' | 'BOTTOM' | 'ISO'>('ISO');
   const [flashingId, setFlashingId] = useState<string | null>(null);
+  const controlsRef = useRef<any>(null);
+  const [isZoomToggleEnabled, setIsZoomToggleEnabled] = useState(false);
+  const [activeKey, setActiveKey] = useState<string | null>(null);
+  const [isMagicZoomActive, setIsMagicZoomActive] = useState(false);
+
+  const effectiveMagicZoom = isMagicZoomActive || isZoomToggleEnabled;
+
+  useEffect(() => {
+    if (controlsRef.current) {
+      controlsRef.current.zoomSpeed = effectiveMagicZoom ? 6.0 : 1.2;
+    }
+  }, [effectiveMagicZoom]);
+
+  useEffect(() => {
+    const getFriendlyKeyName = (key: string): string => {
+      if (key === ' ') return 'BARRA SPAZIATRICE';
+      if (key === 'Shift') return 'MAIUSC (SHIFT)';
+      if (key === 'Control') return 'CTRL';
+      if (key === 'Alt') return 'ALT';
+      if (key === 'CapsLock') return 'BLOC MAIUSC (CAPS)';
+      if (key === 'NumLock') return 'BLOC NUM';
+      if (key === 'ScrollLock') return 'BLOC SCORR';
+      return key.toUpperCase();
+    };
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (document.activeElement?.tagName === 'INPUT' || document.activeElement?.tagName === 'TEXTAREA') {
+        return;
+      }
+      // Evitiamo tasti di navigazione/sistema o cancellazione
+      if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Delete', 'Backspace', 'Escape', 'Enter', 'Tab'].includes(e.key)) {
+        return;
+      }
+      setIsMagicZoomActive(true);
+      setActiveKey(getFriendlyKeyName(e.key));
+    };
+
+    const handleKeyUp = (e: KeyboardEvent) => {
+      setIsMagicZoomActive(false);
+      setActiveKey(null);
+    };
+
+    // Fallback on blur
+    const handleBlur = () => {
+      setIsMagicZoomActive(false);
+      setActiveKey(null);
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    window.addEventListener('keyup', handleKeyUp);
+    window.addEventListener('blur', handleBlur);
+
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('keyup', handleKeyUp);
+      window.removeEventListener('blur', handleBlur);
+    };
+  }, []);
   
   const flashEntity = (id: string) => {
     setFlashingId(id);
@@ -4616,12 +4854,23 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
   const [isSectionMode, setIsSectionMode] = useState(false);
   const [showSectionConfig, setShowSectionConfig] = useState(false);
   const [isRealistic, setIsRealistic] = useState(true);
-  const [isScaffoldLightweight, setIsScaffoldLightweight] = useState(true);
+  const [isScaffoldLightweight, setIsScaffoldLightweight] = useState(false);
   const [globalOpacityMode, setGlobalOpacityMode] = useState<'WORK' | 'SOLID'>('SOLID');
   const [globalRoomOpacityVal, setGlobalRoomOpacityVal] = useState<number>(0.25);
   const [globalWallOpacityVal, setGlobalWallOpacityVal] = useState<number>(1.0);
   const [transparentEntities, setTransparentEntities] = useState<Set<string>>(new Set());
   const [stepCm, setStepCm] = useState(10);
+
+  // BIM Survey (Rilievo) States
+  const [isSurveyModeActive, setIsSurveyModeActive] = useState(false);
+  const [surveyCategoryFilter, setSurveyCategoryFilter] = useState<string>('TUTTI');
+  const [surveyFloorFilter, setSurveyFloorFilter] = useState<string>('TUTTI');
+  const [activeSurveyWork, setActiveSurveyWork] = useState<any>(null);
+  const [surveyHighlightId, setSurveyHighlightId] = useState<string | null>(null);
+  const [isSurveyDialogOpen, setIsSurveyDialogOpen] = useState(false);
+  const [surveyTargetEntity, setSurveyTargetEntity] = useState<Entity | null>(null);
+  const [surveySelectedIds, setSurveySelectedIds] = useState<Set<string>>(new Set());
+  const [expandedNodes, setExpandedNodes] = useState<Set<string>>(new Set(['TUTTI']));
 
   // Technical section style settings (command of the section and saving in localStorage)
   const [sectionHatchMode, setSectionHatchMode] = useState<boolean>(() => {
@@ -5300,9 +5549,9 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
       id: `bim-elem-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
       points: pendingFace.points,
       isLinear: pendingFace.isLinear,
-      bimFamily: data.subFamily || data.familyId,
+      bimFamily: data.subFamily || BIM_FAMILIES.find(f => f.id === data.familyId)?.name || data.familyId,
       bimFamilyId: data.familyId,
-      bimAreaType: data.familyId,
+      bimAreaType: data.subFamily || BIM_FAMILIES.find(f => f.id === data.familyId)?.name || data.familyId,
       bimSubFamily: data.subFamily || data.familyId,
       bimData: undefined,
       bimName: data.name,
@@ -5357,9 +5606,9 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
         const newElement: Entity = {
           ...original,
           id: `bim-elem-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
-          bimFamily: data.subFamily || data.familyId,
+          bimFamily: data.subFamily || BIM_FAMILIES.find(f => f.id === data.familyId)?.name || data.familyId,
           bimFamilyId: data.familyId,
-          bimAreaType: data.familyId,
+          bimAreaType: data.subFamily || BIM_FAMILIES.find(f => f.id === data.familyId)?.name || data.familyId,
           bimSubFamily: data.subFamily || data.familyId,
           bimData: undefined,
           bimName: data.name,
@@ -5461,9 +5710,9 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
         if (e.id === editingEntityId) {
           return {
             ...e,
-            bimFamily: data.subFamily || data.familyId,
+            bimFamily: data.subFamily || BIM_FAMILIES.find(f => f.id === data.familyId)?.name || data.familyId,
             bimFamilyId: data.familyId,
-            bimAreaType: data.familyId,
+            bimAreaType: data.subFamily || BIM_FAMILIES.find(f => f.id === data.familyId)?.name || data.familyId,
             bimSubFamily: data.subFamily || data.familyId,
             bimData: undefined,
             bimName: data.name,
@@ -5486,9 +5735,9 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
 
       setSelectedEntity(prev => prev && prev.id === editingEntityId ? {
         ...prev,
-        bimFamily: data.subFamily || data.familyId,
+        bimFamily: data.subFamily || BIM_FAMILIES.find(f => f.id === data.familyId)?.name || data.familyId,
         bimFamilyId: data.familyId,
-        bimAreaType: data.familyId,
+        bimAreaType: data.subFamily || BIM_FAMILIES.find(f => f.id === data.familyId)?.name || data.familyId,
         bimSubFamily: data.subFamily || data.familyId,
         bimData: undefined,
         bimName: data.name,
@@ -5531,6 +5780,7 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
 
         return {
           ...e,
+          bimFamily: 'Porte',
           bimName: `Porta ${width}`,
           bimWidth: width,
           bimHeight: height,
@@ -5545,6 +5795,7 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
 
     setSelectedEntity(prev => prev && prev.id === editingEntityId ? {
       ...prev,
+      bimFamily: 'Porte',
       bimName: `Porta ${width}`,
       bimWidth: width,
       bimHeight: height,
@@ -5577,6 +5828,7 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
 
         return {
           ...e,
+          bimFamily: 'Finestre',
           bimName: `Finestra ${width}x${height}`,
           bimWidth: width,
           bimWindowHeight: height,
@@ -5596,6 +5848,7 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
 
     setSelectedEntity(prev => prev && prev.id === editingEntityId ? {
       ...prev,
+      bimFamily: 'Finestre',
       bimName: `Finestra ${width}x${height}`,
       bimWidth: width,
       bimWindowHeight: height,
@@ -5826,6 +6079,7 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
               setIsPickFaceMode('OFF');
               setPendingFace(null);
               setIsRotationMode(false);
+              setIsSurveyModeActive(false);
               onShowToast?.("Modalità Modifica attiva: clicca su un elemento 3D per modificarlo o clonarlo.");
               if (selectedEntity) {
                 handleOpenClickDialog(selectedEntity);
@@ -5841,6 +6095,27 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
         >
           <Edit size={22} className={isEditBIMModeActive ? "animate-bounce" : "text-emerald-600"} />
           <span className="text-[10px] font-black uppercase tracking-wider">MODIFICA ELEMENTO BIM</span>
+        </button>
+
+        <button 
+          onClick={() => {
+            setIsSurveyModeActive(!isSurveyModeActive);
+            if (!isSurveyModeActive) {
+              setIsEditBIMModeActive(false);
+              setIsPickFaceMode('OFF');
+              setIsRotationMode(false);
+              onShowToast?.("Modalità Rilievo BIM attiva: seleziona una lavorazione e clicca gli elementi da rilevare.");
+            }
+          }}
+          className={`p-3 rounded-xl transition-all active:scale-95 flex items-center gap-1.5 cursor-pointer border ${
+            isSurveyModeActive 
+              ? 'bg-indigo-600 border-indigo-700 text-white shadow-lg shadow-indigo-200 animate-pulse font-black text-xs px-4' 
+              : 'hover:bg-slate-50 text-slate-400 border-neutral-200 bg-white shadow-sm hover:text-indigo-600 px-4'
+          }`}
+          title="Rilievo BIM e Computo Masivo"
+        >
+          <Activity size={22} className={isSurveyModeActive ? "animate-pulse" : "text-indigo-600"} />
+          <span className="text-[10px] font-black uppercase tracking-wider">RILIEVO BIM</span>
         </button>
 
         <button 
@@ -6222,7 +6497,7 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
                 <p className="text-slate-300 text-[10px] mt-1 pr-1 pl-1">Traccia o rileva elementi BIM in pianta 2D prima di accedere all'albero di controllo.</p>
               </div>
             ) : (
-              Object.entries(bimTreeFamilies).map(([familyName, familyMembers]) => {
+              (Object.entries(bimTreeFamilies) as [string, Entity[]][]).map(([familyName, familyMembers]) => {
                 const isExpanded = expandedFamilies[familyName] !== false;
                 const allVisible = familyMembers.every(m => (m as any).isVisible !== false);
                 const allFrozen = familyMembers.every(m => (m as any).isFrozen === true);
@@ -6270,7 +6545,7 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
                               ? 'bg-amber-500/10 text-amber-500 hover:bg-amber-500/20' 
                               : 'bg-slate-200/60 text-slate-400 hover:bg-slate-200'
                           }`}
-                          title={allVisible ? "Spegni tutta la famiglia" : "Accendi tutta la famiglia"}
+                          title={allVisible ? "Spegni tutta la categoria" : "Accendi tutta la categoria"}
                         >
                           {allVisible ? <Lightbulb size={12.5} /> : <LightbulbOff size={12.5} />}
                         </button>
@@ -6292,7 +6567,7 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
                               ? 'bg-amber-500/15 text-amber-600 hover:bg-amber-500/25' 
                               : 'bg-slate-200/60 text-slate-400 hover:bg-slate-200'
                           }`}
-                          title={allFrozen ? "Sblocca tutta la famiglia" : "Congela/Blocca tutta la famiglia"}
+                          title={allFrozen ? "Sblocca tutta la categoria" : "Congela/Blocca tutta la categoria"}
                         >
                           {allFrozen ? <Lock size={12.5} /> : <Unlock size={12.5} />}
                         </button>
@@ -6300,7 +6575,7 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
                         {/* Delete entire Family */}
                         <button
                           onClick={() => {
-                            if (confirm(`Sei sicuro di voler eliminare interamente la famiglia "${familyName}" insieme a tutti i suoi ${familyMembers.length} oggetti?`)) {
+                            if (confirm(`Sei sicuro di voler eliminare interamente la categoria "${familyName}" insieme a tutti i suoi ${familyMembers.length} oggetti?`)) {
                               setEntities(prev => prev.filter(ent => !(ent.isBIM && (((ent as any).bimFamily === familyName) || ((ent as any).bimAreaType === familyName)))));
                               if (selectedEntity && (((selectedEntity as any).bimFamily === familyName) || ((selectedEntity as any).bimAreaType === familyName))) {
                                 setSelectedEntity(null);
@@ -6309,7 +6584,7 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
                             }
                           }}
                           className="p-1.5 rounded-lg text-rose-500 hover:bg-rose-50 transition-all duration-200 cursor-pointer"
-                          title="Elimina intera famiglia"
+                          title="Elimina intera categoria"
                         >
                           <Trash2 size={12.5} />
                         </button>
@@ -6886,7 +7161,7 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
                 </div>
               </div>
 
-              {/* Controlli Filtro Multi-Livello (Elemento + Famiglia) */}
+              {/* Controlli Filtro Multi-Livello (Elemento + Categoria) */}
               {(() => {
                 const familyName = (selectedEntity as any).bimFamily || (selectedEntity as any).bimAreaType || 'Altri Elementi';
                 const familyMembers = entities.filter(e => e.isBIM && (((e as any).bimFamily === familyName) || ((e as any).bimAreaType === familyName)));
@@ -6919,7 +7194,7 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
                 };
 
                 const deleteFamily = () => {
-                  if (confirm(`Sei sicuro di voler eliminare l'intera famiglia di elementi "${familyName}" contenente ${familyMembers.length} oggetti?`)) {
+                  if (confirm(`Sei sicuro di voler eliminare l'intera categoria di elementi "${familyName}" contenente ${familyMembers.length} oggetti?`)) {
                     setEntities((prev: Entity[]) => prev.filter(e => !(e.isBIM && (((e as any).bimFamily === familyName) || ((e as any).bimAreaType === familyName)))));
                     setSelectedEntity(null);
                     setInspectorOpen(false);
@@ -6972,7 +7247,7 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
                     {/* Row 2: Selected Family Control */}
                     <div className="flex items-center justify-between gap-3 border-t border-slate-200/50 pt-2.5">
                       <div className="min-w-0 pr-1 flex-1">
-                        <span className="block text-[8px] text-slate-400 uppercase tracking-wider font-extrabold">Famiglia di Appartenenza</span>
+                        <span className="block text-[8px] text-slate-400 uppercase tracking-wider font-extrabold">Categoria di Appartenenza</span>
                         <span className="block font-black text-slate-800 truncate text-[11px]" title={familyName}>
                           📁 {familyName}
                         </span>
@@ -6983,7 +7258,7 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
                         <button
                           onClick={toggleFamilyVisibility}
                           className={`p-2 rounded-xl transition-all duration-300 ${!isFamilyVisible ? 'bg-slate-200 text-slate-400' : 'bg-cyan-600/10 text-cyan-700 hover:bg-cyan-600/20'}`}
-                          title={isFamilyVisible ? "Nascondi Intera Famiglia" : "Mostra Intera Famiglia"}
+                          title={isFamilyVisible ? "Nascondi Intera Categoria" : "Mostra Intera Categoria"}
                         >
                           {!isFamilyVisible ? <EyeOff size={13} /> : <Eye size={13} />}
                         </button>
@@ -6991,7 +7266,7 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
                         <button
                           onClick={toggleFamilyFrozen}
                           className={`p-2 rounded-xl transition-all duration-300 ${isFamilyFrozen ? 'bg-amber-100 text-amber-700 hover:bg-amber-200' : 'bg-slate-100 text-slate-400 hover:bg-slate-200'}`}
-                          title={isFamilyFrozen ? "Sblocca Intera Famiglia" : "Congela Intera Famiglia"}
+                          title={isFamilyFrozen ? "Sblocca Intera Categoria" : "Congela Intera Categoria"}
                         >
                           {isFamilyFrozen ? <Lock size={13} /> : <Unlock size={13} />}
                         </button>
@@ -6999,7 +7274,7 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
                         <button
                           onClick={deleteFamily}
                           className="p-2 rounded-xl transition-all duration-300 bg-rose-100 text-rose-700 hover:bg-rose-200"
-                          title="Elimina Intera Famiglia di Elementi"
+                          title="Elimina Intera Categoria di Elementi"
                         >
                           <Trash2 size={13} />
                         </button>
@@ -7639,6 +7914,25 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
             <div className={`absolute top-1 w-3.5 h-3.5 bg-white rounded-full shadow-sm transition-all duration-300 ${isStratifiedView ? 'left-5.5' : 'left-1'}`} />
           </button>
         </div>
+
+        {/* Zoom 5x Toggle (Tasto Magico) */}
+        <div className="flex items-center justify-between pt-2.5 border-t border-slate-100 mt-1">
+          <div className="flex items-center gap-2">
+            <Zap size={14} className={effectiveMagicZoom ? "text-orange-500 fill-orange-500/20" : "text-slate-400"} />
+            <div className="flex flex-col">
+              <span className="text-[10px] font-black text-slate-600 uppercase tracking-wider">Super Zoom 5x</span>
+              <span className="text-[8px] text-orange-600 font-bold tracking-tight uppercase">⚡ Rotellina Super Veloce</span>
+            </div>
+          </div>
+          <button
+            onClick={() => {
+              setIsZoomToggleEnabled(!isZoomToggleEnabled);
+            }}
+            className={`w-10 h-5.5 rounded-full transition-all relative cursor-pointer outline-none border-none ${isZoomToggleEnabled ? 'bg-orange-500 shadow-[0_0_10px_rgba(249,115,22,0.3)]' : 'bg-slate-200 shadow-inner'}`}
+          >
+            <div className={`absolute top-1 w-3.5 h-3.5 bg-white rounded-full shadow-sm transition-all duration-300 ${isZoomToggleEnabled ? 'left-5.5' : 'left-1'}`} />
+          </button>
+        </div>
       </div>
 
       {/* Navigation Help */}
@@ -7654,7 +7948,29 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
         <div className="flex items-center gap-2 text-[10px] font-bold text-indigo-500">
           <div className="bg-indigo-50 px-2 py-1 rounded border-b-2 border-indigo-200">CTRL</div> + Click FACCIA FINITURA
         </div>
+        <div className="w-px h-4 bg-slate-200" />
+        <div className={`flex items-center gap-2 text-[10px] font-bold transition-all duration-300 ${effectiveMagicZoom ? 'text-orange-500 scale-105' : 'text-slate-500'}`}>
+          <div className={`px-2 py-1 rounded border-b-2 font-mono transition-all duration-300 ${effectiveMagicZoom ? 'bg-orange-500 text-white border-orange-600 shadow-[0_0_12px_rgba(249,115,22,0.5)] animate-pulse' : 'bg-slate-100 border-slate-300'}`}>
+            {effectiveMagicZoom ? `ATTIVO (Tasto ${activeKey || 'Interruttore'})` : 'PREMI UN TASTO (es. SHIFT / SPAZIO / BLOC MAIUSC)'}
+          </div>
+          ZOOM VELOCE 5X
+        </div>
       </div>
+
+      {/* Tasto Magico Zoom 5x Floating Alert Banner */}
+      <AnimatePresence>
+        {effectiveMagicZoom && (
+          <motion.div
+            initial={{ opacity: 0, y: -20, x: "-50%", scale: 0.9 }}
+            animate={{ opacity: 1, y: 0, x: "-50%", scale: 1 }}
+            exit={{ opacity: 0, y: -20, x: "-50%", scale: 0.9 }}
+            className="absolute top-24 left-1/2 z-[100] flex items-center gap-2 bg-gradient-to-r from-orange-500 to-amber-500 text-white px-5 py-2.5 rounded-full shadow-lg border border-orange-400 font-bold text-xs tracking-wider uppercase pointer-events-none"
+          >
+            <Sparkles size={14} className="animate-spin text-white" style={{ animationDuration: '3s' }} />
+            <span>Super Zoom 5x Attivo! {activeKey ? `(${activeKey})` : '(Interruttore Attivo)'} ⚡</span>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* 3D SCENE CANVAS */}
       <div className={`flex-1 cursor-crosshair transition-colors duration-1000 ${isRealistic ? 'bg-gradient-to-b from-sky-100 to-white' : 'bg-[#fdfdfd]'}`}>
@@ -7792,9 +8108,10 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
             />
           )}
           <OrbitControls 
+            ref={controlsRef}
             enableDamping={false}
             rotateSpeed={1.0}
-            zoomSpeed={1.2}
+            zoomSpeed={effectiveMagicZoom ? 6.0 : 1.2}
             panSpeed={1.0}
             maxPolarAngle={Math.PI} 
             minPolarAngle={0}
@@ -7880,6 +8197,16 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
               />
             )}
             {bimEntities.map((entity) => {
+              const e = entity as any;
+              
+              const isCatFiltered = surveyCategoryFilter === 'TUTTI' || 
+                                (e.bimFamily || e.bimAreaType || 'Altri').toUpperCase().includes(surveyCategoryFilter.toUpperCase());
+              
+              const isFloorFiltered = surveyFloorFilter === 'TUTTI' ||
+                                (e.layer || '').toUpperCase().includes(surveyFloorFilter.toUpperCase());
+
+              const isFiltered = isCatFiltered && isFloorFiltered;
+
               let points: Point[] = [];
               if (entity.type === 'line') {
                 points = [(entity as LineEntity).start, (entity as LineEntity).end];
@@ -7903,10 +8230,26 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
               const isSelected = selectedEntity?.id === entity.id;
               const isHovered = hoveredId === entity.id;
               const isFlashing = flashingId === entity.id;
-              const color = isFlashing ? '#22c55e' : (isSelected ? '#06b6d4' : (entity.color || (isMuro ? '#f8fafc' : '#3b82f6')));
-              const entityOpacity = (entity as any).hideIn2D ? 0.08 : (transparentEntities.has(entity.id) ? 0.3 : 1);
+              const isSurveyed = !!e.cost_5d?.prezzarioCodice;
+              const isSurveySelected = surveySelectedIds.has(entity.id);
 
-              const e = entity as any;
+              let color = isFlashing ? '#22c55e' : (isSelected ? '#06b6d4' : (entity.color || (isMuro ? '#f8fafc' : '#3b82f6')));
+              let entityOpacity = (entity as any).hideIn2D ? 0.08 : (transparentEntities.has(entity.id) ? 0.3 : 1);
+
+              if (isSurveyModeActive) {
+                if (isSurveySelected) {
+                  color = '#f59e0b'; // Amber for selection
+                  entityOpacity = 1;
+                } else if (isFiltered) {
+                  color = isSurveyed ? '#4f46e5' : (isMuro ? '#f8fafc' : '#3b82f6');
+                  entityOpacity = isHovered ? 1 : 0.8;
+                } else {
+                  color = '#cbd5e1';
+                  entityOpacity = 0.05;
+                }
+              } else if (isSurveyed) {
+                color = '#4f46e5';
+              }
               
               // Pivot calculation for dynamic 3D nested rotation (Front, Side or Top planes)
               let px = 0;
@@ -7948,9 +8291,34 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
               return (
                 <group 
                   key={entity.id} 
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      const isBlocOrModifier = !isEditBIMModeActive && (
+                  onClick={(e) => {
+                    e.stopPropagation();
+
+                    if (isSurveyModeActive) {
+                      const ent = entity as any;
+                      const cat = (ent.bimFamily || ent.bimAreaType || 'Altri');
+                      const floor = floors.find(f => f.name === ent.layer);
+                      
+                      if (floor) {
+                        setExpandedNodes(prev => {
+                          const next = new Set(prev);
+                          next.add(floor.id);
+                          next.add(`${floor.id}-${cat}`);
+                          return next;
+                        });
+                      }
+                      
+                      setSurveySelectedIds(prev => {
+                        const next = new Set(prev);
+                        if (next.has(entity.id)) next.delete(entity.id);
+                        else next.add(entity.id);
+                        return next;
+                      });
+                      setSurveyTargetEntity(entity);
+                      return;
+                    }
+
+                    const isBlocOrModifier = !isEditBIMModeActive && (
                         isPickFaceMode !== 'OFF' || 
                         e.ctrlKey || 
                         e.altKey || 
@@ -8123,6 +8491,7 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
                             parentPivot: [px, py, pz],
                             parentRotation: [rx, ry, rz],
                             parentEntityId: entity.id,
+                            parentBimName: (entity as any).bimName || (entity as any).bimFamily || 'Elemento',
                             normalX: unrotatedNormal.x,
                             normalY: unrotatedNormal.y,
                             normalZ: unrotatedNormal.z,
@@ -8591,6 +8960,8 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
                               mantovanaAngle={e.mantovanaAngle}
                               mantovanaHeight={e.mantovanaHeight}
                               isScaffoldLightweight={isScaffoldLightweight}
+                              teloLato={(e as any).teloLato}
+                              tavoleFermapiedeCount={(e as any).tavoleFermapiedeCount}
                             />
                           ) : (
                             <Wall 
@@ -8662,6 +9033,8 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
                               mantovanaAngle={e.mantovanaAngle}
                               mantovanaHeight={e.mantovanaHeight}
                               isScaffoldLightweight={isScaffoldLightweight}
+                              teloLato={(e as any).teloLato}
+                              tavoleFermapiedeCount={(e as any).tavoleFermapiedeCount}
                             />
                           );
                         } else if (entity.bimType === 'door' || entity.bimType === 'window') {
@@ -8678,6 +9051,387 @@ export const BIM3DViewer: React.FC<BIM3DViewerProps> = ({ entities, onClose, set
           </group>
         </Canvas>
       </div>
+
+      {/* Survey Sidebar */}
+      <AnimatePresence>
+        {isSurveyModeActive && (
+          <motion.div
+            initial={{ x: -400, opacity: 0 }}
+            animate={{ x: 0, opacity: 1 }}
+            exit={{ x: -400, opacity: 0 }}
+            className="absolute top-24 left-8 z-[70] w-72 bg-white/95 backdrop-blur-2xl rounded-[2rem] shadow-[0_20px_60px_-15px_rgba(0,0,0,0.2)] border border-slate-100 flex flex-col max-h-[75vh]"
+          >
+            <div className="p-5 flex flex-col h-full overflow-hidden">
+              <div className="flex items-center justify-between mb-4">
+                <div className="flex items-center gap-3">
+                  <div className="p-2.5 bg-indigo-600 rounded-xl text-white shadow-lg shadow-indigo-100">
+                    <Activity size={18} />
+                  </div>
+                  <h3 className="font-black text-slate-800 text-base tracking-tight">Rilievo BIM</h3>
+                </div>
+                <button onClick={() => setIsSurveyModeActive(false)} className="text-slate-300 hover:text-slate-600 transition-colors cursor-pointer">
+                  <X size={18} />
+                </button>
+              </div>
+
+              {/* Selection Summary Badge */}
+              {surveySelectedIds.size > 0 ? (
+                <div className="mb-4 p-3 bg-indigo-600 rounded-2xl shadow-lg shadow-indigo-100 flex items-center justify-between animate-in fade-in slide-in-from-top-2">
+                  <div className="flex flex-col">
+                    <span className="text-[9px] font-black text-indigo-100 uppercase tracking-widest">Selezionati</span>
+                    <span className="text-sm font-black text-white">{surveySelectedIds.size} Elementi</span>
+                  </div>
+                  <button 
+                    onClick={() => {
+                      const firstId = Array.from(surveySelectedIds)[0];
+                      const target = entities.find(e => e.id === firstId);
+                      if (target) {
+                        setSurveyTargetEntity(target);
+                        setIsSurveyDialogOpen(true);
+                      }
+                    }}
+                    className="bg-white text-indigo-600 px-3 py-1.5 rounded-xl text-[10px] font-black uppercase hover:bg-indigo-50 transition-all active:scale-95 flex items-center gap-1.5"
+                  >
+                    <Link size={12} />
+                    Associa Voce
+                  </button>
+                </div>
+              ) : (
+                <div className="mb-4 p-3 bg-slate-50 rounded-2xl border border-dashed border-slate-200 flex flex-col items-center justify-center gap-1">
+                   <Target size={16} className="text-slate-300" />
+                   <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest">Clicca un elemento 3D</span>
+                </div>
+              )}
+
+              <div className="space-y-4 flex-1 overflow-y-auto pr-1 scrollbar-thin">
+              {/* Advanced BIM Tree (Albero BIM) */}
+              <div className="flex-1 overflow-hidden flex flex-col">
+                <div className="flex items-center justify-between px-1 mb-3">
+                  <div className="flex items-center gap-2">
+                    <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Albero Progetto</span>
+                    <span className="bg-indigo-100 text-indigo-600 text-[9px] px-2 py-0.5 rounded-full font-black">
+                      {entities.filter(e => e.isBIM).length}
+                    </span>
+                  </div>
+                  <div className="flex gap-3">
+                    <button 
+                      onClick={() => {
+                        const allBimIds = entities.filter(e => e.isBIM).map(e => e.id);
+                        setSurveySelectedIds(new Set(allBimIds));
+                      }}
+                      className="text-[9px] font-black text-indigo-600 uppercase hover:underline"
+                    >
+                      Tutti
+                    </button>
+                    <button 
+                      onClick={() => setSurveySelectedIds(new Set())}
+                      className="text-[9px] font-black text-rose-500 uppercase hover:underline"
+                    >
+                      Reset
+                    </button>
+                  </div>
+                </div>
+
+                <div className="flex-1 overflow-y-auto pr-1 scrollbar-thin space-y-2 pb-4">
+                  {floors.map(floor => {
+                    const floorEntities = entities.filter(ent => ent.isBIM && (ent as any).layer === floor.name);
+                    const isExpanded = expandedNodes.has(floor.id);
+                    const selectedInFloor = floorEntities.filter(ent => surveySelectedIds.has(ent.id)).length;
+                    const allInFloorSelected = floorEntities.length > 0 && selectedInFloor === floorEntities.length;
+                    
+                    return (
+                      <div key={floor.id} className="bg-slate-50/50 rounded-2xl border border-slate-100 overflow-hidden">
+                        <div className="flex items-center px-3 py-2.5 hover:bg-slate-100 transition-colors group">
+                          <button 
+                            onClick={() => {
+                              setExpandedNodes(prev => {
+                                const next = new Set(prev);
+                                if (next.has(floor.id)) next.delete(floor.id);
+                                else next.add(floor.id);
+                                return next;
+                              });
+                            }}
+                            className="flex items-center gap-2 flex-1"
+                          >
+                            {isExpanded ? <ChevronDown size={14} className="text-slate-400" /> : <ChevronRight size={14} className="text-slate-400" />}
+                            <Building size={14} className="text-amber-500" />
+                            <span className="text-[11px] font-black text-slate-700">{floor.name.toUpperCase()}</span>
+                          </button>
+                          <div className="flex items-center gap-3">
+                            {selectedInFloor > 0 && (
+                              <span className="text-[9px] font-black text-indigo-600 bg-indigo-50 px-1.5 py-0.5 rounded-md">
+                                {selectedInFloor}
+                              </span>
+                            )}
+                            <input 
+                              type="checkbox"
+                              checked={allInFloorSelected}
+                              onChange={(e) => {
+                                setSurveySelectedIds(prev => {
+                                  const next = new Set(prev);
+                                  floorEntities.forEach(ent => {
+                                    if (e.target.checked) next.add(ent.id);
+                                    else next.delete(ent.id);
+                                  });
+                                  return next;
+                                });
+                              }}
+                              className="w-4 h-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 cursor-pointer"
+                            />
+                          </div>
+                        </div>
+
+                        <AnimatePresence>
+                          {isExpanded && (
+                            <motion.div 
+                              initial={{ height: 0, opacity: 0 }} 
+                              animate={{ height: 'auto', opacity: 1 }} 
+                              exit={{ height: 0, opacity: 0 }}
+                              className="overflow-hidden bg-white/50 border-t border-slate-100/50"
+                            >
+                              <div className="py-1 px-4 space-y-1">
+                                {Array.from(new Set(floorEntities.map(ent => (ent as any).bimFamily || (ent as any).bimAreaType || 'Altri'))).sort().map(cat => {
+                                  const catEntities = floorEntities.filter(ent => ((ent as any).bimFamily || (ent as any).bimAreaType || 'Altri') === cat);
+                                  const displayCat = BIM_FAMILIES.find(f => f.id === cat)?.name || cat;
+                                  
+                                  const isCatExpanded = expandedNodes.has(`${floor.id}-${cat}`);
+                                  const selectedInCat = catEntities.filter(ent => surveySelectedIds.has(ent.id)).length;
+                                  const allInCatSelected = catEntities.length > 0 && selectedInCat === catEntities.length;
+                                  
+                                  return (
+                                    <div key={cat} className="space-y-0.5">
+                                      <div className="flex items-center px-2 py-1.5 hover:bg-indigo-50/50 rounded-xl transition-colors">
+                                        <button 
+                                          onClick={() => {
+                                            setExpandedNodes(prev => {
+                                              const next = new Set(prev);
+                                              const key = `${floor.id}-${cat}`;
+                                              if (next.has(key)) next.delete(key);
+                                              else next.add(key);
+                                              return next;
+                                            });
+                                          }}
+                                          className="flex items-center gap-2 flex-1"
+                                        >
+                                          {isCatExpanded ? <ChevronDown size={12} className="text-slate-400" /> : <ChevronRight size={12} className="text-slate-400" />}
+                                          <FolderTree size={12} className="text-indigo-400" />
+                                          <span className="text-[10px] font-bold text-slate-600">{displayCat}</span>
+                                        </button>
+                                        <input 
+                                          type="checkbox"
+                                          checked={allInCatSelected}
+                                          onChange={(e) => {
+                                            setSurveySelectedIds(prev => {
+                                              const next = new Set(prev);
+                                              catEntities.forEach(ent => {
+                                                if (e.target.checked) next.add(ent.id);
+                                                else next.delete(ent.id);
+                                              });
+                                              return next;
+                                            });
+                                          }}
+                                          className="w-3.5 h-3.5 rounded border-slate-300 text-indigo-600 cursor-pointer"
+                                        />
+                                      </div>
+                                      
+                                      <AnimatePresence>
+                                        {isCatExpanded && (
+                                          <motion.div 
+                                            initial={{ height: 0 }} 
+                                            animate={{ height: 'auto' }} 
+                                            exit={{ height: 0 }}
+                                            className="overflow-hidden pl-6 space-y-0.5"
+                                          >
+                                            {catEntities.map(ent => (
+                                              <div 
+                                                key={ent.id} 
+                                                className={`flex items-center justify-between p-1.5 rounded-lg border transition-all cursor-pointer ${
+                                                  surveySelectedIds.has(ent.id) 
+                                                    ? 'bg-indigo-50 border-indigo-100 shadow-sm' 
+                                                    : 'bg-white border-transparent hover:border-slate-100'
+                                                }`}
+                                                onClick={() => {
+                                                  setSurveySelectedIds(prev => {
+                                                    const next = new Set(prev);
+                                                    if (next.has(ent.id)) next.delete(ent.id);
+                                                    else next.add(ent.id);
+                                                    return next;
+                                                  });
+                                                }}
+                                                onMouseEnter={() => setHoveredId(ent.id)}
+                                                onMouseLeave={() => setHoveredId(null)}
+                                              >
+                                                <div className="flex items-center gap-2 truncate">
+                                                  <div className={`w-1.5 h-1.5 rounded-full shrink-0 ${!!(ent as any).cost_5d?.prezzarioCodice ? 'bg-green-500' : 'bg-slate-300'}`} />
+                                                  <span className="text-[10px] font-medium text-slate-500 truncate">{(ent as any).bimName || 'Elemento'}</span>
+                                                </div>
+                                                <div className={`w-3 h-3 rounded border flex items-center justify-center transition-colors ${
+                                                  surveySelectedIds.has(ent.id) ? 'bg-indigo-600 border-indigo-600 text-white' : 'border-slate-200 bg-white'
+                                                }`}>
+                                                  {surveySelectedIds.has(ent.id) && <Check size={8} />}
+                                                </div>
+                                              </div>
+                                            ))}
+                                          </motion.div>
+                                        )}
+                                      </AnimatePresence>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            </motion.div>
+                          )}
+                        </AnimatePresence>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Action Area */}
+              <div className="mt-auto pt-4 border-t border-slate-100">
+                {surveySelectedIds.size > 0 ? (
+                  <button 
+                    onClick={() => {
+                      const firstId = Array.from(surveySelectedIds)[0];
+                      const target = entities.find(e => e.id === firstId);
+                      if (target) {
+                        setSurveyTargetEntity(target);
+                        setIsSurveyDialogOpen(true);
+                      }
+                    }}
+                    className="w-full bg-indigo-600 hover:bg-indigo-700 text-white p-4 rounded-2xl shadow-xl shadow-indigo-200 transition-all active:scale-[0.98] flex items-center justify-center gap-3 group"
+                  >
+                    <div className="flex flex-col items-start">
+                      <span className="text-[8px] font-black text-indigo-200 uppercase tracking-[0.2em]">Associa Lavorazione</span>
+                      <span className="text-xs font-black uppercase tracking-tight">{surveySelectedIds.size} Elementi Selezionati</span>
+                    </div>
+                    <Link size={18} className="group-hover:rotate-45 transition-transform duration-300" />
+                  </button>
+                ) : (
+                  <div className="p-4 bg-slate-50 rounded-2xl border border-dashed border-slate-200 text-center">
+                    <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest leading-relaxed">
+                      Seleziona gli elementi dall'albero o clicca il 3D per iniziare il rilievo
+                    </p>
+                  </div>
+                )}
+              </div>
+
+              </div>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+      {/* BIM Survey Dialog */}
+      <AnimatePresence>
+        {isSurveyDialogOpen && surveyTargetEntity && (
+          <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-900/40 backdrop-blur-sm">
+            <motion.div
+              initial={{ scale: 0.95, opacity: 0, y: 20 }}
+              animate={{ scale: 1, opacity: 1, y: 0 }}
+              exit={{ scale: 0.95, opacity: 0, y: 20 }}
+              className="bg-white rounded-[2.5rem] shadow-2xl border border-slate-100 w-full max-w-lg overflow-hidden flex flex-col max-h-[90vh]"
+            >
+              <div className="p-8 pb-4 border-b border-slate-50">
+                <div className="flex items-center justify-between mb-6">
+                  <div className="flex items-center gap-4">
+                    <div className="p-4 bg-indigo-600 rounded-2xl text-white shadow-xl shadow-indigo-100">
+                      <Target size={24} />
+                    </div>
+                    <div>
+                      <h2 className="text-xl font-black text-slate-800 tracking-tight">Rilievo Elemento</h2>
+                      <p className="text-xs font-bold text-slate-400 uppercase tracking-widest">Configura Voce di Computo</p>
+                    </div>
+                  </div>
+                  <button onClick={() => setIsSurveyDialogOpen(false)} className="p-2 hover:bg-slate-100 rounded-xl text-slate-400 transition-colors">
+                    <X size={20} />
+                  </button>
+                </div>
+
+                <div className="grid grid-cols-2 gap-4 p-4 bg-slate-50 rounded-3xl border border-slate-100 mb-6">
+                  <div>
+                    <span className="block text-[9px] font-black text-slate-400 uppercase tracking-wider mb-1">Nome</span>
+                    <span className="block text-xs font-black text-slate-700">{(surveyTargetEntity as any).bimName || 'N/D'}</span>
+                  </div>
+                  <div>
+                    <span className="block text-[9px] font-black text-slate-400 uppercase tracking-wider mb-1">Gruppo</span>
+                    <span className="block text-xs font-black text-slate-700">{(surveyTargetEntity as any).bimFamily || (surveyTargetEntity as any).bimAreaType || 'N/D'}</span>
+                  </div>
+                  <div>
+                    <span className="block text-[9px] font-black text-slate-400 uppercase tracking-wider mb-1">Piano</span>
+                    <span className="block text-xs font-black text-slate-700">{(surveyTargetEntity as any).layer || 'N/D'}</span>
+                  </div>
+                  <div>
+                    <span className="block text-[9px] font-black text-slate-400 uppercase tracking-wider mb-1">Superficie/Volume</span>
+                    <span className="block text-xs font-black text-slate-700">{(surveyTargetEntity as any).area?.toFixed(2) || '0.00'} {(surveyTargetEntity as any).bimAreaType === 'Solaio' ? 'mq' : 'mc'}</span>
+                  </div>
+                </div>
+
+                <div className="space-y-3 overflow-y-auto max-h-[40vh] pr-2 scrollbar-thin">
+                  <label className="text-[10px] font-black text-indigo-600 uppercase tracking-widest block px-1">Seleziona Voce Prezzario</label>
+                  {PREZZARIO_GECOLA.map(item => (
+                    <button
+                      key={item.codice}
+                      onClick={() => {
+                        setEntities((prev: Entity[]) => prev.map(ent => {
+                          if (surveySelectedIds.has(ent.id)) {
+                            const updated = { ...ent } as any;
+                            // Aggiorna metadati per riflettere il "Gruppo" (Categoria) e il nome nell'albero BIM
+                            // Use code as default name if it doesn't have a meaningful one
+                            if (!updated.bimName || updated.bimName.length > 50) {
+                              updated.bimName = item.codice;
+                            }
+                            // Use category as group, fallback to current family name if no category
+                            updated.bimFamily = item.categoria || updated.bimFamily;
+                            updated.bimAreaType = item.categoria || updated.bimAreaType;
+                            updated.bimSubFamily = item.codice;
+                            
+                            updated.cost_5d = {
+                              ...updated.cost_5d,
+                              prezzarioCodice: item.codice,
+                              prezzarioDescrizione: item.descrizione,
+                              prezzarioUnita: item.unita,
+                              prezzarioPrezzo: item.prezzo,
+                              incidenzaManodopera: item.incidenzaManodopera,
+                              prezzarioNome: item.prezzario || 'GECOLA'
+                            };
+                            return updated;
+                          }
+                          return ent;
+                        }));
+                        onShowToast?.(`Voce ${item.codice} caricata su ${surveySelectedIds.size} elementi.`);
+                        setIsSurveyDialogOpen(false);
+                        setSurveySelectedIds(new Set());
+                      }}
+                      className="w-full text-left p-4 rounded-3xl border border-slate-100 bg-white hover:border-indigo-300 hover:shadow-lg hover:shadow-indigo-50 transition-all flex flex-col gap-1 group"
+                    >
+                      <div className="flex justify-between items-center mb-1">
+                        <span className="text-[10px] font-black text-indigo-600 font-mono group-hover:scale-110 transition-transform">{item.codice}</span>
+                        <span className="text-xs font-black text-slate-800">{item.prezzo.toFixed(2)} €/{item.unita}</span>
+                      </div>
+                      <div className="text-sm font-bold text-slate-700 leading-tight">{item.descrizione}</div>
+                      <div className="text-[10px] text-slate-400 font-medium italic mt-1">{item.categoria}</div>
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="p-8 bg-slate-50 flex items-center justify-between">
+                <button 
+                  onClick={() => setIsSurveyDialogOpen(false)}
+                  className="px-6 py-3 font-black text-slate-400 hover:text-slate-600 transition-colors text-xs uppercase tracking-widest"
+                >
+                  Annulla
+                </button>
+                <div className="flex items-center gap-2 text-indigo-600">
+                  <CheckCircle2 size={16} />
+                  <span className="text-[10px] font-black uppercase tracking-widest">Pronto per il Rilievo</span>
+                </div>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
 
       {/* Parameter Editing Dialogs */}
       {isAreaEditOpen && selectedEntity && (

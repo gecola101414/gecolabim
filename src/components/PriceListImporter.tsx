@@ -2,17 +2,20 @@ import React, { useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { FileDown, X, Check, AlertCircle, Plus, Clipboard, LayoutGrid } from 'lucide-react';
 import { PrezzarioItem } from '../types';
+import { BIM_FAMILIES } from '../data/bimFamilies';
 
 interface PriceListImporterProps {
   isOpen: boolean;
   onClose: () => void;
   onImport: (items: PrezzarioItem[]) => void;
+  targetFamilyId?: string;
 }
 
 export const PriceListImporter: React.FC<PriceListImporterProps> = ({
   isOpen,
   onClose,
-  onImport
+  onImport,
+  targetFamilyId
 }) => {
   const [isOver, setIsOver] = useState(false);
   const [parsedItems, setParsedItems] = useState<PrezzarioItem[]>([]);
@@ -32,7 +35,10 @@ export const PriceListImporter: React.FC<PriceListImporterProps> = ({
       let items: PrezzarioItem[] = [];
       const cleanText = text.trim();
       
-      // 1. Try JSON parsing
+      const targetFamilyName = targetFamilyId ? BIM_FAMILIES.find(f => f.id === targetFamilyId)?.name : null;
+      const defaultCategory = targetFamilyName || 'Importati';
+      
+      // 1. Try JSON
       if (cleanText.startsWith('{') || cleanText.startsWith('[')) {
         try {
           const data = JSON.parse(cleanText);
@@ -42,180 +48,83 @@ export const PriceListImporter: React.FC<PriceListImporterProps> = ({
             descrizione: it.descrizione || it.description || 'Nessuna descrizione',
             unita: it.unita || it.um || it.unit || 'cad',
             prezzo: parseFloat(it.prezzo || it.price || 0),
-            categoria: it.categoria || it.category || 'Importati',
+            categoria: it.categoria || it.category || defaultCategory,
             incidenzaManodopera: parseFloat(it.incidenzaManodopera || it.labor || 0),
             prezzario: it.prezzario || it.catalog || 'Esterno'
           }));
-        } catch (e) {
-          // fallback
-        }
+        } catch (e) {}
       }
 
-      // 2. CSV / TSV / Copy-Paste line-by-line parsing
+      // 2. CSV / TSV / Copy-Paste line-by-line
       if (items.length === 0) {
         const lines = text.split('\n').map(l => l.trim()).filter(l => l.length > 0);
-        if (lines.length > 0) {
-          // Detect separator using the first line
-          const firstLine = lines[0];
-          const separators = [/\t/, /;/, /,/, /\|/];
-          let bestSep = /\t/;
-          let maxParts = 0;
-          for (const s of separators) {
-            const count = firstLine.split(s).length;
-            if (count > maxParts) {
-              maxParts = count;
-              bestSep = s;
+        
+        let bestSep = /\t/;
+        if (text.includes('\t')) {
+          bestSep = /\t/;
+        } else if (text.includes(';')) {
+          bestSep = /;/;
+        } else if (text.includes('|')) {
+          bestSep = /\|/;
+        } else if (text.includes(',')) {
+          bestSep = /,/;
+        }
+
+        for (let i = 0; i < lines.length; i++) {
+          const line = lines[i];
+          const parts = line.split(bestSep).map(p => p.trim());
+          
+          if (parts.length >= 2) {
+            // ORDINE RIGOROSO RICHIESTO DAL CLIENTE
+            let codice = parts[0] || `NP.NEW.${100 + i}`;
+            let descrizione = parts[1] || '';
+            let unita = parts[2] || 'cad';
+            
+            let prezzo = 0;
+            if (parts[3]) {
+              const rawPrice = parts[3].replace(/[^\d.,-]/g, '').replace(',', '.');
+              prezzo = parseFloat(rawPrice) || 0;
             }
-          }
-
-          // Let's check if the first line is a header
-          const firstLineParts = firstLine.split(bestSep).map(p => p.trim().toLowerCase());
-          let codeIdx = -1;
-          let descIdx = -1;
-          let umIdx = -1;
-          let priceIdx = -1;
-          let laborIdx = -1;
-          let catalogIdx = -1;
-
-          firstLineParts.forEach((part, idx) => {
-            if (part.includes('codice') || part.includes('code') || part.includes('art') || part.includes('articolo')) codeIdx = idx;
-            else if (part.includes('descriz') || part.includes('descr') || part.includes('description') || part.includes('voce') || part.includes('designazione')) descIdx = idx;
-            else if (part.includes('um') || part.includes('u.m') || part.includes('unit') || part.includes('misura')) umIdx = idx;
-            else if (part.includes('prezz') || part.includes('price') || part.includes('tariffa') || part.includes('importo')) priceIdx = idx;
-            else if (part.includes('manodopera') || part.includes('incid') || part.includes('labor')) laborIdx = idx;
-            else if (part.includes('prezzario') || part.includes('listino') || part.includes('catalog')) catalogIdx = idx;
-          });
-
-          const hasHeader = (codeIdx !== -1 || descIdx !== -1 || priceIdx !== -1);
-          const startIndex = hasHeader ? 1 : 0;
-
-          for (let i = startIndex; i < lines.length; i++) {
-            const line = lines[i];
-            const parts = line.split(bestSep).map(p => p.trim());
-            if (parts.length >= 3) {
-              let codice = '';
-              let descrizione = '';
-              let unita = 'cad';
-              let prezzo = 0;
-              let incidenzaManodopera = 0;
-              let prezzario = 'Esterno';
-
-              if (hasHeader) {
-                if (codeIdx !== -1 && parts[codeIdx]) codice = parts[codeIdx];
-                if (descIdx !== -1 && parts[descIdx]) descrizione = parts[descIdx];
-                if (umIdx !== -1 && parts[umIdx]) unita = parts[umIdx];
-                if (priceIdx !== -1 && parts[priceIdx]) {
-                  const rawPrice = parts[priceIdx].replace(/[^\d.,-]/g, '').replace(',', '.');
-                  prezzo = parseFloat(rawPrice) || 0;
-                }
-                if (laborIdx !== -1 && parts[laborIdx]) {
-                  const rawLabor = parts[laborIdx].replace(/[^\d.,-]/g, '').replace(',', '.');
-                  incidenzaManodopera = parseFloat(rawLabor) || 0;
-                }
-                if (catalogIdx !== -1 && parts[catalogIdx]) prezzario = parts[catalogIdx];
-              } else {
-                // Heuristic parsing for raw tabular data without headers
-                let foundPriceIdx = -1;
-                for (let j = parts.length - 1; j >= 0; j--) {
-                  const cleanVal = parts[j].replace(/[^\d.,-]/g, '').replace(',', '.');
-                  const pFloat = parseFloat(cleanVal);
-                  if (!isNaN(pFloat) && pFloat > 0 && cleanVal.length > 0) {
-                    prezzo = pFloat;
-                    foundPriceIdx = j;
-                    break;
-                  }
-                }
-
-                const commonUms = ['m', 'ml', 'mq', 'mc', 'cad', 'kg', 'l', 'nr', 'ora', 'ore', 'ton', 'cad.', 'mq.', 'ml.', 'mc.', 'n.'];
-                let foundUmIdx = -1;
-                for (let j = 0; j < parts.length; j++) {
-                  if (j === foundPriceIdx) continue;
-                  const pLow = parts[j].toLowerCase();
-                  if (commonUms.includes(pLow) || commonUms.includes(pLow + '.')) {
-                    unita = parts[j];
-                    foundUmIdx = j;
-                    break;
-                  }
-                }
-
-                if (foundUmIdx === -1) {
-                  for (let j = 0; j < parts.length; j++) {
-                    if (j === foundPriceIdx) continue;
-                    const val = parts[j];
-                    if (val.length >= 1 && val.length <= 4 && isNaN(Number(val))) {
-                      unita = val;
-                      foundUmIdx = j;
-                      break;
-                    }
-                  }
-                }
-
-                let maxLen = 0;
-                let foundDescIdx = -1;
-                for (let j = 0; j < parts.length; j++) {
-                  if (j === foundPriceIdx || j === foundUmIdx) continue;
-                  if (parts[j].length > maxLen) {
-                    maxLen = parts[j].length;
-                    foundDescIdx = j;
-                  }
-                }
-                if (foundDescIdx !== -1) {
-                  descrizione = parts[foundDescIdx];
-                }
-
-                let foundCodeIdx = -1;
-                for (let j = 0; j < parts.length; j++) {
-                  if (j === foundPriceIdx || j === foundUmIdx || j === foundDescIdx) continue;
-                  const val = parts[j];
-                  if (val.length > 0 && val.length < 25 && (val.includes('.') || val.includes('-') || /\d/.test(val))) {
-                    codice = val;
-                    foundCodeIdx = j;
-                    break;
-                  }
-                }
-                if (foundCodeIdx === -1) {
-                  for (let j = 0; j < parts.length; j++) {
-                    if (j === foundPriceIdx || j === foundUmIdx || j === foundDescIdx) continue;
-                    const val = parts[j];
-                    if (val.length > 0 && val.length < 25) {
-                      codice = val;
-                      foundCodeIdx = j;
-                      break;
-                    }
-                  }
-                }
-
-                for (let j = 0; j < parts.length; j++) {
-                  if (j === foundPriceIdx || j === foundUmIdx || j === foundDescIdx || j === foundCodeIdx) continue;
-                  if (parts[j].length > 0) {
-                    prezzario = parts[j];
-                    break;
-                  }
-                }
-              }
-
-              if (!codice) codice = `NP.NEW.${100 + i}`;
-              if (!descrizione) descrizione = `Voce di Computo senza descrizione (Riga ${i + 1})`;
-
-              items.push({
-                codice,
-                descrizione,
-                unita,
-                prezzo,
-                categoria: 'Importati',
-                incidenzaManodopera,
-                prezzario
-              });
+            
+            let incidenzaManodopera = 0;
+            if (parts[4]) {
+              const rawLabor = parts[4].replace(/[^\d.,-]/g, '').replace(',', '.');
+              incidenzaManodopera = parseFloat(rawLabor) || 0;
             }
+            
+            let prezzario = parts[5] || 'Esterno';
+
+            // Skip se è un'intestazione (es. prezzo 0 e contiene parole chiave)
+            const descLower = descrizione.toLowerCase();
+            if (prezzo === 0 && (descLower.includes('descrizione') || descLower.includes('prezzo') || descLower.includes('tariffa') || descLower.includes('importo'))) {
+              continue;
+            }
+
+            if (!descrizione) {
+              descrizione = `Voce di Computo senza descrizione (Riga ${i + 1})`;
+            }
+
+            items.push({
+              codice,
+              descrizione,
+              unita,
+              prezzo,
+              categoria: defaultCategory,
+              incidenzaManodopera,
+              prezzario
+            });
           }
         }
       }
 
       if (items.length > 0) {
+        if (targetFamilyId) {
+          items = items.map(item => ({ ...item, bimFamilyId: targetFamilyId }));
+        }
         setParsedItems(items);
         setError(null);
       } else {
-        setError("Impossibile riconoscere il formato dei dati. Assicurati che le righe abbiano almeno Codice, Descrizione, U.M. e Prezzo separati da Tab, Comma o che sia un formato JSON valido.");
+        setError("Impossibile riconoscere il formato dei dati. Nessuna voce valida trovata nel testo.");
       }
     } catch (err) {
       setError("Errore durante il parsing dei dati.");
@@ -262,7 +171,7 @@ export const PriceListImporter: React.FC<PriceListImporterProps> = ({
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-[300] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+    <div className="fixed inset-0 z-[10000] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
       <motion.div 
         initial={{ opacity: 0, scale: 0.9 }}
         animate={{ opacity: 1, scale: 1 }}
@@ -322,27 +231,34 @@ export const PriceListImporter: React.FC<PriceListImporterProps> = ({
                   Svuota Lista
                 </button>
               </div>
-              <div className="grid gap-2 max-h-[40vh] overflow-y-auto pr-2 scrollbar-thin">
+              <div className="grid gap-4 max-h-[50vh] overflow-y-auto pr-2 scrollbar-thin">
                 {parsedItems.map((it, idx) => (
-                  <div key={idx} className="bg-slate-900/50 border border-white/10 p-3 rounded-xl flex items-start gap-3 group hover:border-emerald-500/30 transition-colors">
-                    <div className="bg-slate-950 border border-white/10 p-2 rounded-lg text-xs font-mono font-bold text-emerald-400">
-                      {it.codice}
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2 mb-1">
-                        <span className="text-[10px] font-black text-slate-300 truncate">{it.descrizione}</span>
-                        <span className="px-1.5 py-0.5 bg-indigo-500/10 text-indigo-400 text-[8px] font-bold rounded uppercase">
-                          {it.prezzario}
-                        </span>
+                  <div key={idx} className="bg-slate-900/80 border border-white/10 p-4 rounded-xl flex flex-col gap-3 group hover:border-emerald-500/50 transition-colors shadow-lg">
+                    <div className="flex justify-between items-start gap-4">
+                      <div className="flex flex-col gap-1">
+                        <div className="bg-slate-950 border border-white/10 px-3 py-1.5 rounded-lg text-sm font-mono font-black text-emerald-400 self-start shadow-inner">
+                          {it.codice}
+                        </div>
+                        <div className="text-[9px] font-bold text-indigo-400 uppercase tracking-widest pl-1 mt-1">
+                          {it.prezzario || 'Prezzario Esterno'}
+                        </div>
                       </div>
-                      <div className="flex items-center gap-4 text-[9px] font-mono text-slate-500">
-                        <span className="flex items-center gap-1"><LayoutGrid size={10} /> {it.unita}</span>
-                        <span className="flex items-center gap-1 font-bold text-emerald-500">€ {it.prezzo.toFixed(2)}</span>
-                        {it.incidenzaManodopera !== undefined && (
-                          <span className="flex items-center gap-1">🛠️ Inc. MO: {it.incidenzaManodopera}%</span>
-                        )}
+                      <div className="flex flex-col items-end gap-1 bg-emerald-500/10 px-3 py-2 rounded-xl border border-emerald-500/20">
+                        <span className="text-sm font-black text-emerald-400">€ {it.prezzo.toFixed(2)}</span>
+                        <div className="flex items-center gap-2 text-[10px] font-mono text-slate-400">
+                          <span className="flex items-center gap-1"><LayoutGrid size={10} /> {it.unita}</span>
+                        </div>
                       </div>
                     </div>
+                    <div className="bg-slate-950/50 rounded-lg p-3 border border-white/5">
+                      <p className="text-xs font-medium text-slate-200 leading-relaxed whitespace-pre-wrap break-words text-justify">{it.descrizione}</p>
+                    </div>
+                    {it.incidenzaManodopera !== undefined && it.incidenzaManodopera > 0 && (
+                      <div className="flex items-center gap-2 text-[10px] text-amber-400/80 bg-amber-400/10 self-start px-2 py-1 rounded">
+                        <span>🛠️ Incidenza Manodopera:</span>
+                        <span className="font-bold">{it.incidenzaManodopera}%</span>
+                      </div>
+                    )}
                   </div>
                 ))}
               </div>
@@ -368,13 +284,13 @@ export const PriceListImporter: React.FC<PriceListImporterProps> = ({
             disabled={parsedItems.length === 0}
             onClick={handleConfirm}
             className={`
-              flex-1 py-3 px-4 rounded-xl font-black text-xs uppercase tracking-widest transition-all
+              flex-[2] py-3 px-4 rounded-xl font-black text-xs uppercase tracking-widest transition-all
               ${parsedItems.length > 0 
                 ? 'bg-emerald-600 hover:bg-emerald-500 text-white shadow-lg shadow-emerald-600/20' 
                 : 'bg-slate-800 text-slate-500 cursor-not-allowed'}
             `}
           >
-            Importa nel Catalogo
+            {targetFamilyId && targetFamilyId !== 'GLOBAL' && targetFamilyId !== 'ESTRANEO' ? 'Assegna e Archivia' : 'Importa nel Catalogo'}
           </button>
         </div>
       </motion.div>

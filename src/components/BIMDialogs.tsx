@@ -1185,6 +1185,9 @@ interface BIMElementDialogProps {
   entities?: any[];
   editingEntityId?: string | null;
   prezzarioItems?: PrezzarioItem[];
+  onOpenImporter?: (familyId?: string) => void;
+  justImportedItem?: PrezzarioItem | null;
+  onConsumedImportedItem?: () => void;
 }
 
 export const BIMElementDialog: React.FC<BIMElementDialogProps> = ({
@@ -1200,7 +1203,10 @@ export const BIMElementDialog: React.FC<BIMElementDialogProps> = ({
   isFaceSurveyMode,
   entities = [],
   editingEntityId,
-  prezzarioItems = []
+  prezzarioItems = [],
+  onOpenImporter,
+  justImportedItem,
+  onConsumedImportedItem
 }) => {
   const { position, handlePointerDown, handlePointerMove, handlePointerUp } = useDraggableDialog(isOpen, { x: 300, y: 130 });
   
@@ -1234,13 +1240,28 @@ export const BIMElementDialog: React.FC<BIMElementDialogProps> = ({
   const [isPrezzarioSearchOpen, setIsPrezzarioSearchOpen] = useState(false);
   const [prezzarioSearch, setPrezzarioSearch] = useState('');
 
+  // EFFECT: Automatically assign item when imported externally
+  useEffect(() => {
+    if (justImportedItem) {
+      selectPrezzarioItem(justImportedItem);
+      setShowDropSuccess(true);
+      setTimeout(() => {
+        setShowDropSuccess(false);
+        onConsumedImportedItem && onConsumedImportedItem();
+      }, 2000);
+    }
+  }, [justImportedItem]);
+
   const filteredPrezzario = useMemo(() => {
-    if (!prezzarioSearch) return prezzarioItems.slice(0, 10);
-    return prezzarioItems.filter(it => 
-      it.codice.toLowerCase().includes(prezzarioSearch.toLowerCase()) || 
-      it.descrizione.toLowerCase().includes(prezzarioSearch.toLowerCase())
-    ).slice(0, 50);
-  }, [prezzarioSearch, prezzarioItems]);
+    let list = prezzarioItems.filter(it => it.bimFamilyId === familyId || !it.bimFamilyId);
+    if (prezzarioSearch) {
+      list = list.filter(it => 
+        it.codice.toLowerCase().includes(prezzarioSearch.toLowerCase()) || 
+        it.descrizione.toLowerCase().includes(prezzarioSearch.toLowerCase())
+      );
+    }
+    return list.slice(0, 50);
+  }, [prezzarioSearch, prezzarioItems, familyId]);
 
   const selectPrezzarioItem = (item: PrezzarioItem) => {
     setPrezzarioCodice(item.codice);
@@ -1251,10 +1272,14 @@ export const BIMElementDialog: React.FC<BIMElementDialogProps> = ({
     setPrezzarioNome(item.prezzario || '');
     setIsPrezzarioSearchOpen(false);
     
-    // Force update identifying names to match the price list item
-    const descForName = item.descrizione.substring(0, 80);
-    setName(descForName);
-    setSubFamily(item.codice);
+    // Do not overwrite with long description. Use code as a default if name is empty.
+    if (!name || name.length > 50) {
+      setName(item.codice);
+    }
+    
+    // Use the category for grouping in the BIM tree, fallback to family name or code
+    const famName = BIM_FAMILIES.find(f => f.id === familyId)?.name;
+    setSubFamily(item.categoria || famName || item.codice);
 
     if (customFamilyMode) {
       setCustomFamilyName(item.descrizione.substring(0, 40));
@@ -1409,7 +1434,28 @@ export const BIMElementDialog: React.FC<BIMElementDialogProps> = ({
         const pts: any = points;
         const isFrom3D = pts && pts.from3DFace;
         const lastFam = localStorage.getItem('last_bim_family') || (isFrom3D ? 'intonaco_completo' : BIM_FAMILIES[0].id);
+        const savedCostJson = localStorage.getItem('last_bim_cost_' + lastFam);
         const famObj = BIM_FAMILIES.find(f => f.id === lastFam);
+
+        if (savedCostJson) {
+           try {
+             const cost = JSON.parse(savedCostJson);
+             setPrezzarioCodice(cost.prezzarioCodice || '');
+             setPrezzarioDescrizione(cost.prezzarioDescrizione || '');
+             setPrezzarioUnita(cost.prezzarioUnita || '');
+             setPrezzarioPrezzo((cost.prezzarioPrezzo ?? 0).toString());
+             setIncidenzaManodopera((cost.incidenzaManodopera ?? 0).toString());
+             setPrezzarioNome(cost.prezzarioNome || '');
+           } catch(e){}
+        } else if (famObj) {
+           // LOAD DEFAULT FROM CATALOG
+           setPrezzarioCodice(`CAT.${famObj.id.toUpperCase()}`);
+           setPrezzarioDescrizione(famObj.description);
+           setPrezzarioUnita(famObj.defaultUnit || 'mq');
+           setPrezzarioPrezzo((famObj.defaultPrice || 0).toString());
+           setIncidenzaManodopera('28');
+           setPrezzarioNome('Catalogo Gecola');
+        }
         
         setFamilyId(lastFam);
         setSubFamily(localStorage.getItem('last_bim_subFamily') || '');
@@ -1505,15 +1551,50 @@ export const BIMElementDialog: React.FC<BIMElementDialogProps> = ({
       localStorage.setItem('last_bim_height', objectHeightInput);
       localStorage.setItem('last_bim_zElevation', zElevationInput);
       localStorage.setItem('last_bim_rendering_style', renderingStyle);
+      localStorage.setItem('last_bim_cost_' + familyId, JSON.stringify({
+        prezzarioCodice, prezzarioDescrizione, prezzarioUnita, 
+        prezzarioPrezzo: parseFloat(prezzarioPrezzo), 
+        incidenzaManodopera: parseFloat(incidenzaManodopera), 
+        prezzarioNome
+      }));
     }
-  }, [isOpen, initialData, familyId, subFamily, name, color, hatch, bimRenderMode, sideSign, objectWidthInput, objectHeightInput, zElevationInput, renderingStyle]);
+  }, [isOpen, initialData, familyId, subFamily, name, color, hatch, bimRenderMode, sideSign, objectWidthInput, objectHeightInput, zElevationInput, renderingStyle, prezzarioCodice, prezzarioDescrizione, prezzarioUnita, prezzarioPrezzo, incidenzaManodopera, prezzarioNome]);
 
   const handleFamilyChange = (id: string) => {
+    const saved = localStorage.getItem('last_bim_cost_' + id);
+    const fam = BIM_FAMILIES.find(f => f.id === id);
+
+    if (saved) {
+      try {
+        const cost = JSON.parse(saved);
+        setPrezzarioCodice(cost.prezzarioCodice || '');
+        setPrezzarioDescrizione(cost.prezzarioDescrizione || '');
+        setPrezzarioUnita(cost.prezzarioUnita || '');
+        setPrezzarioPrezzo((cost.prezzarioPrezzo ?? 0).toString());
+        setIncidenzaManodopera((cost.incidenzaManodopera ?? 0).toString());
+        setPrezzarioNome(cost.prezzarioNome || '');
+      } catch (e) {}
+    } else if (fam) {
+        setPrezzarioCodice(`CAT.${fam.id.toUpperCase()}`);
+        setPrezzarioDescrizione(fam.description);
+        setPrezzarioUnita(fam.defaultUnit || 'mq');
+        setPrezzarioPrezzo((fam.defaultPrice || 0).toString());
+        setIncidenzaManodopera('28');
+        setPrezzarioNome('Catalogo Gecola');
+    } else {
+        setPrezzarioCodice('');
+        setPrezzarioDescrizione('');
+        setPrezzarioUnita('');
+        setPrezzarioPrezzo('0');
+        setIncidenzaManodopera('0');
+        setPrezzarioNome('');
+    }
+    
     setFamilyId(id);
     localStorage.setItem('last_bim_family', id);
-    const fam = BIM_FAMILIES.find(f => f.id === id);
     if (fam && (!initialData || (initialData as any).isFromFaceSurvey)) {
       setName(fam.name);
+      setSubFamily(fam.name); // Default subFamily to family name for better grouping
       setColor(fam.defaultColor);
       if (id === 'intonaco_completo') {
         setObjectWidthInput('1');
@@ -1524,26 +1605,32 @@ export const BIMElementDialog: React.FC<BIMElementDialogProps> = ({
       } else if (id === 'pitture') {
         setObjectWidthInput('0.2');
         if (renderingStyle === 'ponteggio') setRenderingStyle('none');
+      } else if (id === 'battiscopa') {
+        setObjectWidthInput('1.5');
+        setObjectHeightInput('10');
+        if (renderingStyle === 'ponteggio') setRenderingStyle('none');
+      } else if (id === 'ponteggio') {
+        setObjectWidthInput('120');
+        setObjectHeightInput('200');
+        setRenderingStyle('ponteggio');
+      } else if (id === 'solaio_laterocemento') {
+        setBimRenderMode('parete_orizzontale');
+        setObjectWidthInput('20');
+        setRenderingStyle('solaio_pignatte');
+      } else if (id === 'fondazione') {
+        setBimRenderMode('solid');
       } else if (id === 'rivestimenti') {
         setObjectWidthInput('2');
         if (renderingStyle === 'ponteggio') setRenderingStyle('none');
-      } else if (id === 'isolamenti_termici') {
+      } else if (id === 'isolamento_cappotto') {
         setObjectWidthInput('10');
-        if (renderingStyle === 'ponteggio' || renderingStyle === 'mantovana') setRenderingStyle('none');
-      } else if (id === 'ponteggio') {
-        setObjectWidthInput('100');
-        setRenderingStyle('ponteggio');
-      } else if (id === 'mantovana') {
-        setObjectWidthInput('130');
-        setRenderingStyle('mantovana');
-      } else {
-        setObjectWidthInput(localStorage.getItem('last_bim_width') || '15');
-        if (renderingStyle === 'ponteggio' || renderingStyle === 'mantovana') setRenderingStyle('none');
+        if (renderingStyle === 'ponteggio') setRenderingStyle('none');
+      } else if (id === 'controparete_cartongesso') {
+        setObjectWidthInput('5');
+        if (renderingStyle === 'ponteggio') setRenderingStyle('none');
       }
     }
   };
-
-  if (!isOpen) return null;
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -1628,7 +1715,53 @@ export const BIMElementDialog: React.FC<BIMElementDialogProps> = ({
       </div>
 
       <form onSubmit={handleSubmit} className="space-y-4 overflow-y-auto pr-2 pb-2 scrollbar-none">
-        
+        {/* FAMILY SELECTION */}
+        <div>
+          <div className="flex justify-between items-center mb-1.5">
+            <label className="block text-xs text-slate-400 font-black uppercase tracking-widest font-mono italic">Famiglia di Appartenenza</label>
+            <button 
+              type="button" 
+              onClick={() => setCustomFamilyMode(!customFamilyMode)}
+              className="text-[10px] px-2 py-0.5 rounded border border-indigo-500/30 text-indigo-400 hover:bg-indigo-500/20 transition-all font-bold"
+            >
+              {customFamilyMode ? '- ANNULLA' : '+ PERSONALIZZATA'}
+            </button>
+          </div>
+          
+          {customFamilyMode ? (
+            <input
+              type="text"
+              placeholder="Nome Nuova Famiglia..."
+              value={customFamilyName}
+              onChange={(e) => setCustomFamilyName(e.target.value)}
+              autoFocus
+              className="w-full bg-indigo-500/10 border border-indigo-500/30 text-white rounded-lg p-3 text-sm font-bold focus:outline-none focus:border-indigo-400 transition-colors"
+            />
+          ) : (
+            <div className="relative">
+              <select
+                value={familyId}
+                onChange={(e) => handleFamilyChange(e.target.value)}
+                className="w-full bg-slate-900 border border-white/10 text-white rounded-lg p-3 text-sm font-bold focus:outline-none focus:border-indigo-500 transition-colors appearance-none"
+              >
+                {BIM_FAMILIES.map(fam => (
+                  <option key={fam.id} value={fam.id} className="bg-slate-900 text-slate-200">
+                    {fam.name}
+                  </option>
+                ))}
+              </select>
+              <div className="absolute right-3 top-3.5 pointer-events-none opacity-50">
+                <ChevronDown size={16} />
+              </div>
+            </div>
+          )}
+          {currentFamily && !customFamilyMode && (
+            <p className="text-[10px] text-slate-500 mt-1 font-medium font-mono uppercase tracking-tight overflow-hidden text-ellipsis whitespace-nowrap">
+              📂 {currentFamily.category} - {currentFamily.description}
+            </p>
+          )}
+        </div>
+
         {/* COMPUTO / PREZZARIO SECTION */}
         <div 
           onDragOver={(e) => {
@@ -1661,7 +1794,7 @@ export const BIMElementDialog: React.FC<BIMElementDialogProps> = ({
               <div className="relative flex-1">
                 <input
                   type="text"
-                  placeholder="Cerca nel prezzario..."
+                  placeholder="Cerca in listino o scegli dal menu..."
                   value={prezzarioSearch}
                   onChange={(e) => {
                     setPrezzarioSearch(e.target.value);
@@ -1703,9 +1836,9 @@ export const BIMElementDialog: React.FC<BIMElementDialogProps> = ({
                   className="absolute z-50 left-0 right-0 top-full mt-1 bg-slate-900 border border-white/20 rounded-xl shadow-2xl overflow-hidden max-h-60 overflow-y-auto scrollbar-thin"
                 >
                   {filteredPrezzario.length > 0 ? (
-                    filteredPrezzario.map(it => (
+                    filteredPrezzario.map((it, idx) => (
                       <button
-                        key={it.codice}
+                        key={`${it.codice}-${idx}`}
                         type="button"
                         onClick={() => selectPrezzarioItem(it)}
                         className="w-full text-left p-3 border-b border-white/5 hover:bg-indigo-500/10 transition-colors flex flex-col gap-1"
@@ -1722,7 +1855,7 @@ export const BIMElementDialog: React.FC<BIMElementDialogProps> = ({
                       </button>
                     ))
                   ) : (
-                    <div className="p-4 text-center text-xs text-slate-500 italic">Nessuna voce trovata</div>
+                    <div className="p-4 text-center text-xs text-slate-500 italic">Nessuna voce trovata per questa Famiglia.<br/>Usa il pulsante in basso per importare dal listino esterno.</div>
                   )}
                 </motion.div>
               )}
@@ -1787,50 +1920,23 @@ export const BIMElementDialog: React.FC<BIMElementDialogProps> = ({
           </div>
         </div>
 
-        {/* FAMILY SELECTION */}
-        <div>
-          <div className="flex justify-between items-center mb-1.5">
-            <label className="block text-xs text-slate-400 font-black uppercase tracking-widest font-mono italic">Famiglia di Appartenenza</label>
-            <button 
-              type="button" 
-              onClick={() => setCustomFamilyMode(!customFamilyMode)}
-              className="text-[10px] px-2 py-0.5 rounded border border-indigo-500/30 text-indigo-400 hover:bg-indigo-500/20 transition-all font-bold"
-            >
-              {customFamilyMode ? '- ANNULLA' : '+ PERSONALIZZATA'}
-            </button>
-          </div>
+        {/* BUTTON TO IMPORT EXTERNAL PRICE LIST */}
+        <div className="space-y-2">
+          <button
+            type="button"
+            onClick={() => onOpenImporter && onOpenImporter(familyId)}
+            className="w-full flex items-center justify-center gap-2 py-2.5 px-4 bg-indigo-600 hover:bg-indigo-500 text-white font-black text-xs uppercase tracking-wider rounded-xl transition-all shadow-[0_0_15px_rgba(79,70,229,0.4)] active:scale-95"
+          >
+            <FileDown size={14} />
+            <span>Carica Voce Prezzario Esterno</span>
+          </button>
           
-          {customFamilyMode ? (
-            <input
-              type="text"
-              placeholder="Nome Nuova Famiglia..."
-              value={customFamilyName}
-              onChange={(e) => setCustomFamilyName(e.target.value)}
-              autoFocus
-              className="w-full bg-indigo-500/10 border border-indigo-500/30 text-white rounded-lg p-3 text-sm font-bold focus:outline-none focus:border-indigo-400 transition-colors"
-            />
-          ) : (
-            <div className="relative">
-              <select
-                value={familyId}
-                onChange={(e) => handleFamilyChange(e.target.value)}
-                className="w-full bg-slate-900 border border-white/10 text-white rounded-lg p-3 text-sm font-bold focus:outline-none focus:border-indigo-500 transition-colors appearance-none"
-              >
-                {BIM_FAMILIES.map(fam => (
-                  <option key={fam.id} value={fam.id} className="bg-slate-900 text-slate-200">
-                    {fam.name}
-                  </option>
-                ))}
-              </select>
-              <div className="absolute right-3 top-3.5 pointer-events-none opacity-50">
-                <ChevronDown size={16} />
-              </div>
+          {prezzarioItems.length === 0 && (
+            <div className="bg-amber-500/10 border border-amber-500/25 rounded-xl p-3 text-left">
+              <p className="text-[11px] text-amber-400 font-medium leading-relaxed">
+                ⚠️ <strong>Nessun Prezzario caricato:</strong> Carica le voci del prezzario esterno per associare i costi di computo a questo elemento BIM.
+              </p>
             </div>
-          )}
-          {currentFamily && !customFamilyMode && (
-            <p className="text-[10px] text-slate-500 mt-1 font-medium font-mono uppercase tracking-tight overflow-hidden text-ellipsis whitespace-nowrap">
-              📂 {currentFamily.category} - {currentFamily.description}
-            </p>
           )}
         </div>
 

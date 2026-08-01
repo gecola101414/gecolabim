@@ -72,6 +72,12 @@ export const BIMFamilyPropertyDialog: React.FC<BIMFamilyPropertyDialogProps> = (
   const [mantovanaProj, setMantovanaProj] = useState<number>(
     firstMember && firstMember.height ? firstMember.height : 150
   );
+  const [teloLato, setTeloLato] = useState<'none' | 'esterno' | 'interno' | 'entrambi'>(
+    firstMember?.teloLato || 'esterno'
+  );
+  const [tavoleFermapiedeCount, setTavoleFermapiedeCount] = useState<number>(
+    firstMember?.tavoleFermapiedeCount !== undefined ? firstMember.tavoleFermapiedeCount : 1
+  );
 
   const onUpdateRef = useRef(onUpdateEntityProperties);
   useEffect(() => {
@@ -94,7 +100,9 @@ export const BIMFamilyPropertyDialog: React.FC<BIMFamilyPropertyDialogProps> = (
         mantovanaAngle,
         mantovanaHeight,
         sideSign,
-        height: mantovanaProj
+        height: mantovanaProj,
+        teloLato,
+        tavoleFermapiedeCount
       } as any);
     }
   }, [
@@ -110,6 +118,8 @@ export const BIMFamilyPropertyDialog: React.FC<BIMFamilyPropertyDialogProps> = (
     mantovanaHeight,
     sideSign,
     mantovanaProj,
+    teloLato,
+    tavoleFermapiedeCount,
     memberIdsStr
   ]);
 
@@ -312,6 +322,9 @@ export const BIMFamilyPropertyDialog: React.FC<BIMFamilyPropertyDialogProps> = (
       drawCoverMeta("Località Cantiere:", localizzazione);
       drawCoverMeta("Tipologia Giunti:", scaffoldType === 'telai' ? "Telai Prefabbricati" : scaffoldType === 'tubo_giunto' ? "Tubo-Giunto Standard" : "Multidirezionale Avanzato");
       drawCoverMeta("Configurazione:", `Hmax = ${scaffoldHeight.toFixed(2)}m | ${numFloors} Impalcati | Passo L = ${bayWidth.toFixed(2)}m`);
+      const teloLabel = teloLato === 'none' ? 'Nessuno' : teloLato === 'esterno' ? 'Lato Esterno (Rete HDPE)' : teloLato === 'interno' ? 'Lato Interno' : 'Entrambi i Lati (Interno + Esterno)';
+      drawCoverMeta("Telo di Protezione:", teloLabel);
+      drawCoverMeta("Tavole Fermapiede:", `${tavoleFermapiedeCount} per livello (altezza utile: ${tavoleFermapiedeCount * 15} cm)`);
       drawCoverMeta("Data Elaborazione:", formattedDate);
 
       // Stamp and Signature placeholder box
@@ -651,6 +664,9 @@ Pertanto, l'opera provvisionale strutturale è asseverata come IDONEA ALL'USO se
       drawPimusCoverMeta("Tipologia Ponteggio:", scaffoldType === 'telai' ? "A telai prefabbricati standard" : scaffoldType === 'tubo_giunto' ? "Tubo e Giunto multidirezionale" : "Multidirezionale Tecnico");
       drawPimusCoverMeta("Altezza di Erezione:", `${scaffoldHeight.toFixed(2)} m`);
       drawPimusCoverMeta("Numero degli Impalcati:", `${numFloors} livelli`);
+      const teloLabel = teloLato === 'none' ? 'Nessuno' : teloLato === 'esterno' ? 'Lato Esterno (Rete HDPE)' : teloLato === 'interno' ? 'Lato Interno' : 'Entrambi i Lati (Interno + Esterno)';
+      drawPimusCoverMeta("Telo di Protezione:", teloLabel);
+      drawPimusCoverMeta("Tavole Fermapiede:", `${tavoleFermapiedeCount} per livello (altezza utile: ${tavoleFermapiedeCount * 15} cm)`);
       const hasProjectMantovana = entities.some(e => 
         ((e as any).bimFamilyId || '').toLowerCase().includes('mantovana') || 
         (e as any).renderingStyle === 'mantovana'
@@ -1252,6 +1268,34 @@ Tipologia strutturale principale:
                         defaultValue={15}
                         className="w-full bg-slate-900 border border-slate-850 rounded-xl py-2 px-3 text-white font-mono"
                       />
+                    </div>
+
+                    <div>
+                      <label className="block text-slate-400 font-semibold mb-1">Lato del Telo</label>
+                      <select 
+                        value={teloLato} 
+                        onChange={(e) => setTeloLato(e.target.value as any)}
+                        className="w-full bg-slate-900 border border-slate-850 rounded-xl py-2 px-3 text-white focus:outline-none focus:border-orange-500"
+                      >
+                        <option value="none">Nessuno</option>
+                        <option value="esterno">Esterno (Standard)</option>
+                        <option value="interno">Interno</option>
+                        <option value="entrambi">Entrambi i Lati</option>
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="block text-slate-400 font-semibold mb-1">N. Tavole Fermapiede</label>
+                      <select 
+                        value={tavoleFermapiedeCount} 
+                        onChange={(e) => setTavoleFermapiedeCount(parseInt(e.target.value) || 0)}
+                        className="w-full bg-slate-900 border border-slate-850 rounded-xl py-2 px-3 text-white focus:outline-none focus:border-orange-500 font-mono"
+                      >
+                        <option value="0">Nessuna</option>
+                        <option value="1">1 Tavola (Standard - 15cm)</option>
+                        <option value="2">2 Tavole (Rinforzato - 30cm)</option>
+                        <option value="3">3 Tavole (Alto - 45cm)</option>
+                      </select>
                     </div>
                   </div>
                 </div>

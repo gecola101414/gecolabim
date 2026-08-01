@@ -1,15 +1,17 @@
 import React, { useState, useEffect, useRef } from "react";
-import { LineEntity } from "../types";
+import { LineEntity, Point } from "../types";
 
 export const LineEditorDialog = ({ 
     line, 
     referenceLine,
+    clickPoint,
     onClose, 
     onUpdate,
     onPreview
 }: { 
     line: LineEntity, 
     referenceLine: LineEntity | null,
+    clickPoint: Point | null,
     onClose: () => void, 
     onUpdate: (updatedLine: LineEntity) => void,
     onPreview: (updatedLine: LineEntity) => void
@@ -73,20 +75,35 @@ export const LineEditorDialog = ({
             };
         }
 
-        // Handle length update: Rescale from start
+        // Handle length update: Rescale from end NEAREST to click point
         if (newLen !== null) {
-            const startX = updatedLine.start.x;
-            const startY = updatedLine.start.y;
+            const distStart = clickPoint ? Math.hypot(clickPoint.x - updatedLine.start.x, clickPoint.y - updatedLine.start.y) : Infinity;
+            const distEnd = clickPoint ? Math.hypot(clickPoint.x - updatedLine.end.x, clickPoint.y - updatedLine.end.y) : 0;
+            
+            // If clickPoint is closer to start, anchor end and move start.
+            // But usually lengthening means keeping one point fixed.
+            // User says: "sempre dal lato dove si evidenzia il punto snap"
+            // This means the point NEAR the snap should MOVE (be extended).
+            // Wait, if I click near the end, and I want to lengthen the line, the end should move further.
+            // So the anchor is the point FARTHER from the click point.
+            
+            const anchorAtStart = distEnd < distStart; 
+            
+            const fixedPt = anchorAtStart ? updatedLine.start : updatedLine.end;
+            const movingPt = anchorAtStart ? updatedLine.end : updatedLine.start;
             
             const currentLen = Math.hypot(updatedLine.end.x - updatedLine.start.x, updatedLine.end.y - updatedLine.start.y);
             const ratio = currentLen === 0 ? 1 : newLen / currentLen;
             
+            const newMovingPt = {
+                x: fixedPt.x + (movingPt.x - fixedPt.x) * ratio,
+                y: fixedPt.y + (movingPt.y - fixedPt.y) * ratio
+            };
+            
             updatedLine = {
                 ...updatedLine,
-                end: { 
-                    x: startX + (updatedLine.end.x - startX) * ratio, 
-                    y: startY + (updatedLine.end.y - startY) * ratio 
-                }
+                start: anchorAtStart ? fixedPt : newMovingPt,
+                end: anchorAtStart ? newMovingPt : fixedPt
             };
         }
         

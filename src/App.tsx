@@ -27,8 +27,8 @@ import { TEMPLATES } from './data/templates';
 import { GUIDE_DATABASE, GuideItem } from './data/guides';
 import { PREZZARIO_GECOLA } from './data/prezzario';
 import { Entity, Point, Layer, Measurement, Tavola, Floor, PrezzarioItem, BIMRenderingStyle } from "./types";
-import { mergeAllSegments } from "./utils/entityUtils";
-import { trimEntities } from "./utils";
+import { mergeAllSegments, splitLinesAtIntersections } from "./utils/entityUtils";
+import { trimEntities } from "./utils/entityUtils";
 import { parseScriptToEntities, updateScriptVariables } from "./utils/parametricParser";
 import { contours } from "d3-contour";
 import { simplifyPoints } from "./utils/simplify";
@@ -354,6 +354,7 @@ const scaleEntity = (e: any, factor: number, nextScale: number, center?: { x: nu
 
 export default function App() {
   const [selectedTool, setSelectedTool] = useState<string | null>(() => localStorage.getItem('selectedTool') || 'Select');
+  const [previousTool, setPreviousTool] = useState<string | null>(null);
   const [quickActions, setQuickActions] = useState<{ ids: string[], pos: Point } | null>(null);
   const [capturedSelectionIds, setCapturedSelectionIds] = useState<string[]>([]);
   const [initialSelectedIds, setInitialSelectedIds] = useState<string[]>([]);
@@ -624,14 +625,16 @@ const MASONRY_TYPES = [
   const [isTecnigrafoActive, setIsTecnigrafoActive] = useState(false);
   const [isContinuousMode, setIsContinuousMode] = useState(false);
   const [isShiftOrFDown, setIsShiftOrFDown] = useState(false);
-  const effectiveOrthoMode = orthoMode !== isShiftOrFDown;
+  // SE TENGO PREMUTO BLOC FN RIMANE ATTIVO ORTO: ensure it stays active if either the button or the key is active
+  const effectiveOrthoMode = orthoMode || isShiftOrFDown;
   
   const [cancelTrigger, setCancelTrigger] = useState(0);
   const [parallelTrigger, setParallelTrigger] = useState(0);
   const [showProperties, setShowProperties] = useState(() => localStorage.getItem('showProperties') === 'true');
   const [selectedCategory, setSelectedCategory] = useState(() => localStorage.getItem('selectedCategory') || "Disegno");
   const [isPrezzarioOpen, setIsPrezzarioOpen] = useState(true);
-  const [isPriceListImporterOpen, setIsPriceListImporterOpen] = useState(false);
+  const [priceListImporterTargetFamily, setPriceListImporterTargetFamily] = useState<string | null>(null);
+  const [justImportedItem, setJustImportedItem] = useState<PrezzarioItem | null>(null);
   const [isAnalyzerOpen, setIsAnalyzerOpen] = useState(false);
   const [dynamicPrezzario, setDynamicPrezzario] = useState<PrezzarioItem[]>(() => {
     const saved = localStorage.getItem('bim_custom_prezzario');
@@ -645,6 +648,29 @@ const MASONRY_TYPES = [
     const updatedCustom = [...existingCustom, ...newItems];
     localStorage.setItem('bim_custom_prezzario', JSON.stringify(updatedCustom));
     setDynamicPrezzario([...PREZZARIO_GECOLA, ...updatedCustom]);
+    
+    // Auto-assign as default for the target family
+    newItems.forEach(it => {
+      if (it.bimFamilyId && it.bimFamilyId !== 'GLOBAL' && it.bimFamilyId !== 'ESTRANEO') {
+        const costObj = {
+          prezzarioCodice: it.codice,
+          prezzarioDescrizione: it.descrizione,
+          prezzarioUnita: it.unita,
+          prezzarioPrezzo: it.prezzo,
+          incidenzaManodopera: it.incidenzaManodopera || 0,
+          prezzarioNome: it.prezzario || 'Esterno',
+        };
+        localStorage.setItem('last_bim_cost_' + it.bimFamilyId, JSON.stringify(costObj));
+      }
+    });
+
+    // Dispatch an event so BIMDialogs can update immediately if it's open on that family
+    window.dispatchEvent(new Event('bim_cost_updated'));
+
+    if (newItems.length > 0) {
+      setJustImportedItem(newItems[0]);
+    }
+
     setShortcutToast(`Importate ${newItems.length} voci nel catalogo! 📖`);
     setTimeout(() => setShortcutToast(null), 3000);
   };
@@ -1241,7 +1267,8 @@ const MASONRY_TYPES = [
         bimFamilyId: data.familyId,
         bimAreaType: data.familyId,
         bimSubFamily: data.subFamily || data.familyId,
-        bimName: data.cost_5d?.prezzarioDescrizione || (polys.length > 1 ? `${data.name} ${idx + 1}` : data.name),
+        bimName: data.cost_5d?.prezzarioDescrizione || 
+                 (poly.parentBimName ? `${data.name} su ${poly.parentBimName}` : (polys.length > 1 ? `${data.name} ${idx + 1}` : data.name)),
         backgroundColor: data.color,
         bimHatchPattern: data.hatch as any,
         pattern: data.hatch === 'NONE' ? 'SOLID' : data.hatch as any,
@@ -1892,8 +1919,7 @@ const MASONRY_TYPES = [
     } else if (tool === "SNAP") {
       const next = !isSnapActive;
       setIsSnapActive(next);
-      setOrthoMode(next);
-      setShortcutToast(next ? "SNAP & ORTO: Attivati 🟢" : "SNAP & ORTO: Disattivati 🔴");
+      setShortcutToast(next ? "SNAP: Attivato 🟢" : "SNAP: Disattivato 🔴");
       setTimeout(() => setShortcutToast(null), 2000);
     } else if (tool === "Tecnigrafo") {
       const next = !isTecnigrafoActive;
@@ -1916,7 +1942,7 @@ const MASONRY_TYPES = [
     } else {
       setSelectedTool(tool);
       // Ensure the correct sidebar tab opens for specific tools as requested
-      if (tool === 'Hatch' || tool === 'Line' || tool === 'Circle' || tool === 'Muro' || tool === 'Eraser') {
+      if (tool === 'Hatch' || tool === 'Line' || tool === 'Circle' || tool === 'Muro' || tool === 'Gomma') {
         setActiveSidebarTab('penne');
         setShowProperties(true);
       } else if (tool === 'Testo') {
@@ -2167,7 +2193,10 @@ const MASONRY_TYPES = [
         clearTimeout(historyTimeoutRef.current);
         historyTimeoutRef.current = null;
     }
-    setEntities(newEntities);
+    setEntities((prev) => {
+        const rawNext = typeof newEntities === "function" ? (newEntities as Function)(prev) : newEntities;
+        return rawNext;
+    });
   };
 
   const commitToHistory = (snapshotToSave?: Entity[]) => {
@@ -2201,8 +2230,9 @@ const MASONRY_TYPES = [
         clearTimeout(historyTimeoutRef.current);
     }
     setEntities((prev) => {
-      const next =
+      const rawNext =
         typeof newEntities === "function" ? (newEntities as Function)(prev) : newEntities;
+      const next = rawNext;
       
       historyTimeoutRef.current = setTimeout(() => {
         const currentIdx = historyIndexRef.current;
@@ -2260,9 +2290,55 @@ const MASONRY_TYPES = [
         setCancelTrigger(prev => prev + 1);
       }
 
-      // Shift or F for temporarily toggling ortho Mode
+      // F8 to toggle ortho Mode
+      if (e.key === 'F8') {
+        e.preventDefault();
+        setOrthoMode(prev => !prev);
+      }
+
+      // Tab to toggle Snap Mode
+      if (e.key === 'Tab') {
+        e.preventDefault();
+        setIsSnapActive(prev => {
+          const next = !prev;
+          setShortcutToast(next ? "SNAP: Attivato 🟢" : "SNAP: Disattivato 🔴");
+          setTimeout(() => setShortcutToast(null), 2000);
+          return next;
+        });
+      }
+
+      // Backslash or Pipe to activate Line tool (key under ESC on many layouts)
+      if (e.key === '\\' || e.key === '|') {
+        e.preventDefault();
+        setSelectedCategory("Disegno");
+        handleToolClick("Line");
+        setSelectedTool("Line");
+        setShortcutToast("Strumento: Linea 📏");
+        setTimeout(() => setShortcutToast(null), 1500);
+      }
+
+      // Shift or F for temporarily toggling ortho Mode + Auto Line activation
       if (e.key === 'Shift' || key === 'f') {
         setIsShiftOrFDown(true);
+        if (selectedTool !== "Line") {
+          setSelectedCategory("Disegno");
+          // Always activate Line tool when BLOC FN key is pressed
+          handleToolClick("Line");
+          setSelectedTool("Line");
+          setShortcutToast("Strumento: Linea (Ortho) 📏");
+          setTimeout(() => setShortcutToast(null), 1500);
+        }
+      }
+
+      // Control to temporarily activate Trim (Scissors)
+      if (e.key === 'Control' && !e.repeat) {
+        setSelectedTool(current => {
+          if (current !== 'Trim') {
+            setPreviousTool(current);
+            return 'Trim';
+          }
+          return current;
+        });
       }
     };
 
@@ -2270,6 +2346,15 @@ const MASONRY_TYPES = [
       const key = e.key.toLowerCase();
       if (e.key === 'Shift' || key === 'f') {
         setIsShiftOrFDown(false);
+      }
+
+      if (e.key === 'Control') {
+        setPreviousTool(prev => {
+          if (prev) {
+            setSelectedTool(prev);
+          }
+          return null;
+        });
       }
     };
 
@@ -2279,7 +2364,7 @@ const MASONRY_TYPES = [
       window.removeEventListener('keydown', handleKeyDown);
       window.removeEventListener('keyup', handleKeyUp);
     };
-  }, [historyIndex, history, entities]); // Dependencies for shortcuts
+  }, [historyIndex, history, entities, previousTool]); // Dependencies for shortcuts
 
   return (
     <div className="flex flex-col h-screen bg-neutral-100 text-neutral-900">
@@ -2547,7 +2632,7 @@ const MASONRY_TYPES = [
             setIsBIMFinestreOpen={setIsBIMFinestreOpen}
             onOpen3DView={() => setIs3DViewOpen(true)}
             entities={entities}
-            setEntities={setEntities}
+            setEntities={updateEntitiesWithHistory}
             isStratifiedView={isStratifiedView}
             setIsStratifiedView={setIsStratifiedView}
           />
@@ -2673,6 +2758,24 @@ const MASONRY_TYPES = [
         <div className="ml-auto flex items-center gap-2">
           <button
             onClick={() => {
+              const next = !isSnapActive;
+              setIsSnapActive(next);
+              setShortcutToast(next ? "SNAP: Attivato 🟢" : "SNAP: Disattivato 🔴");
+              setTimeout(() => setShortcutToast(null), 2000);
+            }}
+            onMouseEnter={() => handleGuideHover("SNAP")}
+            className={`px-2 py-0.5 rounded flex items-center gap-1 text-xs transition ${
+              isSnapActive 
+                ? "bg-blue-600 text-white font-bold shadow" 
+                : "hover:bg-neutral-200"
+            }`}
+            title="Attiva/Disattiva Snap Intelligente"
+          >
+            <Target size={12} className={isSnapActive ? "text-white" : "text-neutral-600"} />
+            <span>Snap</span>
+          </button>
+          <button
+            onClick={() => {
               handleGuideClick("Modo Orto");
               setOrthoMode(!orthoMode); // explicitly toggle the stored state, not the effective one
             }}
@@ -2712,9 +2815,12 @@ const MASONRY_TYPES = [
             onClick={() => {
               const next = !isContinuousMode;
               setIsContinuousMode(next);
-              if (next && selectedTool === 'Select') {
+              // SE CLICCO SU BLOC FN DEVE SEMPRE ATTIVARSI LA LINEA
+              if (next) {
                 setOrthoMode(true);
                 setSelectedTool('Line');
+                setSelectedCategory("Disegno");
+                handleToolClick("Line");
               }
               setCancelTrigger(prev => prev + 1);
             }}
@@ -2723,9 +2829,11 @@ const MASONRY_TYPES = [
                 ? "bg-amber-100 text-amber-950 border border-amber-300 font-bold shadow-[0_0_8px_rgba(245,158,11,0.2)]" 
                 : "hover:bg-neutral-200"
             }`}
+            title="BLOC FN: Attiva modalità Polilinea e Orto"
           >
             <PolylineIcon size={12} className={isContinuousMode ? "text-amber-600" : ""} />
-            <span>Polilinea</span>
+            <span className="font-bold">BLOC FN</span>
+            <span className="text-[9px] opacity-60">Polilinea</span>
           </button>
           <div className="flex gap-1 rounded bg-neutral-200 p-0.5">
             <button
@@ -2851,6 +2959,10 @@ const MASONRY_TYPES = [
             referenceLine={referenceLine}
             defaultTextStyle={defaultTextStyle}
             onCommitHistory={commitToHistory}
+            onOpenPenneSidebar={() => {
+              setActiveSidebarTab('penne');
+              setShowProperties(true);
+            }}
             showFloatingManual={showFloatingManual}
             onSelect={(id, entity, clickPoint) => {
               setSelectedId(id);
@@ -3029,7 +3141,7 @@ const MASONRY_TYPES = [
             eraserIntensity={eraserIntensity}
             setEraserIntensity={setEraserIntensity}
             rulerStyle={rulerStyle}
-            orthoMode={orthoMode}
+            orthoMode={effectiveOrthoMode}
             snapEnabled={isSnapActive}
             setOrthoMode={setOrthoMode}
             isContinuousMode={isContinuousMode}
@@ -3532,6 +3644,9 @@ const MASONRY_TYPES = [
               entities={entities}
               editingEntityId={editingEntityId}
               prezzarioItems={dynamicPrezzario}
+              onOpenImporter={(familyId) => setPriceListImporterTargetFamily(familyId || 'ESTRANEO')}
+              justImportedItem={justImportedItem}
+              onConsumedImportedItem={() => setJustImportedItem(null)}
             />
           )}
 
@@ -3679,7 +3794,8 @@ const MASONRY_TYPES = [
                   normalX: faceData?.normalX,
                   normalY: faceData?.normalY,
                   normalZ: faceData?.normalZ,
-                  parentEntityId: faceData?.parentEntityId
+                  parentEntityId: faceData?.parentEntityId,
+                  parentBimName: faceData?.parentBimName
                 });
                 setIsBIMElementDialogOpen(true);
               }}
@@ -6741,6 +6857,7 @@ const MASONRY_TYPES = [
           <LineEditorDialog
             line={selectedLine}
             referenceLine={referenceLine}
+            clickPoint={selectedLineClickPoint}
             onClose={() => {
                 if (originalLine) {
                  setEntities(prev => prev.map(e => e.id === originalLine.id ? originalLine : e));
@@ -6875,6 +6992,7 @@ const MASONRY_TYPES = [
       <GecolaPrezzarioPanel
         entities={entities}
         updateEntity={updateEntity}
+        updateEntitiesWithHistory={updateEntitiesWithHistory}
         selectedId={selectedId}
         setSelectedId={setSelectedId}
         isOpen={isPrezzarioOpen}
@@ -6882,12 +7000,13 @@ const MASONRY_TYPES = [
         setShortcutToast={setShortcutToast}
         floors={floors}
         prezzarioItems={dynamicPrezzario}
-        onOpenImporter={() => setIsPriceListImporterOpen(true)}
+        onOpenImporter={() => setPriceListImporterTargetFamily('GLOBAL')}
       />
 
       <PriceListImporter 
-        isOpen={isPriceListImporterOpen}
-        onClose={() => setIsPriceListImporterOpen(false)}
+        isOpen={priceListImporterTargetFamily !== null}
+        targetFamilyId={priceListImporterTargetFamily !== 'GLOBAL' ? priceListImporterTargetFamily! : undefined}
+        onClose={() => setPriceListImporterTargetFamily(null)}
         onImport={handleImportPriceList}
       />
 

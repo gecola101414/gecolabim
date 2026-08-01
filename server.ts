@@ -1,9 +1,6 @@
 import { app } from "./api/index";
 import path from "path";
 import express from "express";
-import { fileURLToPath } from 'url';
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 // Only start the server listening if we are running in standalone mode (not as a serverless function)
 async function runStandalone() {
@@ -16,7 +13,7 @@ async function runStandalone() {
       });
       app.use(vite.middlewares);
     } else {
-      const distPath = path.join(__dirname, 'dist');
+      const distPath = path.join(process.cwd(), 'dist');
       app.use(express.static(distPath));
       app.get('*', (req, res) => {
         res.sendFile(path.join(distPath, 'index.html'));
@@ -29,5 +26,4 @@ async function runStandalone() {
     });
   }
 }
-
 runStandalone();
