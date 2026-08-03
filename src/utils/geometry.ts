@@ -129,12 +129,15 @@ export const getIntersections = (entA: Entity, entB: Entity): Point[] => {
             const b = 2 * (v.x * d.x + v.y * d.y);
             const c = (v.x * v.x + v.y * v.y) - circle.radius * circle.radius;
             if (a !== 0) {
-                const discriminant = b * b - 4 * a * c;
+                let discriminant = b * b - 4 * a * c;
+                if (discriminant < 0 && discriminant >= -1e-3) {
+                    discriminant = 0;
+                }
                 if (discriminant >= 0) {
                     const sqrtD = Math.sqrt(discriminant);
                     const t1 = (-b - sqrtD) / (2 * a);
                     const t2 = (-b + sqrtD) / (2 * a);
-                    const epsLineCircle = 0.05; 
+                    const epsLineCircle = 0.08; 
                     [t1, t2].forEach(t => {
                         if (t >= -epsLineCircle && t <= 1 + epsLineCircle) {
                             const tClamped = Math.max(0, Math.min(1, t));
@@ -151,6 +154,43 @@ export const getIntersections = (entA: Entity, entB: Entity): Point[] => {
                     });
                 }
             }
+
+            // Proximity & Quadrant checks for snapping (midpoints, endpoints, quadrant contact points)
+            const epsProximity = 0.8;
+            const checkAndPushPoint = (pt: Point) => {
+                const distToC = Math.hypot(pt.x - circle.center.x, pt.y - circle.center.y);
+                if (Math.abs(distToC - circle.radius) < epsProximity) {
+                    const angle = Math.atan2(pt.y - circle.center.y, pt.x - circle.center.x);
+                    const projP = {
+                        x: circle.center.x + circle.radius * Math.cos(angle),
+                        y: circle.center.y + circle.radius * Math.sin(angle)
+                    };
+                    if (circle.type === 'arc') {
+                        const angleDeg = angle * 180 / Math.PI;
+                        if (!isAngleInArc(angleDeg, circle.startAngle, circle.endAngle)) return;
+                    }
+                    if (!subPts.some(existing => Math.hypot(existing.x - projP.x, existing.y - projP.y) < 0.1)) {
+                        subPts.push(projP);
+                    }
+                }
+            };
+
+            checkAndPushPoint(s);
+            checkAndPushPoint(e);
+            checkAndPushPoint({ x: (s.x + e.x) / 2, y: (s.y + e.y) / 2 });
+
+            const quads: Point[] = [
+                { x: circle.center.x + circle.radius, y: circle.center.y },
+                { x: circle.center.x, y: circle.center.y + circle.radius },
+                { x: circle.center.x - circle.radius, y: circle.center.y },
+                { x: circle.center.x, y: circle.center.y - circle.radius }
+            ];
+            quads.forEach(q => {
+                if (distToSegment(q, s, e) < epsProximity) {
+                    checkAndPushPoint(q);
+                }
+            });
+
             return subPts;
         };
 

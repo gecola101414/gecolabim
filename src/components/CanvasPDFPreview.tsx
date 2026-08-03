@@ -663,8 +663,8 @@ export const CanvasPDFPreview: React.FC<CanvasPDFPreviewProps> = ({ entities, ta
           ctx.stroke();
 
           // Extensions/legislative elements
-          const legBehind = (20 * scaleFactor) / cadToMm;
-          const legAhead = (8 * scaleFactor) / cadToMm;
+          const legBehind = 20 * scaleFactor;
+          const legAhead = 8 * scaleFactor;
           const offsetDir = ent.offset >= 0 ? 1 : -1;
 
           ctx.beginPath();
@@ -675,7 +675,7 @@ export const CanvasPDFPreview: React.FC<CanvasPDFPreviewProps> = ({ entities, ta
           ctx.stroke();
 
           // Slashes
-          const slashSize = (5 * scaleFactor) / cadToMm;
+          const slashSize = 5 * scaleFactor;
           ctx.beginPath();
           ctx.moveTo(p1.x - nx * slashSize - ny * slashSize, p1.y - ny * slashSize + nx * slashSize);
           ctx.lineTo(p1.x + nx * slashSize + ny * slashSize, p1.y + ny * slashSize - nx * slashSize);
@@ -685,7 +685,7 @@ export const CanvasPDFPreview: React.FC<CanvasPDFPreviewProps> = ({ entities, ta
 
           // Dimension text
           ctx.fillStyle = '#000000';
-          const size = (12 * scaleFactor) / cadToMm;
+          const size = 12 * scaleFactor;
           ctx.font = `${size}px monospace`;
           ctx.textAlign = 'center';
           ctx.textBaseline = 'bottom';
@@ -698,8 +698,8 @@ export const CanvasPDFPreview: React.FC<CanvasPDFPreviewProps> = ({ entities, ta
           if (angle >= Math.PI / 2 - 0.01) angle -= Math.PI;
           else if (angle < -Math.PI / 2 - 0.01) angle += Math.PI;
 
-          const textX = (p1.x + p2.x) / 2 + (3 * scaleFactor / cadToMm) * Math.sin(angle);
-          const textY = (p1.y + p2.y) / 2 - (3 * scaleFactor / cadToMm) * Math.cos(angle);
+          const textX = (p1.x + p2.x) / 2 + (3 * scaleFactor) * Math.sin(angle);
+          const textY = (p1.y + p2.y) / 2 - (3 * scaleFactor) * Math.cos(angle);
 
           ctx.save();
           ctx.translate(textX, textY);
@@ -708,7 +708,7 @@ export const CanvasPDFPreview: React.FC<CanvasPDFPreviewProps> = ({ entities, ta
           ctx.restore();
         }
       } else if (ent.type === 'text') {
-        const textFontSize = (ent.fontSize || 14) / cadToMm;
+        const textFontSize = ent.fontSize || 14;
         ctx.font = `${ent.fontWeight || 'normal'} ${textFontSize}px ${ent.fontFamily || 'sans-serif'}`;
         const isBIMSymbol = ent.isBIM && (ent.bimType === 'electrical_symbol' || ent.bimType === 'hydraulic_symbol');
         ctx.fillStyle = isBIMSymbol ? '#000000' : (ent.color || '#000000');

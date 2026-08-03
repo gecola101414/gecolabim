@@ -357,7 +357,11 @@ export const exportNativePDF = (
           if (entity.textAlign === 'center') align = 'center';
           if (entity.textAlign === 'right') align = 'right';
           
-          pdf.text(entity.text, tx(entity.point.x), ty(entity.point.y), { align, baseline: 'top' });
+          const lines = entity.text.split('\n');
+          const lineHeightMm = entity.fontSize * 1.25;
+          lines.forEach((line, idx) => {
+              pdf.text(line, tx(entity.point.x), ty(entity.point.y + idx * lineHeightMm), { align, baseline: 'top' });
+          });
       } else if (entity.type === 'hatch') {
           drawHatchInPDF(pdf, entity, tx, ty, ts, scale);
       }

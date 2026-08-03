@@ -2958,6 +2958,7 @@ const MASONRY_TYPES = [
             selectedLine={selectedLine}
             referenceLine={referenceLine}
             defaultTextStyle={defaultTextStyle}
+            setDefaultTextStyle={setDefaultTextStyle}
             onCommitHistory={commitToHistory}
             onOpenPenneSidebar={() => {
               setActiveSidebarTab('penne');
