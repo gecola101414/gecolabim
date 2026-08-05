@@ -130,6 +130,25 @@ const MirrorIcon = ({ size = 16 }: { size?: number }) => (
   </svg>
 );
 
+const LiveMirrorIcon = ({ size = 16 }: { size?: number }) => (
+  <svg 
+    width={size} 
+    height={size} 
+    viewBox="0 0 24 24" 
+    fill="none" 
+    stroke="currentColor" 
+    strokeWidth="2" 
+    strokeLinecap="round" 
+    strokeLinejoin="round"
+  >
+    <path d="M12 2v20" strokeDasharray="3 3" />
+    <path d="M4 8h5a2 2 0 0 1 2 2v4a2 2 0 0 1-2 2H4z" fill="currentColor" fillOpacity="0.15" />
+    <path d="M20 8h-5a2 2 0 0 0-2 2v4a2 2 0 0 0 2 2h5z" />
+    <path d="M7 12h2" />
+    <path d="M15 12h2" />
+  </svg>
+);
+
 const FiloIcon = ({ size = 16 }: { size?: number }) => (
   <svg 
     width={size} 
@@ -384,6 +403,32 @@ export default function App() {
   const [isRotateScaleOpen, setIsRotateScaleOpen] = useState(false);
   const [rotateFinishes, setRotateFinishes] = useState(true);
   const [entities, setEntities] = useState<Entity[]>([]);
+  const [savedLiveMirrorAxes, setSavedLiveMirrorAxes] = useState<{ start: Point; end: Point }[]>(() => {
+    try {
+      const saved = localStorage.getItem('gecola_live_mirror_axes');
+      return saved ? JSON.parse(saved) : [];
+    } catch {
+      return [];
+    }
+  });
+  const [liveMirrorAxis, setLiveMirrorAxis] = useState<{ start: Point; end: Point } | null>(null);
+
+  const handleUpdateLiveMirrorAxis = (axis: { start: Point; end: Point } | null) => {
+    setLiveMirrorAxis(axis);
+    if (axis) {
+      setSavedLiveMirrorAxes(prev => {
+        const exists = prev.some(a => 
+          Math.hypot(a.start.x - axis.start.x, a.start.y - axis.start.y) < 5 &&
+          Math.hypot(a.end.x - axis.end.x, a.end.y - axis.end.y) < 5
+        );
+        const updated = exists ? prev : [axis, ...prev].slice(0, 10);
+        try {
+          localStorage.setItem('gecola_live_mirror_axes', JSON.stringify(updated));
+        } catch {}
+        return updated;
+      });
+    }
+  };
 
   useEffect(() => {
     if (rotationEntityId) {
@@ -625,8 +670,10 @@ const MASONRY_TYPES = [
   const [isTecnigrafoActive, setIsTecnigrafoActive] = useState(false);
   const [isContinuousMode, setIsContinuousMode] = useState(false);
   const [isShiftOrFDown, setIsShiftOrFDown] = useState(false);
+  const [isSnapOverrideDown, setIsSnapOverrideDown] = useState(false);
   // SE TENGO PREMUTO BLOC FN RIMANE ATTIVO ORTO: ensure it stays active if either the button or the key is active
   const effectiveOrthoMode = orthoMode || isShiftOrFDown;
+  const effectiveSnapActive = isSnapActive && !isSnapOverrideDown;
   
   const [cancelTrigger, setCancelTrigger] = useState(0);
   const [parallelTrigger, setParallelTrigger] = useState(0);
@@ -2000,6 +2047,7 @@ const MASONRY_TYPES = [
         { name: "Arc", icon: History },
         { name: "Hatch", icon: Grid },
         { name: "Specchio", icon: MirrorIcon },
+        { name: "LiveMirror", icon: LiveMirrorIcon },
         { name: "Testo", icon: Type },
         { name: "Trim", icon: Scissors },
         { name: "Allunga", icon: AllungaIcon },
@@ -2296,15 +2344,9 @@ const MASONRY_TYPES = [
         setOrthoMode(prev => !prev);
       }
 
-      // Tab to toggle Snap Mode
-      if (e.key === 'Tab') {
-        e.preventDefault();
-        setIsSnapActive(prev => {
-          const next = !prev;
-          setShortcutToast(next ? "SNAP: Attivato 🟢" : "SNAP: Disattivato 🔴");
-          setTimeout(() => setShortcutToast(null), 2000);
-          return next;
-        });
+      // Key < > (IntlBackslash / Comma) to temporarily deactivate Snap Mode while held down
+      if ((e.code === 'IntlBackslash' || e.code === 'Comma' || e.key === '<' || e.key === '>') && !e.repeat) {
+        setIsSnapOverrideDown(true);
       }
 
       // Backslash or Pipe to activate Line tool (key under ESC on many layouts)
@@ -2346,6 +2388,10 @@ const MASONRY_TYPES = [
       const key = e.key.toLowerCase();
       if (e.key === 'Shift' || key === 'f') {
         setIsShiftOrFDown(false);
+      }
+
+      if (e.code === 'IntlBackslash' || e.code === 'Comma' || e.key === '<' || e.key === '>') {
+        setIsSnapOverrideDown(false);
       }
 
       if (e.key === 'Control') {
@@ -2765,14 +2811,16 @@ const MASONRY_TYPES = [
             }}
             onMouseEnter={() => handleGuideHover("SNAP")}
             className={`px-2 py-0.5 rounded flex items-center gap-1 text-xs transition ${
-              isSnapActive 
+              effectiveSnapActive 
                 ? "bg-blue-600 text-white font-bold shadow" 
+                : isSnapActive && isSnapOverrideDown
+                ? "bg-amber-500 text-white font-bold shadow animate-pulse"
                 : "hover:bg-neutral-200"
             }`}
-            title="Attiva/Disattiva Snap Intelligente"
+            title="Attiva/Disattiva Snap Intelligente (Tieni premuto tasto < > per disattivare temporaneamente)"
           >
-            <Target size={12} className={isSnapActive ? "text-white" : "text-neutral-600"} />
-            <span>Snap</span>
+            <Target size={12} className={effectiveSnapActive ? "text-white" : "text-neutral-600"} />
+            <span>Snap{isSnapOverrideDown ? " [Sospeso]" : ""}</span>
           </button>
           <button
             onClick={() => {
@@ -2948,6 +2996,32 @@ const MASONRY_TYPES = [
             }
           }}
         >
+          {liveMirrorAxis && (
+            <div className="absolute top-4 left-1/2 -translate-x-1/2 z-30 bg-neutral-900/90 backdrop-blur-md border border-emerald-500/50 text-white px-4 py-2.5 rounded-2xl shadow-xl flex items-center gap-3">
+              <div className="w-3 h-3 rounded-full bg-emerald-400 animate-pulse"></div>
+              <div className="flex flex-col">
+                <span className="text-[11px] font-black uppercase tracking-wider text-emerald-400">Simmetria Live Attiva</span>
+                <span className="text-[10px] text-neutral-300">Disegno simmetrico in tempo reale attivo.</span>
+              </div>
+              <div className="flex items-center gap-2 ml-4">
+                <button
+                  onClick={() => {
+                    setSelectedTool('LiveMirror');
+                    handleUpdateLiveMirrorAxis(null);
+                  }}
+                  className="px-2.5 py-1 text-[10px] font-bold bg-neutral-800 hover:bg-neutral-700 text-neutral-200 rounded-lg border border-neutral-700 transition-all cursor-pointer"
+                >
+                  Cambia Asse
+                </button>
+                <button
+                  onClick={() => handleUpdateLiveMirrorAxis(null)}
+                  className="px-2.5 py-1 text-[10px] font-bold bg-red-500/20 hover:bg-red-500/30 text-red-300 rounded-lg border border-red-500/30 transition-all cursor-pointer"
+                >
+                  Disattiva
+                </button>
+              </div>
+            </div>
+          )}
           <CADCanvas
             ref={cadCanvasRef}
             entities={entities}
@@ -2955,6 +3029,8 @@ const MASONRY_TYPES = [
             setActiveTool={setSelectedTool}
             setEntities={updateEntitiesWithHistory}
             setEntitiesSilent={updateEntitiesSilent}
+            liveMirrorAxis={liveMirrorAxis}
+            onUpdateLiveMirrorAxis={handleUpdateLiveMirrorAxis}
             selectedLine={selectedLine}
             referenceLine={referenceLine}
             defaultTextStyle={defaultTextStyle}
@@ -3143,7 +3219,7 @@ const MASONRY_TYPES = [
             setEraserIntensity={setEraserIntensity}
             rulerStyle={rulerStyle}
             orthoMode={effectiveOrthoMode}
-            snapEnabled={isSnapActive}
+            snapEnabled={effectiveSnapActive}
             setOrthoMode={setOrthoMode}
             isContinuousMode={isContinuousMode}
             cancelTrigger={cancelTrigger}
@@ -5874,6 +5950,60 @@ const MASONRY_TYPES = [
                           <span className="text-indigo-400 font-extrabold block mb-2 text-[10px] font-mono tracking-widest uppercase">✨ SPECCHIO (MIRROR):</span>
                           Crea un asse di simmetria come un normale segmento... poi seleziona gli oggetti.
                         </p>
+                      </div>
+                    ) : selectedTool === 'LiveMirror' ? (
+                      <div className="bg-emerald-950 border border-emerald-800 text-emerald-100 p-4 rounded-xl shadow-lg space-y-3">
+                        <p className="text-xs leading-normal font-sans">
+                          <span className="text-emerald-400 font-extrabold block mb-2 text-[10px] font-mono tracking-widest uppercase">✨ SIMMETRIA LIVE:</span>
+                          Traccia un asse di simmetria (cliccando due punti o selezionando una linea esistente). Qualsiasi disegno, modifica, taglio (forbici) o cancellazione verrà specchiato in tempo reale!
+                        </p>
+                        
+                        {liveMirrorAxis ? (
+                          <div className="bg-emerald-900/60 p-2.5 rounded-lg border border-emerald-700/50 flex items-center justify-between text-xs">
+                            <span className="text-emerald-200 font-medium">Asse Attivo in Memoria</span>
+                            <button
+                              onClick={() => handleUpdateLiveMirrorAxis(null)}
+                              className="px-2 py-1 bg-red-500/20 hover:bg-red-500/30 text-red-300 rounded text-[10px] font-bold transition-all cursor-pointer"
+                            >
+                              Rimuovi Asse
+                            </button>
+                          </div>
+                        ) : (
+                          <div className="text-[11px] text-emerald-300 font-medium italic">
+                            Nessun asse attivo. Tracciane uno o selezionalo dalla memoria sotto.
+                          </div>
+                        )}
+
+                        {savedLiveMirrorAxes.length > 0 && (
+                          <div className="pt-2 border-t border-emerald-800/80 space-y-2">
+                            <div className="flex items-center justify-between">
+                              <span className="text-[10px] font-bold text-emerald-300 uppercase tracking-wider">Assi Salvati in Memoria ({savedLiveMirrorAxes.length})</span>
+                              <button
+                                onClick={() => {
+                                  setSavedLiveMirrorAxes([]);
+                                  try { localStorage.removeItem('gecola_live_mirror_axes'); } catch {}
+                                }}
+                                className="text-[9px] text-neutral-400 hover:text-red-300 transition-colors cursor-pointer"
+                              >
+                                Pulisci Memoria
+                              </button>
+                            </div>
+                            <div className="max-h-36 overflow-y-auto space-y-1.5 pr-1">
+                              {savedLiveMirrorAxes.map((axis, idx) => (
+                                <div 
+                                  key={idx}
+                                  onClick={() => handleUpdateLiveMirrorAxis(axis)}
+                                  className={`p-2 rounded-lg border text-[10px] transition-all cursor-pointer flex items-center justify-between ${liveMirrorAxis && Math.hypot(liveMirrorAxis.start.x - axis.start.x, liveMirrorAxis.start.y - axis.start.y) < 2 ? 'bg-emerald-600/30 border-emerald-400 text-white' : 'bg-emerald-900/30 border-emerald-800 text-emerald-200 hover:bg-emerald-900/60'}`}
+                                >
+                                  <div className="font-mono">
+                                    P1({Math.round(axis.start.x)},{Math.round(axis.start.y)}) → P2({Math.round(axis.end.x)},{Math.round(axis.end.y)})
+                                  </div>
+                                  <span className="text-[9px] px-1.5 py-0.5 bg-emerald-700/50 rounded font-bold">Usa</span>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
                       </div>
                     ) : selectedTool === 'Eraser' ? (
                       <div className="space-y-4">

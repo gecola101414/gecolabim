@@ -24,6 +24,7 @@ import { TEMPLATES, Template } from '../data/templates';
 import { PdfRenderer } from './PdfRenderer';
 import { ImageEditorOverlay } from './ImageEditorOverlay';
 import { contours } from 'd3-contour';
+import { computeCircleTangentTo2Lines } from '../utils/geometry';
 
 const getEffectiveCADRenderWidth = (lw: number, mode: string | undefined, zoom: number): number => {
     if (mode === 'ink') {
@@ -2177,15 +2178,18 @@ function getIntersection(a: Point, b: Point, c: Point, d: Point): Point | null {
     return null;
 }
 
-const isAngleInArc = (angle: number, startAngle: number, endAngle: number) => {
+const isAngleInArc = (angle: number, startAngle: number, endAngle: number, tolerance: number = 0.05) => {
   const normAngle = normalizeAngle(angle);
   const normStart = normalizeAngle(startAngle);
   const normEnd = normalizeAngle(endAngle);
-  if (normStart <= normEnd) {
-      return normAngle >= normStart && normAngle <= normEnd;
-  } else {
-      return normAngle >= normStart || normAngle <= normEnd;
-  }
+  
+  let span = normEnd - normStart;
+  if (span < 0) span += 360;
+  
+  let dist = normAngle - normStart;
+  if (dist < 0) dist += 360;
+  
+  return dist <= span + tolerance || dist >= 360 - tolerance;
 };
 
 const getClockwiseDistance = (angle: number, start: number) => {
@@ -2815,6 +2819,8 @@ interface CADCanvasProps {
   setActiveTool?: (tool: string) => void;
   setEntities: React.Dispatch<React.SetStateAction<Entity[]>>;
   setEntitiesSilent?: React.Dispatch<React.SetStateAction<Entity[]>>;
+  liveMirrorAxis?: { start: Point; end: Point } | null;
+  onUpdateLiveMirrorAxis?: (axis: { start: Point; end: Point } | null) => void;
   onCommitHistory?: (entities: Entity[]) => void;
   onSelect: (id: string | null, entity?: Entity, clickPoint?: Point) => void;
   onContextMenu?: (e: React.MouseEvent) => void;
@@ -2888,8 +2894,72 @@ interface CADCanvasProps {
 
 const mergeLineSegments = (currentEntities: Entity[], newLine: LineEntity): Entity[] => {
     const tolerance = 0.5; // 5mm tolerance for snapping/connection/gaps
-    let merged = { ...newLine };
     let entitiesToKeep = [...currentEntities];
+
+    // 1. Line overlay / replacement ("china sulla matita"): if newLine overlaps the interior of existing lines, trim/split those lines
+    const v1 = { x: newLine.end.x - newLine.start.x, y: newLine.end.y - newLine.start.y };
+    const len1 = Math.hypot(v1.x, v1.y);
+    if (len1 > 0.01) {
+        const ux = v1.x / len1;
+        const uy = v1.y / len1;
+        const t_new_start = 0;
+        const t_new_end = len1;
+
+        const nextEntities: Entity[] = [];
+        for (let i = 0; i < entitiesToKeep.length; i++) {
+            const ent = entitiesToKeep[i];
+            if (ent.type === 'line' && !ent.isBIM && !(ent as any).isFilo) {
+                const line = ent as LineEntity;
+                const v2 = { x: line.end.x - line.start.x, y: line.end.y - line.start.y };
+                const len2 = Math.hypot(v2.x, v2.y);
+                if (len2 > 0.01) {
+                    const cross = v1.x * v2.y - v1.y * v2.x;
+                    const sin_theta = Math.abs(cross / (len1 * len2));
+                    if (sin_theta < 0.12) {
+                        const dx = line.start.x - newLine.start.x;
+                        const dy = line.start.y - newLine.start.y;
+                        const distToLine = Math.abs(v1.y * dx - v1.x * dy) / len1;
+                        if (distToLine < tolerance) {
+                            const t_l1 = (line.start.x - newLine.start.x) * ux + (line.start.y - newLine.start.y) * uy;
+                            const t_l2 = (line.end.x - newLine.start.x) * ux + (line.end.y - newLine.start.y) * uy;
+                            const a_l = Math.min(t_l1, t_l2);
+                            const b_l = Math.max(t_l1, t_l2);
+                            const pt_l_start = t_l1 < t_l2 ? line.start : line.end;
+                            const pt_l_end = t_l1 < t_l2 ? line.end : line.start;
+
+                            const overlapStart = Math.max(a_l, t_new_start);
+                            const overlapEnd = Math.min(b_l, t_new_end);
+
+                            if (overlapEnd - overlapStart > tolerance + 0.1) {
+                                // Substantial interior overlap ("china sulla matita") - trim/split underlying line
+                                if (overlapStart - a_l > tolerance) {
+                                    nextEntities.push({
+                                        ...line,
+                                        id: Date.now().toString() + '_l',
+                                        start: pt_l_start,
+                                        end: { x: newLine.start.x + ux * overlapStart, y: newLine.start.y + uy * overlapStart }
+                                    });
+                                }
+                                if (b_l - overlapEnd > tolerance) {
+                                    nextEntities.push({
+                                        ...line,
+                                        id: Date.now().toString() + '_r',
+                                        start: { x: newLine.start.x + ux * overlapEnd, y: newLine.start.y + uy * overlapEnd },
+                                        end: pt_l_end
+                                    });
+                                }
+                                continue; // Skip original line (overridden by newLine)
+                            }
+                        }
+                    }
+                }
+            }
+            nextEntities.push(ent);
+        }
+        entitiesToKeep = nextEntities;
+    }
+
+    let merged = { ...newLine };
     let mergedAny = true;
 
     while (mergedAny) {
@@ -3006,13 +3076,111 @@ const mergeLineSegments = (currentEntities: Entity[], newLine: LineEntity): Enti
     return [...entitiesToKeep, merged];
 };
 
-export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entities, activeTool, setActiveTool, setEntities, setEntitiesSilent, onCommitHistory, onSelect, onContextMenu, activeLayerId, layers, defaultLineStyle, setDefaultLineStyle, defaultFiloColor = '#ff5500', defaultHatchStyle, defaultTextStyle = { fontFamily: 'sans-serif', fontSize: 14, fontWeight: 'normal', textAlign: 'left' }, setDefaultTextStyle, eraserRadius, setEraserRadius, eraserType = 'pencil', setEraserType, eraserIntensity = 55, setEraserIntensity, onMouseMovePosition, rulerStyle = 'tecnigrafo', orthoMode = false, snapEnabled = true, setOrthoMode, isContinuousMode = false, cancelTrigger = 0, parallelTrigger = 0, tavole, onUpdateTavole, onDoubleClickTavola, selectedTemplateId, selectedEntityId, selectedBIMSymbolType, setSelectedBIMSymbolType, bimSymbolScale = 1, raccordoConfig, dimensionScale = 1, dimensionDecimals = 2, dimensionMode = 'two-points', dimensionStyle = 'linear', selectionMode = 'manual', onEditRaccordo, onOpenPenneSidebar, onDoubleClickDimension, onDoubleClickBIMElement, onActionStart, onAreaDetected, onSelectionComplete, initialSelectedIds, selectedEntityIds = [], highlightedPoints, rotationEntityId, onSelectForRotation, bimWallHeight = 270, bimDoorHeight = 210, bimWindowHeight = 140, bimWallThickness = 15, bimWallType = 'Forati (Laterizio)', bimWallRenderMode = 'solid', sketchParams = [], highlightedSketchId = null, selectedLine = null, selectedLineClickPoint = null, referenceLine = null, showFloatingManual = false, isLavagna = false }, ref) => {
+export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entities, activeTool, setActiveTool, setEntities: originalSetEntities, setEntitiesSilent, liveMirrorAxis, onUpdateLiveMirrorAxis, onCommitHistory, onSelect, onContextMenu, activeLayerId, layers, defaultLineStyle, setDefaultLineStyle, defaultFiloColor = '#ff5500', defaultHatchStyle, defaultTextStyle = { fontFamily: 'sans-serif', fontSize: 14, fontWeight: 'normal', textAlign: 'left' }, setDefaultTextStyle, eraserRadius, setEraserRadius, eraserType = 'pencil', setEraserType, eraserIntensity = 55, setEraserIntensity, onMouseMovePosition, rulerStyle = 'tecnigrafo', orthoMode = false, snapEnabled = true, setOrthoMode, isContinuousMode = false, cancelTrigger = 0, parallelTrigger = 0, tavole, onUpdateTavole, onDoubleClickTavola, selectedTemplateId, selectedEntityId, selectedBIMSymbolType, setSelectedBIMSymbolType, bimSymbolScale = 1, raccordoConfig, dimensionScale = 1, dimensionDecimals = 2, dimensionMode = 'two-points', dimensionStyle = 'linear', selectionMode = 'manual', onEditRaccordo, onOpenPenneSidebar, onDoubleClickDimension, onDoubleClickBIMElement, onActionStart, onAreaDetected, onSelectionComplete, initialSelectedIds, selectedEntityIds = [], highlightedPoints, rotationEntityId, onSelectForRotation, bimWallHeight = 270, bimDoorHeight = 210, bimWindowHeight = 140, bimWallThickness = 15, bimWallType = 'Forati (Laterizio)', bimWallRenderMode = 'solid', sketchParams = [], highlightedSketchId = null, selectedLine = null, selectedLineClickPoint = null, referenceLine = null, showFloatingManual = false, isLavagna = false }, ref) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const entitiesRef = useRef(entities);
   const lastSegmentRef = useRef<{ start: Point; end: Point; length: number; id?: string } | null>(null);
   useEffect(() => {
     entitiesRef.current = entities;
   }, [entities]);
+
+  const [liveMirrorState, setLiveMirrorState] = useState<'axis_start' | 'axis_end'>('axis_start');
+  const [liveMirrorAxisPt1, setLiveMirrorAxisPt1] = useState<Point | null>(null);
+
+  const saveAxisToLocalStorage = (axis: { start: Point; end: Point }) => {
+      try {
+          const saved = localStorage.getItem('gecola_live_mirror_axes');
+          const list: { start: Point; end: Point }[] = saved ? JSON.parse(saved) : [];
+          const exists = list.some(a => 
+              Math.hypot(a.start.x - axis.start.x, a.start.y - axis.start.y) < 5 &&
+              Math.hypot(a.end.x - axis.end.x, a.end.y - axis.end.y) < 5
+          );
+          if (!exists) {
+              const updated = [axis, ...list].slice(0, 10);
+              localStorage.setItem('gecola_live_mirror_axes', JSON.stringify(updated));
+          }
+      } catch {}
+  };
+
+  const applyLiveMirror = (prev: Entity[], next: Entity[]): Entity[] => {
+      if (!liveMirrorAxis) return next;
+
+      const currentAxisId = `${liveMirrorAxis.start.x.toFixed(2)},${liveMirrorAxis.start.y.toFixed(2)}-${liveMirrorAxis.end.x.toFixed(2)},${liveMirrorAxis.end.y.toFixed(2)}`;
+      const prevIds = new Set(prev.map(e => e.id));
+
+      const taggedNext = next.map(e => {
+          if (!(e as any).isSimmetryAxis && !(e as any).isLiveMirrorCopy) {
+              if (!prevIds.has(e.id)) {
+                  return {
+                      ...e,
+                      liveMirrorAxisId: currentAxisId
+                  };
+              }
+          }
+          return e;
+      });
+
+      const sourceEntitiesInNext = taggedNext.filter(e => 
+          !(e as any).isSimmetryAxis && 
+          !(e as any).isLiveMirrorCopy &&
+          (e as any).liveMirrorAxisId === currentAxisId
+      );
+
+      const otherEntities = taggedNext.filter(e => 
+          (e as any).isSimmetryAxis || 
+          (e as any).isLiveMirrorCopy ||
+          (e as any).liveMirrorAxisId !== currentAxisId
+      );
+
+      const existingMirrors = otherEntities.filter(e => 
+          (e as any).isLiveMirrorCopy && 
+          (e as any).liveMirrorAxisId === currentAxisId
+      );
+
+      const mirrorMap = new Map<string, Entity>();
+      existingMirrors.forEach(m => {
+          const srcId = (m as any).liveMirrorSourceId;
+          if (srcId) mirrorMap.set(srcId, m);
+      });
+
+      const updatedMirrors: Entity[] = [];
+      for (const src of sourceEntitiesInNext) {
+          const existingMirror = mirrorMap.get(src.id);
+          const mirrored = mirrorEntity(src, liveMirrorAxis.start, liveMirrorAxis.end);
+          if (existingMirror) {
+              updatedMirrors.push({
+                  ...mirrored,
+                  id: existingMirror.id,
+                  layer: src.layer,
+                  color: src.color,
+                  lineWidth: src.lineWidth,
+                  dashed: src.dashed,
+                  groupId: src.groupId,
+                  isLiveMirrorCopy: true,
+                  liveMirrorSourceId: src.id,
+                  liveMirrorAxisId: currentAxisId
+              } as any);
+          } else {
+              (mirrored as any).isLiveMirrorCopy = true;
+              (mirrored as any).liveMirrorSourceId = src.id;
+              (mirrored as any).liveMirrorAxisId = currentAxisId;
+              updatedMirrors.push(mirrored);
+          }
+      }
+
+      const filteredOtherEntities = otherEntities.filter(e => 
+          !((e as any).isLiveMirrorCopy && (e as any).liveMirrorAxisId === currentAxisId)
+      );
+
+      return [...sourceEntitiesInNext, ...filteredOtherEntities, ...updatedMirrors];
+  };
+
+  const setEntities: React.Dispatch<React.SetStateAction<Entity[]>> = (updater) => {
+      originalSetEntities(prev => {
+          const next = typeof updater === 'function' ? (updater as Function)(prev) : updater;
+          return applyLiveMirror(prev, next);
+      });
+  };
 
   const shiftEntityByDelta = (ent: Entity, deltaX: number, deltaY: number): Entity => {
     let updated = { ...ent };
@@ -3487,6 +3655,24 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
   // Parallel input is triggered by typing on the keyboard instead of opening automatically
 
   const [isJollyActive, setIsJollyActive] = useState(false);
+  const [circleTangentLine1, setCircleTangentLine1] = useState<LineEntity | null>(null);
+  const [circleTangentClickPt1, setCircleTangentClickPt1] = useState<Point | null>(null);
+
+  useEffect(() => {
+    if (activeTool !== 'Circle') {
+      setCircleTangentLine1(null);
+      setCircleTangentClickPt1(null);
+    }
+  }, [activeTool]);
+
+  useEffect(() => {
+    if (cancelTrigger > 0) {
+      setDrawing(null);
+      setCircleTangentLine1(null);
+      setCircleTangentClickPt1(null);
+    }
+  }, [cancelTrigger]);
+
   const isSKeyPressedRef = useRef(false);
   const [parallelSign, setParallelSign] = useState<number>(1);
   const [specchioState, setSpecchioState] = useState<'axis_start' | 'axis_end' | 'objects' | 'dialog'>('axis_start');
@@ -3633,6 +3819,33 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
   const [moveBasePoint, setMoveBasePoint] = useState<Point | null>(null);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [tooltipMousePos, setTooltipMousePos] = useState<{ x: number, y: number } | null>(null);
+  const [hoveredEntityId, setHoveredEntityId] = useState<string | null>(null);
+  const [circleRadiusInputString, setCircleRadiusInputString] = useState<string>('');
+  const circleRadiusInputStringRef = useRef(circleRadiusInputString);
+  useEffect(() => {
+    circleRadiusInputStringRef.current = circleRadiusInputString;
+  }, [circleRadiusInputString]);
+
+  const activeToolRef = useRef(activeTool);
+  useEffect(() => {
+    activeToolRef.current = activeTool;
+  }, [activeTool]);
+
+  const activeLayerIdRef = useRef(activeLayerId);
+  useEffect(() => {
+    activeLayerIdRef.current = activeLayerId;
+  }, [activeLayerId]);
+
+  const defaultLineStyleRef = useRef(defaultLineStyle);
+  useEffect(() => {
+    defaultLineStyleRef.current = defaultLineStyle;
+  }, [defaultLineStyle]);
+
+  useEffect(() => {
+    if (!drawing) {
+        setCircleRadiusInputString('');
+    }
+  }, [drawing]);
 
   useEffect(() => {
     if (!drawing?.wheelLength && !isParallelWheelActive) {
@@ -3739,6 +3952,101 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
       if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) {
         return;
       }
+
+      // Intercept keyboard input while drawing a circle for real-time radius typing & backspace correction
+      if (activeToolRef.current === 'Circle' && drawingRef.current) {
+        const key = e.key;
+
+        // Digits, decimal point, comma
+        if ((key >= '0' && key <= '9') || key === '.' || key === ',') {
+          e.preventDefault();
+          const char = key === ',' ? '.' : key;
+          const currentStr = circleRadiusInputStringRef.current;
+          if (char === '.' && currentStr.includes('.')) return;
+          const newStr = currentStr + (key === ',' ? ',' : char);
+          setCircleRadiusInputString(newStr);
+          circleRadiusInputStringRef.current = newStr;
+          const num = parseFloat(newStr.replace(',', '.'));
+          if (!isNaN(num) && num > 0) {
+            setDrawing(d => d ? { ...d, current: { x: d.start.x + num, y: d.start.y } } : null);
+          }
+          renderRef.current?.();
+          return;
+        }
+
+        // Backspace / Delete allows live correction of the typed radius value
+        if (key === 'Backspace' || key === 'Delete') {
+          e.preventDefault();
+          const currentStr = circleRadiusInputStringRef.current;
+          if (currentStr.length > 0) {
+            const newStr = currentStr.slice(0, -1);
+            setCircleRadiusInputString(newStr);
+            circleRadiusInputStringRef.current = newStr;
+            const num = parseFloat(newStr.replace(',', '.'));
+            if (!isNaN(num) && num > 0) {
+              setDrawing(d => d ? { ...d, current: { x: d.start.x + num, y: d.start.y } } : null);
+            } else {
+              setDrawing(d => d ? { ...d, current: lastMouseRef.current } : null);
+            }
+            renderRef.current?.();
+          }
+          return;
+        }
+
+        // Enter confirms the circle with typed or current radius
+        if (key === 'Enter') {
+          e.preventDefault();
+          const d = drawingRef.current;
+          if (d) {
+            let radius = Math.hypot(d.current.x - d.start.x, d.current.y - d.start.y);
+            if (circleRadiusInputStringRef.current) {
+              const parsed = parseFloat(circleRadiusInputStringRef.current.replace(',', '.'));
+              if (!isNaN(parsed) && parsed > 0) {
+                radius = parsed;
+              }
+            }
+            if (radius > 0.001) {
+              const newEntity: CircleEntity = {
+                id: Date.now().toString(),
+                type: 'circle',
+                color: defaultLineStyleRef.current?.color || '#000000',
+                lineWidth: defaultLineStyleRef.current?.lineWidth || 1,
+                dashed: defaultLineStyleRef.current?.dashed || false,
+                mode: defaultLineStyleRef.current?.mode || 'pencil',
+                center: d.start,
+                radius: radius,
+                layer: activeLayerIdRef.current || '0'
+              };
+              lastCircleRadiusRef.current = radius;
+              try { localStorage.setItem('lastCircleRadius', radius.toString()); } catch(err){}
+              setEntities(prev => {
+                onCommitHistory?.(prev);
+                return [...prev, newEntity];
+              });
+              setDrawing(null);
+              setCircleRadiusInputString('');
+              circleRadiusInputStringRef.current = '';
+              renderRef.current?.();
+            }
+          }
+          return;
+        }
+
+        // Escape clears typed radius string or cancels circle creation
+        if (key === 'Escape') {
+          e.preventDefault();
+          if (circleRadiusInputStringRef.current) {
+            setCircleRadiusInputString('');
+            circleRadiusInputStringRef.current = '';
+            setDrawing(d => d ? { ...d, current: lastMouseRef.current } : null);
+          } else {
+            setDrawing(null);
+          }
+          renderRef.current?.();
+          return;
+        }
+      }
+
       handleArrowsLine(e);
       if (e.key === 'Shift' || e.key.toLowerCase() === 'f') {
         setIsShiftPressed(true);
@@ -3755,7 +4063,7 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
       isShiftPressedRef.current = false;
     };
 
-    window.addEventListener('keydown', handleKeyDown, { passive: true });
+    window.addEventListener('keydown', handleKeyDown);
     window.addEventListener('keyup', handleKeyUp, { passive: true });
     window.addEventListener('blur', handleBlur);
     return () => {
@@ -4778,26 +5086,38 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
       }
     });
 
-    // 5. Add intersection points for lines (Optimized with spatial culling)
-    const intersectionThreshold = 100 / view.zoom;
+    // 5. Add intersection points for lines, circles, and arcs (Optimized with spatial culling)
+    const intersectionThreshold = 150 / view.zoom;
     const nearEntitiesForIntersections = visibleEntities.filter(ent => {
-      if (ent.type !== 'line') return false;
-      const minX = Math.min(ent.start.x, ent.end.x);
-      const maxX = Math.max(ent.start.x, ent.end.x);
-      const minY = Math.min(ent.start.y, ent.end.y);
-      const maxY = Math.max(ent.start.y, ent.end.y);
+      if (ent.type !== 'line' && ent.type !== 'circle' && ent.type !== 'arc') return false;
+      let minX = 0, maxX = 0, minY = 0, maxY = 0;
+      if (ent.type === 'line') {
+          minX = Math.min(ent.start.x, ent.end.x);
+          maxX = Math.max(ent.start.x, ent.end.x);
+          minY = Math.min(ent.start.y, ent.end.y);
+          maxY = Math.max(ent.start.y, ent.end.y);
+      } else {
+          const c = ent as (CircleEntity | ArcEntity);
+          minX = c.center.x - c.radius;
+          maxX = c.center.x + c.radius;
+          minY = c.center.y - c.radius;
+          maxY = c.center.y + c.radius;
+      }
       return !(maxX < point.x - intersectionThreshold || minX > point.x + intersectionThreshold || 
                maxY < point.y - intersectionThreshold || minY > point.y + intersectionThreshold);
-    }) as LineEntity[];
+    });
 
     for (let i = 0; i < nearEntitiesForIntersections.length; i++) {
         for (let j = i + 1; j < nearEntitiesForIntersections.length; j++) {
             const ent1 = nearEntitiesForIntersections[i];
             const ent2 = nearEntitiesForIntersections[j];
-            const intersection = getIntersection(ent1.start, ent1.end, ent2.start, ent2.end);
-            if (intersection) {
-                snaps.push({ point: intersection, type: 'CAD', refPoint: intersection, subtype: 'intersection' });
-            }
+            const inters = getIntersections(ent1, ent2);
+            inters.forEach(p => {
+                const distToPoint = Math.hypot(p.x - point.x, p.y - point.y);
+                if (distToPoint < intersectionThreshold) {
+                    snaps.push({ point: p, type: 'CAD', refPoint: p, subtype: 'intersection' });
+                }
+            });
         }
     }
 
@@ -4901,17 +5221,57 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
     const snaps = getSnapPoints(point, entities, activeTool, drawing);
     const threshold = 25 / view.zoom;
     
+    const getSubtypePriority = (subtype?: string): number => {
+      switch (subtype) {
+        case 'center': return 100;
+        case 'intersection': return 90;
+        case 'endpoint': return 80;
+        case 'midpoint': return 70;
+        case 'quadrant': return 60;
+        case 'perpendicular': return 50;
+        case 'tangent': return 40;
+        default: return 10;
+      }
+    };
+
     let closestStandard = null;
-    let minStandardDist = Infinity;
+    const candidateSnaps = [];
 
     for (const snap of snaps) {
       if (snap.type === 'CAD' && isPointInViewport(snap.point, 50)) {
         const dist = Math.sqrt((point.x - snap.point.x) ** 2 + (point.y - snap.point.y) ** 2);
-        if (dist < threshold && dist < minStandardDist) {
-          minStandardDist = dist;
-          closestStandard = snap;
+        if (dist < threshold) {
+          candidateSnaps.push({ snap, dist });
         }
       }
+    }
+
+    if (candidateSnaps.length > 0) {
+      candidateSnaps.sort((a, b) => {
+        const pA = getSubtypePriority(a.snap.subtype);
+        const pB = getSubtypePriority(b.snap.subtype);
+        
+        // Center priority: if one of the candidate snaps is a center, it takes absolute precedence!
+        if (a.snap.subtype === 'center' && b.snap.subtype !== 'center') return -1;
+        if (b.snap.subtype === 'center' && a.snap.subtype !== 'center') return 1;
+        
+        const distBetweenSnaps = Math.sqrt((a.snap.point.x - b.snap.point.x) ** 2 + (a.snap.point.y - b.snap.point.y) ** 2);
+        const distOnScreen = distBetweenSnaps * view.zoom;
+        
+        if (distOnScreen < 15) {
+          // If they are physically very close to each other on screen (overlapping or nearly so),
+          // prioritize strictly by subtype priority (preferring center, intersection, etc. over lines).
+          return pB - pA;
+        }
+        
+        // Otherwise, if they are physically distinct points, prefer the one closer to the cursor,
+        // with a small weight applied to prioritize stronger snap subtypes if distances are close.
+        const weightedDistA = a.dist - (pA * 0.05);
+        const weightedDistB = b.dist - (pB * 0.05);
+        return weightedDistA - weightedDistB;
+      });
+
+      closestStandard = candidateSnaps[0].snap;
     }
 
     if (closestStandard) {
@@ -4928,33 +5288,16 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
 
     // Check for Equal Length Smart Snap suggestion (matching previous segment length)
     const refSeg = (() => {
-      if (drawing && drawing.start) {
-        for (let i = entities.length - 1; i >= 0; i--) {
-          const ent = entities[i];
-          if (ent.type === 'line') {
-            const l = ent as LineEntity;
-            const distStart = Math.hypot(l.start.x - drawing.start.x, l.start.y - drawing.start.y);
-            const distEnd = Math.hypot(l.end.x - drawing.start.x, l.end.y - drawing.start.y);
-            if (distStart < 0.05 || distEnd < 0.05) {
-              const len = Math.hypot(l.end.x - l.start.x, l.end.y - l.start.y);
-              if (len > 0.01 && (isPointInViewport(l.start, 100) || isPointInViewport(l.end, 100))) {
-                return { start: l.start, end: l.end, length: len, id: l.id };
-              }
-            }
-          }
-        }
-      }
+      // Always prioritize lastSegmentRef if valid, or fallback to the last drawn line in entities
       if (lastSegmentRef.current && lastSegmentRef.current.length > 0.01) {
-        if (isPointInViewport(lastSegmentRef.current.start, 100) || isPointInViewport(lastSegmentRef.current.end, 100)) {
-          return lastSegmentRef.current;
-        }
+        return lastSegmentRef.current;
       }
       for (let i = entities.length - 1; i >= 0; i--) {
         const ent = entities[i];
         if (ent.type === 'line') {
           const l = ent as LineEntity;
           const len = Math.hypot(l.end.x - l.start.x, l.end.y - l.start.y);
-          if (len > 0.01 && (isPointInViewport(l.start, 100) || isPointInViewport(l.end, 100))) {
+          if (len > 0.01) {
             return { start: l.start, end: l.end, length: len, id: l.id };
           }
         }
@@ -5050,7 +5393,7 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
 
     // Check for smart snaps only if standard snaps are not active
     // Enabled for all drawing tools to support distant tracking and virtual intersections
-    const isSmartAllowed = drawing !== null || ['Move', 'Copy', 'Specchio'].includes(activeTool);
+    const isSmartAllowed = activeTool !== 'Circle' && (drawing !== null || ['Move', 'Copy', 'Specchio'].includes(activeTool));
 
     const candidateSmartSnaps = isSmartAllowed
       ? snaps.filter(s => s.type === 'smart').map(s => {
@@ -7608,6 +7951,9 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
             } else if (activeTool === 'Circle') {
                 const radius = Math.sqrt(Math.pow(drawing.current.x - drawing.start.x, 2) + Math.pow(drawing.current.y - drawing.start.y, 2));
                 ctx.arc(drawing.start.x, drawing.start.y, radius, 0, Math.PI * 2);
+                // Materialize radius line segment from center to current point
+                ctx.moveTo(drawing.start.x, drawing.start.y);
+                ctx.lineTo(drawing.current.x, drawing.current.y);
             } else if (activeTool === 'Rectangle') {
                 const width = drawing.current.x - drawing.start.x;
                 const height = drawing.current.y - drawing.start.y;
@@ -7769,7 +8115,24 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
         if (activeTool === 'Line' || (activeTool as string) === 'Filo' || activeTool === 'Dimension') {
             label = `L = ${formatPrecision(tooltipLength)}`;
         } else if (activeTool === 'Circle') {
-            label = `R = ${formatPrecision(tooltipLength)}`;
+            let currentR = tooltipLength;
+            if (circleRadiusInputString) {
+                const parsed = parseFloat(circleRadiusInputString.replace(',', '.'));
+                if (!isNaN(parsed) && parsed > 0) {
+                    currentR = parsed;
+                }
+            }
+            const area = Math.PI * currentR * currentR;
+            const formatArea = (a: number) => {
+                if (a >= 10000) {
+                    const m2 = (a / 10000).toFixed(2).replace('.', ',');
+                    return `${m2} m²`;
+                }
+                const cm2 = (Math.round(a * 100) / 100).toString().replace('.', ',');
+                return `${cm2} cm²`;
+            };
+            const rLabel = circleRadiusInputString ? `R = ${circleRadiusInputString}` : `R = ${formatPrecision(tooltipLength)}`;
+            label = `${rLabel}  |  Area = ${formatArea(area)}`;
         } else if (activeTool === 'Arc') {
             if (!drawing.arcStartPoint) {
                 label = `R = ${formatPrecision(tooltipLength)}`;
@@ -7809,11 +8172,11 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
             ctx.roundRect(tooltipX, tooltipY, bgW, bgH, 4 / view.zoom);
             ctx.fill();
             
-            ctx.strokeStyle = drawing.wheelLength !== undefined ? '#10b981' : '#64748b';
+            ctx.strokeStyle = (circleRadiusInputString || drawing.wheelLength !== undefined) ? '#10b981' : '#64748b';
             ctx.lineWidth = 1 / view.zoom;
             ctx.stroke();
             
-            ctx.fillStyle = drawing.wheelLength !== undefined ? '#34d399' : '#f8fafc';
+            ctx.fillStyle = (circleRadiusInputString || drawing.wheelLength !== undefined) ? '#34d399' : '#f8fafc';
             ctx.fillText(label, tooltipX + padW, tooltipY + 2 / view.zoom);
         }
         ctx.restore();
@@ -8018,102 +8381,78 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
             ctx.stroke();
         }
         // Render Equal Length Smart Snap visual indicator & badge
-        const activeEqualSnap = (drawing && drawing.snapSubtype === 'equal_length') ? drawing : (hoverSnap && hoverSnap.subtype === 'equal_length' ? hoverSnap : null);
-        if (activeEqualSnap) {
-          const refSeg = (activeEqualSnap as any).refSegment || lastSegmentRef.current;
-          const snapPt = (activeEqualSnap as any).current || (activeEqualSnap as any).point;
-          if (refSeg && refSeg.start && refSeg.end) {
-            ctx.save();
-            // 1. Highlight reference segment in emerald green
-            ctx.strokeStyle = '#10b981';
-            ctx.lineWidth = 3.5 / view.zoom;
-            ctx.beginPath();
-            ctx.moveTo(refSeg.start.x, refSeg.start.y);
-            ctx.lineTo(refSeg.end.x, refSeg.end.y);
-            ctx.stroke();
-
-            // Hash marks on reference segment
-            const midRef = { x: (refSeg.start.x + refSeg.end.x) / 2, y: (refSeg.start.y + refSeg.end.y) / 2 };
-            const dxR = refSeg.end.x - refSeg.start.x;
-            const dyR = refSeg.end.y - refSeg.start.y;
-            const lenR = Math.hypot(dxR, dyR);
-            if (lenR > 0.001) {
-              const nxR = -dyR / lenR;
-              const nyR = dxR / lenR;
-              const tickH = 6 / view.zoom;
-              const tickOff = 3 / view.zoom;
-              ctx.strokeStyle = '#059669';
-              ctx.lineWidth = 2.2 / view.zoom;
+        if (snapEnabled) {
+          const activeEqualSnap = (drawing && drawing.snapSubtype === 'equal_length') ? drawing : (hoverSnap && hoverSnap.subtype === 'equal_length' ? hoverSnap : null);
+          if (activeEqualSnap) {
+            const refSeg = (activeEqualSnap as any).refSegment || lastSegmentRef.current;
+            const snapPt = (activeEqualSnap as any).current || (activeEqualSnap as any).point;
+            if (refSeg && refSeg.start && refSeg.end) {
+              ctx.save();
+              // 1. Highlight reference segment in emerald green
+              ctx.strokeStyle = '#10b981';
+              ctx.lineWidth = 3.5 / view.zoom;
               ctx.beginPath();
-              ctx.moveTo(midRef.x - tickOff * (dxR / lenR) + nxR * tickH, midRef.y - tickOff * (dyR / lenR) + nyR * tickH);
-              ctx.lineTo(midRef.x - tickOff * (dxR / lenR) - nxR * tickH, midRef.y - tickOff * (dyR / lenR) - nyR * tickH);
-              ctx.moveTo(midRef.x + tickOff * (dxR / lenR) + nxR * tickH, midRef.y + tickOff * (dyR / lenR) + nyR * tickH);
-              ctx.lineTo(midRef.x + tickOff * (dxR / lenR) - nxR * tickH, midRef.y + tickOff * (dyR / lenR) - nyR * tickH);
+              ctx.moveTo(refSeg.start.x, refSeg.start.y);
+              ctx.lineTo(refSeg.end.x, refSeg.end.y);
               ctx.stroke();
-            }
 
-            // Hash marks on current active drawing segment
-            if (drawing && drawing.start) {
-              const midCur = { x: (drawing.start.x + snapPt.x) / 2, y: (drawing.start.y + snapPt.y) / 2 };
-              const dxC = snapPt.x - drawing.start.x;
-              const dyC = snapPt.y - drawing.start.y;
-              const lenC = Math.hypot(dxC, dyC);
-              if (lenC > 0.001) {
-                const nxC = -dyC / lenC;
-                const nyC = dxC / lenC;
+              // Hash marks on reference segment
+              const midRef = { x: (refSeg.start.x + refSeg.end.x) / 2, y: (refSeg.start.y + refSeg.end.y) / 2 };
+              const dxR = refSeg.end.x - refSeg.start.x;
+              const dyR = refSeg.end.y - refSeg.start.y;
+              const lenR = Math.hypot(dxR, dyR);
+              if (lenR > 0.001) {
+                const nxR = -dyR / lenR;
+                const nyR = dxR / lenR;
                 const tickH = 6 / view.zoom;
                 const tickOff = 3 / view.zoom;
                 ctx.strokeStyle = '#059669';
                 ctx.lineWidth = 2.2 / view.zoom;
                 ctx.beginPath();
-                ctx.moveTo(midCur.x - tickOff * (dxC / lenC) + nxC * tickH, midCur.y - tickOff * (dyC / lenC) + nyC * tickH);
-                ctx.lineTo(midCur.x - tickOff * (dxC / lenC) - nxC * tickH, midCur.y - tickOff * (dyC / lenC) - nyC * tickH);
-                ctx.moveTo(midCur.x + tickOff * (dxC / lenC) + nxC * tickH, midCur.y + tickOff * (dyC / lenC) + nyC * tickH);
-                ctx.lineTo(midCur.x + tickOff * (dxC / lenC) - nxC * tickH, midCur.y + tickOff * (dyC / lenC) - nyC * tickH);
+                ctx.moveTo(midRef.x - tickOff * (dxR / lenR) + nxR * tickH, midRef.y - tickOff * (dyR / lenR) + nyR * tickH);
+                ctx.lineTo(midRef.x - tickOff * (dxR / lenR) - nxR * tickH, midRef.y - tickOff * (dyR / lenR) - nyR * tickH);
+                ctx.moveTo(midRef.x + tickOff * (dxR / lenR) + nxR * tickH, midRef.y + tickOff * (dyR / lenR) + nyR * tickH);
+                ctx.lineTo(midRef.x + tickOff * (dxR / lenR) - nxR * tickH, midRef.y + tickOff * (dyR / lenR) - nyR * tickH);
                 ctx.stroke();
               }
+
+              // Hash marks on current active drawing segment
+              if (drawing && drawing.start) {
+                const midCur = { x: (drawing.start.x + snapPt.x) / 2, y: (drawing.start.y + snapPt.y) / 2 };
+                const dxC = snapPt.x - drawing.start.x;
+                const dyC = snapPt.y - drawing.start.y;
+                const lenC = Math.hypot(dxC, dyC);
+                if (lenC > 0.001) {
+                  const nxC = -dyC / lenC;
+                  const nyC = dxC / lenC;
+                  const tickH = 6 / view.zoom;
+                  const tickOff = 3 / view.zoom;
+                  ctx.strokeStyle = '#059669';
+                  ctx.lineWidth = 2.2 / view.zoom;
+                  ctx.beginPath();
+                  ctx.moveTo(midCur.x - tickOff * (dxC / lenC) + nxC * tickH, midCur.y - tickOff * (dyC / lenC) + nyC * tickH);
+                  ctx.lineTo(midCur.x - tickOff * (dxC / lenC) - nxC * tickH, midCur.y - tickOff * (dyC / lenC) - nyC * tickH);
+                  ctx.moveTo(midCur.x + tickOff * (dxC / lenC) + nxC * tickH, midCur.y + tickOff * (dyC / lenC) + nyC * tickH);
+                  ctx.lineTo(midCur.x + tickOff * (dxC / lenC) - nxC * tickH, midCur.y + tickOff * (dyC / lenC) - nyC * tickH);
+                  ctx.stroke();
+                }
+              }
+
+              // Clean transparent text placed right at the center of the highlighted reference segment
+              const displayLen = (activeEqualSnap as any).refLength || refSeg.length;
+              const valTxt = `= ${displayLen.toFixed(1)} cm`;
+              ctx.font = `bold ${Math.max(10, 11 / view.zoom)}px sans-serif`;
+              ctx.textAlign = 'center';
+              ctx.textBaseline = 'middle';
+
+              ctx.shadowColor = 'rgba(0, 0, 0, 0.8)';
+              ctx.shadowBlur = 4 / view.zoom;
+              ctx.fillStyle = '#ecfdf5';
+              ctx.fillText(valTxt, midRef.x, midRef.y);
+              ctx.shadowBlur = 0;
+
+              ctx.restore();
             }
-
-            // Equal length snap badge box at snap point
-            const boxSz = 9 / view.zoom;
-            ctx.fillStyle = '#10b981';
-            ctx.strokeStyle = '#047857';
-            ctx.lineWidth = 1.8 / view.zoom;
-            ctx.beginPath();
-            ctx.roundRect(snapPt.x - boxSz, snapPt.y - boxSz, boxSz * 2, boxSz * 2, 3 / view.zoom);
-            ctx.fill();
-            ctx.stroke();
-
-            // '=' symbol inside box
-            ctx.fillStyle = '#ffffff';
-            ctx.font = `bold ${Math.max(10, 11 / view.zoom)}px sans-serif`;
-            ctx.textAlign = 'center';
-            ctx.textBaseline = 'middle';
-            ctx.fillText('=', snapPt.x, snapPt.y);
-
-            // Value badge label
-            const displayLen = (activeEqualSnap as any).refLength || refSeg.length;
-            const valTxt = `= ${displayLen.toFixed(1)} cm`;
-            ctx.font = `bold ${Math.max(9, 10 / view.zoom)}px sans-serif`;
-            const metrics = ctx.measureText(valTxt);
-            const bgW = metrics.width + 10 / view.zoom;
-            const bgH = 16 / view.zoom;
-            const badgeX = snapPt.x + 16 / view.zoom;
-            const badgeY = snapPt.y - 12 / view.zoom;
-
-            ctx.fillStyle = '#064e3b';
-            ctx.strokeStyle = '#34d399';
-            ctx.lineWidth = 1 / view.zoom;
-            ctx.beginPath();
-            ctx.roundRect(badgeX, badgeY - bgH / 2, bgW, bgH, 4 / view.zoom);
-            ctx.fill();
-            ctx.stroke();
-
-            ctx.fillStyle = '#ecfdf5';
-            ctx.textAlign = 'left';
-            ctx.fillText(valTxt, badgeX + 5 / view.zoom, badgeY + 0.5 / view.zoom);
-
-            ctx.restore();
           }
         }
 
@@ -8308,11 +8647,10 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
             ctx.lineTo(hoverSnap.point.x + sz * 1.5, hoverSnap.point.y - sz);
             ctx.stroke();
             ctx.restore();
-        } else if (hoverSnap.subtype === 'equal_length' && hoverSnap.refSegment && drawing && drawing.start) {
+        } else if (snapEnabled && hoverSnap.subtype === 'equal_length' && hoverSnap.refSegment && drawing && drawing.start) {
             ctx.save();
             const goldColor = '#f59e0b';
             const goldLight = '#fbbf24';
-            const goldDark = '#92400e';
 
             const activeStart = drawing.start;
             const activeEnd = hoverSnap.point;
@@ -8386,31 +8724,18 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
             ctx.stroke();
             ctx.restore();
 
-            // 4. Endpoint indicator with double circle and equals sign (=)
-            const pt = activeEnd;
-            const r1 = 8 / view.zoom;
-            const r2 = 12 / view.zoom;
+            // 4. Clean transparent text placed right at the center of the highlighted reference segment (midRef)
+            const midRef = { x: (refSeg.start.x + refSeg.end.x) / 2, y: (refSeg.start.y + refSeg.end.y) / 2 };
+            const valTxt = `= ${refLen.toFixed(1)} cm`;
+            ctx.font = `bold ${Math.max(10, 11 / view.zoom)}px sans-serif`;
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
 
-            ctx.fillStyle = 'rgba(254, 243, 199, 0.95)'; // amber-100
-            ctx.strokeStyle = goldColor;
-            ctx.lineWidth = 2 / view.zoom;
-            ctx.beginPath();
-            ctx.arc(pt.x, pt.y, r2, 0, Math.PI * 2);
-            ctx.fill();
-            ctx.stroke();
-
-            ctx.beginPath();
-            ctx.arc(pt.x, pt.y, r1, 0, Math.PI * 2);
-            ctx.stroke();
-
-            ctx.strokeStyle = goldDark;
-            ctx.lineWidth = 1.8 / view.zoom;
-            ctx.beginPath();
-            ctx.moveTo(pt.x - 3.5 / view.zoom, pt.y - 1.5 / view.zoom);
-            ctx.lineTo(pt.x + 3.5 / view.zoom, pt.y - 1.5 / view.zoom);
-            ctx.moveTo(pt.x - 3.5 / view.zoom, pt.y + 1.5 / view.zoom);
-            ctx.lineTo(pt.x + 3.5 / view.zoom, pt.y + 1.5 / view.zoom);
-            ctx.stroke();
+            ctx.shadowColor = 'rgba(0, 0, 0, 0.8)';
+            ctx.shadowBlur = 4 / view.zoom;
+            ctx.fillStyle = '#fef3c7';
+            ctx.fillText(valTxt, midRef.x, midRef.y);
+            ctx.shadowBlur = 0;
 
             ctx.restore();
         } else if (hoverSnap.subtype === 'perpendicular') {
@@ -9383,6 +9708,44 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
         ctx.restore();
       }
 
+      // Draw Live Mirror Axis & Preview
+      if (liveMirrorAxis) {
+          ctx.save();
+          ctx.translate(view.pan.x, view.pan.y);
+          ctx.scale(view.zoom, view.zoom);
+          ctx.setLineDash([8 / view.zoom, 6 / view.zoom]);
+          ctx.strokeStyle = '#10b981';
+          ctx.lineWidth = 2 / view.zoom;
+          ctx.beginPath();
+          ctx.moveTo(liveMirrorAxis.start.x, liveMirrorAxis.start.y);
+          ctx.lineTo(liveMirrorAxis.end.x, liveMirrorAxis.end.y);
+          ctx.stroke();
+          ctx.setLineDash([]);
+          
+          [liveMirrorAxis.start, liveMirrorAxis.end].forEach(pt => {
+              ctx.fillStyle = '#10b981';
+              ctx.beginPath();
+              ctx.arc(pt.x, pt.y, 4 / view.zoom, 0, Math.PI * 2);
+              ctx.fill();
+          });
+          ctx.restore();
+      }
+
+      if (activeTool === 'LiveMirror' && liveMirrorState === 'axis_end' && liveMirrorAxisPt1) {
+          ctx.save();
+          ctx.translate(view.pan.x, view.pan.y);
+          ctx.scale(view.zoom, view.zoom);
+          const rawPoint = actualMousePosRef.current;
+          ctx.strokeStyle = '#10b981';
+          ctx.lineWidth = 1.5 / view.zoom;
+          ctx.setLineDash([6 / view.zoom, 6 / view.zoom]);
+          ctx.beginPath();
+          ctx.moveTo(liveMirrorAxisPt1.x, liveMirrorAxisPt1.y);
+          ctx.lineTo(rawPoint.x, rawPoint.y);
+          ctx.stroke();
+          ctx.restore();
+      }
+
       // Draw Specchio preview in real-time
       if (activeTool === 'Specchio') {
           ctx.save();
@@ -9487,6 +9850,78 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
                           ctx.restore();
                       }
                   });
+              }
+          }
+
+          ctx.restore();
+      }
+
+      // Draw Circle Tangent preview in real-time
+      if (activeTool === 'Circle') {
+          ctx.save();
+          ctx.translate(view.pan.x, view.pan.y);
+          ctx.scale(view.zoom, view.zoom);
+
+          const rawPoint = actualMousePosRef.current;
+
+          if (circleTangentLine1) {
+              ctx.save();
+              ctx.strokeStyle = '#10b981'; 
+              ctx.lineWidth = 3 / view.zoom;
+              ctx.beginPath();
+              ctx.moveTo(circleTangentLine1.start.x, circleTangentLine1.start.y);
+              ctx.lineTo(circleTangentLine1.end.x, circleTangentLine1.end.y);
+              ctx.stroke();
+              ctx.restore();
+
+              const hoverLine2 = getLineAtPoint(rawPoint);
+              if (hoverLine2 && hoverLine2.id !== circleTangentLine1.id && hoverLine2.type === 'line') {
+                  ctx.save();
+                  ctx.strokeStyle = '#06b6d4'; 
+                  ctx.lineWidth = 2.5 / view.zoom;
+                  ctx.setLineDash([4 / view.zoom, 4 / view.zoom]);
+                  ctx.beginPath();
+                  ctx.moveTo((hoverLine2 as LineEntity).start.x, (hoverLine2 as LineEntity).start.y);
+                  ctx.lineTo((hoverLine2 as LineEntity).end.x, (hoverLine2 as LineEntity).end.y);
+                  ctx.stroke();
+                  ctx.restore();
+
+                  const tangentPreview = computeCircleTangentTo2Lines(
+                      circleTangentLine1,
+                      hoverLine2 as LineEntity,
+                      circleTangentClickPt1 || rawPoint,
+                      rawPoint
+                  );
+
+                  if (tangentPreview && tangentPreview.radius > 0.01) {
+                      ctx.save();
+                      ctx.strokeStyle = '#10b981';
+                      ctx.lineWidth = 2 / view.zoom;
+                      ctx.setLineDash([6 / view.zoom, 4 / view.zoom]);
+                      ctx.beginPath();
+                      ctx.arc(tangentPreview.center.x, tangentPreview.center.y, tangentPreview.radius, 0, Math.PI * 2);
+                      ctx.stroke();
+
+                      ctx.fillStyle = '#10b981';
+                      ctx.beginPath();
+                      ctx.arc(tangentPreview.center.x, tangentPreview.center.y, 3 / view.zoom, 0, Math.PI * 2);
+                      ctx.fill();
+
+                      ctx.restore();
+                  }
+              }
+          } else if (!drawing) {
+              const hoverLine1 = getLineAtPoint(rawPoint);
+              if (hoverLine1 && hoverLine1.type === 'line') {
+                  ctx.save();
+                  ctx.strokeStyle = '#10b98188';
+                  ctx.lineWidth = 2.5 / view.zoom;
+                  ctx.setLineDash([4 / view.zoom, 4 / view.zoom]);
+                  ctx.beginPath();
+                  ctx.moveTo((hoverLine1 as LineEntity).start.x, (hoverLine1 as LineEntity).start.y);
+                  ctx.lineTo((hoverLine1 as LineEntity).end.x, (hoverLine1 as LineEntity).end.y);
+                  ctx.stroke();
+                  ctx.restore();
               }
           }
 
@@ -9914,254 +10349,199 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
         };
 
         let changed = false;
-        const newEntities: Entity[] = [];
+        
+        const pointsToErase = [rawPoint];
+        if (liveMirrorAxis) {
+            pointsToErase.push(mirrorPoint(rawPoint, liveMirrorAxis.start, liveMirrorAxis.end));
+        }
 
-        for (const ent of entitiesRef.current) {
-            const isPencilEntity = (ent as any).mode === 'pencil';
-            const isInkEntity = (ent as any).mode === 'ink';
-            
-            // 1. Gray pencil eraser only cancels pencil lines
-            if (eraserType === 'pencil') {
-                if (!isPencilEntity) {
+        let currentEntities = [...entitiesRef.current];
+
+        for (const pt of pointsToErase) {
+            const newEntities: Entity[] = [];
+            let pointChanged = false;
+
+            for (const ent of currentEntities) {
+                if ((ent as any).isLiveMirrorCopy) {
                     newEntities.push(ent);
                     continue;
                 }
-            }
-            
-            // 2. Yellow eraser only cancels ink/china lines
-            if (eraserType === 'all') {
-                if (!isInkEntity) {
-                    newEntities.push(ent);
-                    continue;
-                }
-            }
-            
-            // 3. Gillette blade (lametta) cancels everything at its sharp pinpoint corner, so no skip.
 
-            const baseId = getBaseEntityId(ent.id);
-
-            if (ent.type === 'line') {
-                if (ent.inkPoints) {
-                    // Freehand lines (pencil or ink)
-                    let pointHit = false;
-                    const updatedPoints = ent.inkPoints.map((pt, i) => {
-                        const dist = Math.sqrt((rawPoint.x - pt.x)**2 + (rawPoint.y - pt.y)**2);
-                        if (dist <= radius) {
-                            const pointKey = `${ent.id}_${i}`;
-                            const lastErase = lastEraseTimeByPoint.current[pointKey] || 0;
-                            const cooldown = isLametta ? 120 : 350; // faster, responsive for lametta
-                            if (now - lastErase > cooldown) {
-                                lastEraseTimeByPoint.current[pointKey] = now;
-                                pointHit = true;
-                                let nextAlpha = pt.alpha;
-                                if (eraserType === 'pencil') {
-                                    if (pt.alpha > 0.6) {
-                                        nextAlpha = 0.5; // First pass leaves a gray residue
-                                    } else {
-                                        nextAlpha = 0; // Second pass removes completely
-                                    }
-                                } else if (eraserType === 'all') {
-                                    if (pt.alpha > 0.75) {
-                                        nextAlpha = 0.66; // First pass residue
-                                    } else if (pt.alpha > 0.4) {
-                                        nextAlpha = 0.33; // Second pass residue
-                                    } else {
-                                        nextAlpha = 0; // Third pass removes completely
-                                    }
-                                } else if (eraserType === 'lametta') {
-                                    // Lametta leaves a very faint scratched trace, consumed paper effect!
-                                    nextAlpha = 0.15; 
-                                }
-                                return { ...pt, alpha: nextAlpha };
-                            }
-                        }
-                        return pt;
-                    });
-                    
-                    if (pointHit) {
-                        changed = true;
-                        
-                        // Physically split the freehand line into separate entities at any erased points (alpha <= 0.05)
-                        const subArrays: typeof ent.inkPoints[] = [];
-                        let currentSub: typeof ent.inkPoints = [];
-                        
-                        for (const pt of updatedPoints) {
-                            if (pt.alpha > 0.05) {
-                                currentSub.push(pt);
-                            } else {
-                                if (currentSub.length > 0) {
-                                    subArrays.push(currentSub);
-                                    currentSub = [];
-                                }
-                            }
-                        }
-                        if (currentSub.length > 0) {
-                            subArrays.push(currentSub);
-                        }
-                        
-                        subArrays.forEach((sub, idx) => {
-                            if (sub.length > 0) {
-                                newEntities.push({
-                                    ...ent,
-                                    id: ent.id + `_fsplit_${idx}_` + Math.random(),
-                                    start: { x: sub[0].x, y: sub[0].y },
-                                    end: { x: sub[sub.length - 1].x, y: sub[sub.length - 1].y },
-                                    inkPoints: sub
-                                });
-                            }
-                        });
-                    } else {
-                        newEntities.push(ent);
-                    }
-                } else {
-                    // Standard CAD line segment
-                    const splitResult = splitLineSegmentWithCircle(ent.start, ent.end, rawPoint, radius);
-                    if (splitResult.inside.length > 0) {
-                        changed = true;
-                        // Keep outside segments completely untouched
-                        splitResult.outside.forEach((seg, i) => {
-                            newEntities.push({
-                                ...ent,
-                                id: ent.id + `_out_${i}_` + Math.random(),
-                                start: seg.start,
-                                end: seg.end
-                            });
-                        });
-                        // Fade inside segments
-                        splitResult.inside.forEach((seg, i) => {
-                            const lastErase = lastEraseTimeByEntityId.current[baseId] || 0;
-                            const currentOpacity = ent.opacity !== undefined ? ent.opacity : 1.0;
-                            let nextOpacity = currentOpacity;
-                            
-                            const cooldown = isLametta ? 120 : 350;
-                            if (now - lastErase > cooldown) {
-                                if (eraserType === 'pencil') {
-                                    if (currentOpacity > 0.6) {
-                                        nextOpacity = 0.5; // First pass residue
-                                    } else {
-                                        nextOpacity = 0; // Second pass removes completely
-                                    }
-                                } else if (eraserType === 'all') {
-                                    if (currentOpacity > 0.75) {
-                                        nextOpacity = 0.66; // First pass residue
-                                    } else if (currentOpacity > 0.4) {
-                                        nextOpacity = 0.33; // Second pass residue
-                                    } else {
-                                        nextOpacity = 0; // Third pass removes completely
-                                    }
-                                } else if (eraserType === 'lametta') {
-                                    nextOpacity = 0.15; // Lametta leaves faint scratched trace
-                                }
-                                lastEraseTimeByEntityId.current[baseId] = now;
-                            }
-                            
-                            if (nextOpacity > 0.05) {
-                                newEntities.push({
-                                    ...ent,
-                                    id: ent.id + `_in_${i}_` + Math.random(),
-                                    start: seg.start,
-                                    end: seg.end,
-                                    opacity: nextOpacity
-                                });
-                            }
-                        });
-                    } else {
-                        newEntities.push(ent);
-                    }
-                }
-            } else if (ent.type === 'circle' || ent.type === 'arc') {
-                const isCircle = ent.type === 'circle';
-                const startAngle = ent.type === 'arc' ? ent.startAngle : 0;
-                const endAngle = ent.type === 'arc' ? ent.endAngle : 360;
-                const splitRes = getArcSubsegmentsInsideAndOutsideEraser(ent.center, ent.radius, startAngle, endAngle, isCircle, rawPoint, radius);
+                const isPencilEntity = (ent as any).mode === 'pencil';
+                const isInkEntity = (ent as any).mode === 'ink';
                 
-                if (splitRes) {
-                    changed = true;
-                    // Outside parts are kept regular
-                    splitRes.outside.forEach((interval, i) => {
-                        newEntities.push({
-                            ...ent,
-                            id: ent.id + `_arc_out_${i}_` + Math.random(),
-                            type: 'arc',
-                            startAngle: interval.startAngle,
-                            endAngle: interval.endAngle
-                        } as ArcEntity);
-                    });
-                    // Inside parts are kept and faded
-                    splitRes.inside.forEach((interval, i) => {
-                        const lastErase = lastEraseTimeByEntityId.current[baseId] || 0;
-                        const currentOpacity = ent.opacity !== undefined ? ent.opacity : 1.0;
-                        let nextOpacity = currentOpacity;
-                        
-                        const cooldown = isLametta ? 120 : 350;
-                        if (now - lastErase > cooldown) {
-                            if (eraserType === 'pencil') {
-                                if (currentOpacity > 0.6) {
-                                    nextOpacity = 0.5;
-                                } else {
-                                    nextOpacity = 0;
-                                }
-                            } else if (eraserType === 'all') {
-                                if (currentOpacity > 0.75) {
-                                    nextOpacity = 0.66;
-                                } else if (currentOpacity > 0.4) {
-                                    nextOpacity = 0.33;
-                                } else {
-                                    nextOpacity = 0;
-                                }
-                            } else if (eraserType === 'lametta') {
-                                nextOpacity = 0.15;
-                            }
-                            lastEraseTimeByEntityId.current[baseId] = now;
-                        }
+                // 1. Gray pencil eraser only cancels pencil lines
+                if (eraserType === 'pencil') {
+                    if (!isPencilEntity) {
+                        newEntities.push(ent);
+                        continue;
+                    }
+                }
+                
+                // 2. Yellow eraser only cancels ink/china lines
+                if (eraserType === 'all') {
+                    if (!isInkEntity) {
+                        newEntities.push(ent);
+                        continue;
+                    }
+                }
+                
+                // 3. Gillette blade (lametta) cancels everything at its sharp pinpoint corner, so no skip.
 
-                        if (nextOpacity > 0.05) {
+                const baseId = getBaseEntityId(ent.id);
+
+                if (ent.type === 'line') {
+                    if (ent.inkPoints) {
+                        // Freehand lines (pencil or ink)
+                        let pointHit = false;
+                        const updatedPoints = ent.inkPoints.map((inkPt, i) => {
+                            const dist = Math.sqrt((pt.x - inkPt.x)**2 + (pt.y - inkPt.y)**2);
+                            if (dist <= radius) {
+                                const pointKey = `${ent.id}_${i}`;
+                                const lastErase = lastEraseTimeByPoint.current[pointKey] || 0;
+                                const cooldown = isLametta ? 120 : 350; // faster, responsive for lametta
+                                if (now - lastErase > cooldown) {
+                                    lastEraseTimeByPoint.current[pointKey] = now;
+                                    pointHit = true;
+                                    let nextAlpha = inkPt.alpha;
+                                    if (eraserType === 'pencil') {
+                                        if (inkPt.alpha > 0.6) {
+                                            nextAlpha = 0.5; // First pass leaves a gray residue
+                                        } else {
+                                            nextAlpha = 0; // Second pass removes completely
+                                        }
+                                    } else if (eraserType === 'all') {
+                                        if (inkPt.alpha > 0.75) {
+                                            nextAlpha = 0.66; // First pass residue
+                                        } else if (inkPt.alpha > 0.4) {
+                                            nextAlpha = 0.33; // Second pass residue
+                                        } else {
+                                            nextAlpha = 0; // Third pass removes completely
+                                        }
+                                    } else if (eraserType === 'lametta') {
+                                        // Lametta leaves a very faint scratched trace, consumed paper effect!
+                                        nextAlpha = 0.15; 
+                                    }
+                                    return { ...inkPt, alpha: nextAlpha };
+                                }
+                            }
+                            return inkPt;
+                        });
+                        
+                        if (pointHit) {
+                            pointChanged = true;
+                            changed = true;
+                            
+                            // Physically split the freehand line into separate entities at any erased points (alpha <= 0.05)
+                            const subArrays: typeof ent.inkPoints[] = [];
+                            let currentSub: typeof ent.inkPoints = [];
+                            
+                            for (const inkPt of updatedPoints) {
+                                if (inkPt.alpha > 0.05) {
+                                    currentSub.push(inkPt);
+                                } else {
+                                    if (currentSub.length > 0) {
+                                        subArrays.push(currentSub);
+                                        currentSub = [];
+                                    }
+                                }
+                            }
+                            if (currentSub.length > 0) {
+                                subArrays.push(currentSub);
+                            }
+                            
+                            subArrays.forEach((sub, idx) => {
+                                if (sub.length > 0) {
+                                    newEntities.push({
+                                        ...ent,
+                                        id: ent.id + `_fsplit_${idx}_` + Math.random(),
+                                        start: { x: sub[0].x, y: sub[0].y },
+                                        end: { x: sub[sub.length - 1].x, y: sub[sub.length - 1].y },
+                                        inkPoints: sub
+                                    });
+                                }
+                            });
+                        } else {
+                            newEntities.push(ent);
+                        }
+                    } else {
+                        // Standard CAD line segment
+                        const splitResult = splitLineSegmentWithCircle(ent.start, ent.end, pt, radius);
+                        if (splitResult.inside.length > 0) {
+                            pointChanged = true;
+                            changed = true;
+                            // Keep outside segments completely untouched
+                            splitResult.outside.forEach((seg, i) => {
+                                newEntities.push({
+                                    ...ent,
+                                    id: ent.id + `_out_${i}_` + Math.random(),
+                                    start: seg.start,
+                                    end: seg.end
+                                });
+                            });
+                            // Fade inside segments
+                            splitResult.inside.forEach((seg, i) => {
+                                const lastErase = lastEraseTimeByEntityId.current[baseId] || 0;
+                                const currentOpacity = ent.opacity !== undefined ? ent.opacity : 1.0;
+                                let nextOpacity = currentOpacity;
+                                
+                                const cooldown = isLametta ? 120 : 350;
+                                if (now - lastErase > cooldown) {
+                                    if (eraserType === 'pencil') {
+                                        if (currentOpacity > 0.6) {
+                                            nextOpacity = 0.5; // First pass residue
+                                        } else {
+                                            nextOpacity = 0; // Second pass removes completely
+                                        }
+                                    } else if (eraserType === 'all') {
+                                        if (currentOpacity > 0.75) {
+                                            nextOpacity = 0.66; // First pass residue
+                                        } else if (currentOpacity > 0.4) {
+                                            nextOpacity = 0.33; // Second pass residue
+                                        } else {
+                                            nextOpacity = 0; // Third pass removes completely
+                                        }
+                                    } else if (eraserType === 'lametta') {
+                                        nextOpacity = 0.15; // Lametta leaves faint scratched trace
+                                    }
+                                    lastEraseTimeByEntityId.current[baseId] = now;
+                                }
+                                
+                                if (nextOpacity > 0.05) {
+                                    newEntities.push({
+                                        ...ent,
+                                        id: ent.id + `_in_${i}_` + Math.random(),
+                                        start: seg.start,
+                                        end: seg.end,
+                                        opacity: nextOpacity
+                                    });
+                                }
+                            });
+                        } else {
+                            newEntities.push(ent);
+                        }
+                    }
+                } else if (ent.type === 'circle' || ent.type === 'arc') {
+                    const isCircle = ent.type === 'circle';
+                    const startAngle = ent.type === 'arc' ? ent.startAngle : 0;
+                    const endAngle = ent.type === 'arc' ? ent.endAngle : 360;
+                    const splitRes = getArcSubsegmentsInsideAndOutsideEraser(ent.center, ent.radius, startAngle, endAngle, isCircle, pt, radius);
+                    
+                    if (splitRes) {
+                        pointChanged = true;
+                        changed = true;
+                        // Outside parts are kept regular
+                        splitRes.outside.forEach((interval, i) => {
                             newEntities.push({
                                 ...ent,
-                                id: ent.id + `_arc_in_${i}_` + Math.random(),
+                                id: ent.id + `_arc_out_${i}_` + Math.random(),
                                 type: 'arc',
                                 startAngle: interval.startAngle,
-                                endAngle: interval.endAngle,
-                                opacity: nextOpacity
+                                endAngle: interval.endAngle
                             } as ArcEntity);
-                        }
-                    });
-                } else {
-                    newEntities.push(ent);
-                }
-            } else if (ent.type === 'rectangle') {
-                // To erase a rectangle partially, explode it to 4 lines and split lines!
-                const w = ent.p2.x - ent.p1.x;
-                const h = ent.p2.y - ent.p1.y;
-                const edges = [
-                    { start: ent.p1, end: { x: ent.p1.x + w, y: ent.p1.y } },
-                    { start: { x: ent.p1.x + w, y: ent.p1.y }, end: ent.p2 },
-                    { start: ent.p2, end: { x: ent.p1.x, y: ent.p1.y + h } },
-                    { start: { x: ent.p1.x, y: ent.p1.y + h }, end: ent.p1 }
-                ];
-                
-                let rectHit = false;
-                const hitLinesResult: Entity[] = [];
-                
-                edges.forEach((edge, idx) => {
-                    const splitResult = splitLineSegmentWithCircle(edge.start, edge.end, rawPoint, radius);
-                    if (splitResult.inside.length > 0) {
-                        rectHit = true;
-                        splitResult.outside.forEach((seg, i) => {
-                            hitLinesResult.push({
-                                id: ent.id + `_rect_edge_${idx}_out_${i}_` + Math.random(),
-                                type: 'line',
-                                color: ent.color,
-                                lineWidth: ent.lineWidth,
-                                dashed: ent.dashed,
-                                mode: ent.mode,
-                                start: seg.start,
-                                end: seg.end,
-                                opacity: ent.opacity,
-                                layer: ent.layer
-                            } as LineEntity);
                         });
-                        splitResult.inside.forEach((seg, i) => {
+                        // Inside parts are kept and faded
+                        splitRes.inside.forEach((interval, i) => {
                             const lastErase = lastEraseTimeByEntityId.current[baseId] || 0;
                             const currentOpacity = ent.opacity !== undefined ? ent.opacity : 1.0;
                             let nextOpacity = currentOpacity;
@@ -10189,8 +10569,40 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
                             }
 
                             if (nextOpacity > 0.05) {
+                                newEntities.push({
+                                    ...ent,
+                                    id: ent.id + `_arc_in_${i}_` + Math.random(),
+                                    type: 'arc',
+                                    startAngle: interval.startAngle,
+                                    endAngle: interval.endAngle,
+                                    opacity: nextOpacity
+                                } as ArcEntity);
+                            }
+                        });
+                    } else {
+                        newEntities.push(ent);
+                    }
+                } else if (ent.type === 'rectangle') {
+                    // To erase a rectangle partially, explode it to 4 lines and split lines!
+                    const w = ent.p2.x - ent.p1.x;
+                    const h = ent.p2.y - ent.p1.y;
+                    const edges = [
+                        { start: ent.p1, end: { x: ent.p1.x + w, y: ent.p1.y } },
+                        { start: { x: ent.p1.x + w, y: ent.p1.y }, end: ent.p2 },
+                        { start: ent.p2, end: { x: ent.p1.x, y: ent.p1.y + h } },
+                        { start: { x: ent.p1.x, y: ent.p1.y + h }, end: ent.p1 }
+                    ];
+                    
+                    let rectHit = false;
+                    const hitLinesResult: Entity[] = [];
+                    
+                    edges.forEach((edge, idx) => {
+                        const splitResult = splitLineSegmentWithCircle(edge.start, edge.end, pt, radius);
+                        if (splitResult.inside.length > 0) {
+                            rectHit = true;
+                            splitResult.outside.forEach((seg, i) => {
                                 hitLinesResult.push({
-                                    id: ent.id + `_rect_edge_${idx}_in_${i}_` + Math.random(),
+                                    id: ent.id + `_rect_edge_${idx}_out_${i}_` + Math.random(),
                                     type: 'line',
                                     color: ent.color,
                                     lineWidth: ent.lineWidth,
@@ -10198,146 +10610,195 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
                                     mode: ent.mode,
                                     start: seg.start,
                                     end: seg.end,
-                                    opacity: nextOpacity,
+                                    opacity: ent.opacity,
                                     layer: ent.layer
                                 } as LineEntity);
+                            });
+                            splitResult.inside.forEach((seg, i) => {
+                                const lastErase = lastEraseTimeByEntityId.current[baseId] || 0;
+                                const currentOpacity = ent.opacity !== undefined ? ent.opacity : 1.0;
+                                let nextOpacity = currentOpacity;
+                                
+                                const cooldown = isLametta ? 120 : 350;
+                                if (now - lastErase > cooldown) {
+                                    if (eraserType === 'pencil') {
+                                        if (currentOpacity > 0.6) {
+                                            nextOpacity = 0.5;
+                                        } else {
+                                            nextOpacity = 0;
+                                        }
+                                    } else if (eraserType === 'all') {
+                                        if (currentOpacity > 0.75) {
+                                            nextOpacity = 0.66;
+                                        } else if (currentOpacity > 0.4) {
+                                            nextOpacity = 0.33;
+                                        } else {
+                                            nextOpacity = 0;
+                                        }
+                                    } else if (eraserType === 'lametta') {
+                                        nextOpacity = 0.15;
+                                    }
+                                    lastEraseTimeByEntityId.current[baseId] = now;
+                                }
+
+                                if (nextOpacity > 0.05) {
+                                    hitLinesResult.push({
+                                        id: ent.id + `_rect_edge_${idx}_in_${i}_` + Math.random(),
+                                        type: 'line',
+                                        color: ent.color,
+                                        lineWidth: ent.lineWidth,
+                                        dashed: ent.dashed,
+                                        mode: ent.mode,
+                                        start: seg.start,
+                                        end: seg.end,
+                                        opacity: nextOpacity,
+                                        layer: ent.layer
+                                    } as LineEntity);
+                                }
+                            });
+                        } else {
+                            hitLinesResult.push({
+                                id: ent.id + `_rect_edge_${idx}_` + Math.random(),
+                                type: 'line',
+                                color: ent.color,
+                                lineWidth: ent.lineWidth,
+                                dashed: ent.dashed,
+                                mode: ent.mode,
+                                start: edge.start,
+                                end: edge.end,
+                                opacity: ent.opacity,
+                                layer: ent.layer
+                            } as LineEntity);
+                        }
+                    });
+                    
+                    if (rectHit) {
+                        pointChanged = true;
+                        changed = true;
+                        newEntities.push(...hitLinesResult);
+                    } else {
+                        newEntities.push(ent);
+                    }
+                } else if (ent.type === 'dimension') {
+                    const { p1, p2 } = getDimensionLinePoints(ent);
+                    const hitDimension = distanceToSegment(pt, p1, p2) < radius;
+                    
+                    if (hitDimension) {
+                        const lastErase = lastEraseTimeByEntityId.current[ent.id] || 0;
+                        const cooldown = isLametta ? 120 : 450;
+                        if (now - lastErase > cooldown) {
+                            lastEraseTimeByEntityId.current[ent.id] = now;
+                            pointChanged = true;
+                            changed = true;
+                            const currentOpacity = ent.opacity !== undefined ? ent.opacity : 1.0;
+                            let nextOpacity = currentOpacity;
+                            if (eraserType === 'pencil') {
+                                if (currentOpacity > 0.6) nextOpacity = 0.5;
+                                else nextOpacity = 0;
+                            } else if (eraserType === 'all') {
+                                if (currentOpacity > 0.75) nextOpacity = 0.66;
+                                else if (currentOpacity > 0.4) nextOpacity = 0.33;
+                                else nextOpacity = 0;
+                            } else if (eraserType === 'lametta') {
+                                nextOpacity = 0.15;
                             }
-                        });
-                    } else {
-                        hitLinesResult.push({
-                            id: ent.id + `_rect_edge_${idx}_` + Math.random(),
-                            type: 'line',
-                            color: ent.color,
-                            lineWidth: ent.lineWidth,
-                            dashed: ent.dashed,
-                            mode: ent.mode,
-                            start: edge.start,
-                            end: edge.end,
-                            opacity: ent.opacity,
-                            layer: ent.layer
-                        } as LineEntity);
-                    }
-                });
-                
-                if (rectHit) {
-                    changed = true;
-                    newEntities.push(...hitLinesResult);
-                } else {
-                    newEntities.push(ent);
-                }
-            } else if (ent.type === 'dimension') {
-                const { p1, p2 } = getDimensionLinePoints(ent);
-                const hitDimension = distanceToSegment(rawPoint, p1, p2) < radius;
-                
-                if (hitDimension) {
-                    const lastErase = lastEraseTimeByEntityId.current[ent.id] || 0;
-                    const cooldown = isLametta ? 120 : 450;
-                    if (now - lastErase > cooldown) {
-                        lastEraseTimeByEntityId.current[ent.id] = now;
-                        changed = true;
-                        const currentOpacity = ent.opacity !== undefined ? ent.opacity : 1.0;
-                        let nextOpacity = currentOpacity;
-                        if (eraserType === 'pencil') {
-                            if (currentOpacity > 0.6) nextOpacity = 0.5;
-                            else nextOpacity = 0;
-                        } else if (eraserType === 'all') {
-                            if (currentOpacity > 0.75) nextOpacity = 0.66;
-                            else if (currentOpacity > 0.4) nextOpacity = 0.33;
-                            else nextOpacity = 0;
-                        } else if (eraserType === 'lametta') {
-                            nextOpacity = 0.15;
+                            if (nextOpacity > 0.05) {
+                                newEntities.push({
+                                    ...ent,
+                                    opacity: nextOpacity
+                                });
+                            }
+                        } else {
+                            newEntities.push(ent);
                         }
-                        if (nextOpacity > 0.05) {
-                            newEntities.push({
-                                ...ent,
-                                opacity: nextOpacity
-                            });
+                    } else {
+                        newEntities.push(ent);
+                    }
+                } else if (ent.type === 'hatch') {
+                    const h = ent as any;
+                    let hitHatch = false;
+                    if (h.points) {
+                        hitHatch = h.points.some((hp: Point) => Math.sqrt((pt.x - hp.x)**2 + (pt.y - hp.y)**2) <= radius) || isPointInPolygon(pt, h.points);
+                    }
+                    if (hitHatch) {
+                        const lastErase = lastEraseTimeByEntityId.current[ent.id] || 0;
+                        const cooldown = isLametta ? 120 : 450;
+                        if (now - lastErase > cooldown) {
+                            lastEraseTimeByEntityId.current[ent.id] = now;
+                            pointChanged = true;
+                            changed = true;
+                            const currentOpacity = ent.opacity !== undefined ? ent.opacity : 1.0;
+                            let nextOpacity = currentOpacity;
+                            if (eraserType === 'pencil') {
+                                if (currentOpacity > 0.6) nextOpacity = 0.5;
+                                else nextOpacity = 0;
+                            } else if (eraserType === 'all') {
+                                if (currentOpacity > 0.75) nextOpacity = 0.66;
+                                else if (currentOpacity > 0.4) nextOpacity = 0.33;
+                                else nextOpacity = 0;
+                            } else if (eraserType === 'lametta') {
+                                nextOpacity = 0.15;
+                            }
+                            if (nextOpacity > 0.05) {
+                                newEntities.push({
+                                    ...ent,
+                                    opacity: nextOpacity
+                                });
+                            }
+                        } else {
+                            newEntities.push(ent);
                         }
                     } else {
                         newEntities.push(ent);
                     }
                 } else {
-                    newEntities.push(ent);
-                }
-            } else if (ent.type === 'hatch') {
-                const h = ent as any;
-                let hitHatch = false;
-                if (h.points) {
-                    hitHatch = h.points.some((p: Point) => Math.sqrt((rawPoint.x - p.x)**2 + (rawPoint.y - p.y)**2) <= radius) || isPointInPolygon(rawPoint, h.points);
-                }
-                if (hitHatch) {
-                    const lastErase = lastEraseTimeByEntityId.current[ent.id] || 0;
-                    const cooldown = isLametta ? 120 : 450;
-                    if (now - lastErase > cooldown) {
-                        lastEraseTimeByEntityId.current[ent.id] = now;
-                        changed = true;
-                        const currentOpacity = ent.opacity !== undefined ? ent.opacity : 1.0;
-                        let nextOpacity = currentOpacity;
-                        if (eraserType === 'pencil') {
-                            if (currentOpacity > 0.6) nextOpacity = 0.5;
-                            else nextOpacity = 0;
-                        } else if (eraserType === 'all') {
-                            if (currentOpacity > 0.75) nextOpacity = 0.66;
-                            else if (currentOpacity > 0.4) nextOpacity = 0.33;
-                            else nextOpacity = 0;
-                        } else if (eraserType === 'lametta') {
-                            nextOpacity = 0.15;
-                        }
-                        if (nextOpacity > 0.05) {
-                            newEntities.push({
-                                ...ent,
-                                opacity: nextOpacity
-                            });
+                    let hitPoint = false;
+                    if (ent.type === 'point') {
+                        const p = ent.point;
+                        const dist = Math.sqrt((pt.x - p.x)**2 + (pt.y - p.y)**2);
+                        hitPoint = dist <= radius;
+                    }
+                    if (hitPoint) {
+                        const lastErase = lastEraseTimeByEntityId.current[ent.id] || 0;
+                        const cooldown = isLametta ? 120 : 450;
+                        if (now - lastErase > cooldown) {
+                            lastEraseTimeByEntityId.current[ent.id] = now;
+                            pointChanged = true;
+                            changed = true;
+                            const currentOpacity = ent.opacity !== undefined ? ent.opacity : 1.0;
+                            let nextOpacity = currentOpacity;
+                            if (eraserType === 'pencil') {
+                                if (currentOpacity > 0.6) nextOpacity = 0.5;
+                                else nextOpacity = 0;
+                            } else if (eraserType === 'all') {
+                                if (currentOpacity > 0.75) nextOpacity = 0.66;
+                                else if (currentOpacity > 0.4) nextOpacity = 0.33;
+                                else nextOpacity = 0;
+                            } else if (eraserType === 'lametta') {
+                                nextOpacity = 0.15;
+                            }
+                            if (nextOpacity > 0.05) {
+                                newEntities.push({
+                                    ...ent,
+                                    opacity: nextOpacity
+                                });
+                            }
+                        } else {
+                            newEntities.push(ent);
                         }
                     } else {
                         newEntities.push(ent);
                     }
-                } else {
-                    newEntities.push(ent);
-                }
-            } else {
-                let hitPoint = false;
-                if (ent.type === 'point') {
-                    const p = ent.point;
-                    const dist = Math.sqrt((rawPoint.x - p.x)**2 + (rawPoint.y - p.y)**2);
-                    hitPoint = dist <= radius;
-                }
-                if (hitPoint) {
-                    const lastErase = lastEraseTimeByEntityId.current[ent.id] || 0;
-                    const cooldown = isLametta ? 120 : 450;
-                    if (now - lastErase > cooldown) {
-                        lastEraseTimeByEntityId.current[ent.id] = now;
-                        changed = true;
-                        const currentOpacity = ent.opacity !== undefined ? ent.opacity : 1.0;
-                        let nextOpacity = currentOpacity;
-                        if (eraserType === 'pencil') {
-                            if (currentOpacity > 0.6) nextOpacity = 0.5;
-                            else nextOpacity = 0;
-                        } else if (eraserType === 'all') {
-                            if (currentOpacity > 0.75) nextOpacity = 0.66;
-                            else if (currentOpacity > 0.4) nextOpacity = 0.33;
-                            else nextOpacity = 0;
-                        } else if (eraserType === 'lametta') {
-                            nextOpacity = 0.15;
-                        }
-                        if (nextOpacity > 0.05) {
-                            newEntities.push({
-                                ...ent,
-                                opacity: nextOpacity
-                            });
-                        }
-                    } else {
-                        newEntities.push(ent);
-                    }
-                } else {
-                    newEntities.push(ent);
                 }
             }
+            if (pointChanged) {
+                currentEntities = newEntities;
+            }
         }
-        
+
         if (changed) {
-            if (setEntitiesSilent) setEntitiesSilent(newEntities);
-            else setEntities(newEntities);
+            if (setEntitiesSilent) setEntitiesSilent(currentEntities);
+            else setEntities(currentEntities);
         }
   };
 
@@ -10508,32 +10969,57 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
         const dx = c2.center.x - c1.center.x;
         const dy = c2.center.y - c1.center.y;
         const dSum = Math.sqrt(dx * dx + dy * dy);
-        const epsCircle = 0.5;
-        if (dSum > 0.001 && dSum <= c1.radius + c2.radius + epsCircle && dSum >= Math.abs(c1.radius - c2.radius) - epsCircle) {
-            const a = (c1.radius * c1.radius - c2.radius * c2.radius + dSum * dSum) / (2 * dSum);
-            const hSq = c1.radius * c1.radius - a * a;
-            const h = Math.sqrt(Math.max(0, hSq));
-            const ux = dx / dSum;
-            const uy = dy / dSum;
-            const px = -uy;
-            const py = ux;
+        if (dSum > 0.001) {
+            const eps = 0.05; // 0.05 cm threshold to adjust for near-touches
+            let r1 = c1.radius;
+            let r2 = c2.radius;
             
-            const p1 = { x: c1.center.x + a * ux + h * px, y: c1.center.y + a * uy + h * py };
-            const p2 = { x: c1.center.x + a * ux - h * px, y: c1.center.y + a * uy - h * py };
+            // If they are slightly separated but within eps, adjust radii so they touch
+            if (dSum > r1 + r2 && dSum <= r1 + r2 + eps) {
+                const diff = (dSum - (r1 + r2)) / 2;
+                r1 += diff;
+                r2 += diff;
+            }
+            // If one is slightly inside the other but within eps, adjust radii so they touch
+            if (dSum < Math.abs(r1 - r2) && dSum >= Math.abs(r1 - r2) - eps) {
+                const diff = (Math.abs(r1 - r2) - dSum) / 2;
+                if (r1 > r2) {
+                    r1 -= diff;
+                    r2 += diff;
+                } else {
+                    r1 += diff;
+                    r2 -= diff;
+                }
+            }
             
-            [p1, p2].forEach(p => {
-                // Check if on entA
-                if (entA.type === 'arc') {
-                     const a1 = Math.atan2(p.y - c1.center.y, p.x - c1.center.x) * 180 / Math.PI;
-                     if (!isAngleInArc(a1, (entA as ArcEntity).startAngle, (entA as ArcEntity).endAngle)) return;
-                }
-                // Check if on entB
-                if (entB.type === 'arc') {
-                     const a2 = Math.atan2(p.y - c2.center.y, p.x - c2.center.x) * 180 / Math.PI;
-                     if (!isAngleInArc(a2, (entB as ArcEntity).startAngle, (entB as ArcEntity).endAngle)) return;
-                }
-                pts.push(p);
-            });
+            if (dSum <= r1 + r2 + 1e-5 && dSum >= Math.abs(r1 - r2) - 1e-5) {
+                const a = (r1 * r1 - r2 * r2 + dSum * dSum) / (2 * dSum);
+                const hSq = r1 * r1 - a * a;
+                const h = Math.sqrt(Math.max(0, hSq));
+                const ux = dx / dSum;
+                const uy = dy / dSum;
+                const px = -uy;
+                const py = ux;
+                
+                const p1 = { x: c1.center.x + a * ux + h * px, y: c1.center.y + a * uy + h * py };
+                const p2 = { x: c1.center.x + a * ux - h * px, y: c1.center.y + a * uy - h * py };
+                
+                [p1, p2].forEach(p => {
+                    // Check if on entA
+                    if (entA.type === 'arc') {
+                         const a1 = Math.atan2(p.y - c1.center.y, p.x - c1.center.x) * 180 / Math.PI;
+                         if (!isAngleInArc(a1, (entA as ArcEntity).startAngle, (entA as ArcEntity).endAngle)) return;
+                    }
+                    // Check if on entB
+                    if (entB.type === 'arc') {
+                         const a2 = Math.atan2(p.y - c2.center.y, p.x - c2.center.x) * 180 / Math.PI;
+                         if (!isAngleInArc(a2, (entB as ArcEntity).startAngle, (entB as ArcEntity).endAngle)) return;
+                    }
+                    if (!pts.some(existing => Math.hypot(existing.x - p.x, existing.y - p.y) < 1e-2)) {
+                        pts.push(p);
+                    }
+                });
+            }
         }
     }
     // rectangle and line / circle / arc
@@ -11302,58 +11788,83 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
 
   const executeSmartTrim = (rawPoint: Point) => {
     const radius = (eraserRadius * 3.5) / view.zoom;
+    const pointsToTrim = [rawPoint];
+    if (liveMirrorAxis) {
+        pointsToTrim.push(mirrorPoint(rawPoint, liveMirrorAxis.start, liveMirrorAxis.end));
+    }
+
     setEntities(prev => {
         let changed = false;
-        const newEntities: any[] = [];
-        for (const ent of prev) {
-            if (ent.type === 'line' || ent.type === 'circle' || ent.type === 'arc') {
-                const threshold = radius; 
-                let isClose = false;
-                if (ent.type === 'line') {
-                    isClose = distToSegment(rawPoint, ent.start, ent.end) < threshold;
-                } else if (ent.type === 'circle' || ent.type === 'arc') {
-                    const d = Math.sqrt((rawPoint.x - ent.center.x)**2 + (rawPoint.y - ent.center.y)**2);
-                    isClose = Math.abs(d - (ent as any).radius) < threshold;
+        let currentEntities = [...prev];
+
+        for (const pt of pointsToTrim) {
+            const nextEntities: any[] = [];
+            for (const ent of currentEntities) {
+                // Skip mirrored copies, they will be regenerated by applyLiveMirror anyway
+                if ((ent as any).isLiveMirrorCopy) {
+                    nextEntities.push(ent);
+                    continue;
                 }
 
-                if (isClose) {
-                    // Per la gomma smart usiamo il centro del raggio come clickPoint per determinare il segmento
-                    // oppure usiamo rawPoint se è vicino.
-                    const result = computeTrimSegments(ent, rawPoint, prev, 'smart');
-                    if (result && result.keep) {
-                        changed = true;
-                        result.keep.forEach((k: any, i: number) => {
-                            newEntities.push({
-                                ...ent,
-                                id: ent.id + `_smart_${i}_` + Math.random(),
-                                ...k
+                if (ent.type === 'line' || ent.type === 'circle' || ent.type === 'arc') {
+                    const threshold = radius; 
+                    let isClose = false;
+                    if (ent.type === 'line') {
+                        isClose = distToSegment(pt, ent.start, ent.end) < threshold;
+                    } else if (ent.type === 'circle' || ent.type === 'arc') {
+                        const d = Math.sqrt((pt.x - ent.center.x)**2 + (pt.y - ent.center.y)**2);
+                        isClose = Math.abs(d - (ent as any).radius) < threshold;
+                    }
+
+                    if (isClose) {
+                        const result = computeTrimSegments(ent, pt, currentEntities, 'smart');
+                        if (result && result.keep) {
+                            changed = true;
+                            result.keep.forEach((k: any, i: number) => {
+                                nextEntities.push({
+                                    ...ent,
+                                    id: ent.id + `_smart_${i}_` + Math.random(),
+                                    ...k
+                                });
                             });
-                        });
-                        continue;
+                            continue;
+                        }
                     }
                 }
+                nextEntities.push(ent);
             }
-            newEntities.push(ent);
+            currentEntities = nextEntities;
         }
+
         if (changed) {
-            onCommitHistory?.(newEntities);
+            onCommitHistory?.(currentEntities);
         }
-        return changed ? newEntities : prev;
+        return changed ? currentEntities : prev;
     });
   };
 
   const executeTrim = (rawPoint: Point) => {
-    const target = highlightedTrimLine || getTrimTargetAtPoint(rawPoint);
+    let target = highlightedTrimLine || getTrimTargetAtPoint(rawPoint);
     if (!target) return;
 
     // Commit snapshot of state PRIOR to the change so Undo works perfectly!
     onCommitHistory?.(entitiesRef.current);
 
+    let finalTarget = target;
+    let finalClickPoint = rawPoint;
+    if (liveMirrorAxis && (target as any).isLiveMirrorCopy && (target as any).liveMirrorSourceId) {
+        const sourceTarget = entitiesRef.current.find(e => e.id === (target as any).liveMirrorSourceId);
+        if (sourceTarget) {
+            finalTarget = sourceTarget;
+            finalClickPoint = mirrorPoint(rawPoint, liveMirrorAxis.start, liveMirrorAxis.end);
+        }
+    }
+
     setEntities(prev => {
-        const freshTarget = prev.find(ent => ent.id === target.id);
+        const freshTarget = prev.find(ent => ent.id === finalTarget.id);
         if (!freshTarget) return prev;
 
-        const result = computeTrimSegments(freshTarget, rawPoint, prev, trimMode);
+        const result = computeTrimSegments(freshTarget, finalClickPoint, prev, trimMode);
         if (!result) return prev;
 
         const newEntities = prev.flatMap(ent => {
@@ -11373,9 +11884,18 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
     setHighlightedTrimSegment(null);
   };
 
-  const executeAllunga = (rawPoint: Point) => {
-    const target = getEntityAtPoint(rawPoint, 15);
+  const executeAllunga = (rawPointParam: Point) => {
+    let target = getEntityAtPoint(rawPointParam, 15);
     if (!target || target.type !== 'line') return;
+
+    let rawPoint = rawPointParam;
+    if (liveMirrorAxis && (target as any).isLiveMirrorCopy && (target as any).liveMirrorSourceId) {
+        const sourceTarget = entitiesRef.current.find(e => e.id === (target as any).liveMirrorSourceId);
+        if (sourceTarget && sourceTarget.type === 'line') {
+            target = sourceTarget;
+            rawPoint = mirrorPoint(rawPointParam, liveMirrorAxis.start, liveMirrorAxis.end);
+        }
+    }
 
     const line = target as LineEntity;
     
@@ -12399,6 +12919,39 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
                 setSelectionWindow({ start: Math.abs(actualMousePosRef.current.x - rawPoint.x) > 2 ? rawPoint : actualMousePosRef.current, current: actualMousePosRef.current });
             }
         }
+    } else if (activeTool === 'LiveMirror') {
+        if (liveMirrorState === 'axis_start') {
+            const found = getEntityAtPoint(rawPoint);
+            if (found && found.type === 'line') {
+                const line = found as LineEntity;
+                const axis = { start: line.start, end: line.end };
+                onUpdateLiveMirrorAxis?.(axis);
+                saveAxisToLocalStorage(axis);
+                setActiveTool?.('Select');
+            } else {
+                setLiveMirrorAxisPt1(rawPoint);
+                setLiveMirrorState('axis_end');
+            }
+        } else if (liveMirrorState === 'axis_end' && liveMirrorAxisPt1) {
+            const snapRes = getSnappedPoint(rawPoint, entities, activeTool, { type: 'line', start: liveMirrorAxisPt1, current: rawPoint } as any);
+            let finalPt2 = snapRes.snapped ? snapRes.point : rawPoint;
+            const effectiveOrthoMode = getEffectiveOrtho(e, true);
+            if (effectiveOrthoMode) {
+               const dx = Math.abs(finalPt2.x - liveMirrorAxisPt1.x);
+               const dy = Math.abs(finalPt2.y - liveMirrorAxisPt1.y);
+               if (dx > dy) {
+                   finalPt2.y = liveMirrorAxisPt1.y;
+               } else {
+                   finalPt2.x = liveMirrorAxisPt1.x;
+               }
+            }
+            const axis = { start: liveMirrorAxisPt1, end: finalPt2 };
+            onUpdateLiveMirrorAxis?.(axis);
+            saveAxisToLocalStorage(axis);
+            setLiveMirrorState('axis_start');
+            setLiveMirrorAxisPt1(null);
+            setActiveTool?.('Select');
+        }
     } else if (activeTool === 'Parallel') {
         const now = Date.now();
         if (now - lastParallelCommitTimeRef.current < 250) return;
@@ -12979,7 +13532,7 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
       const wasLocked = isLocked;
       setIsLocked(false);
       
-      if (drawing && (activeTool === 'Line' || (activeTool as string) === 'Filo' || activeTool === 'Circle' || activeTool === 'Rectangle' || activeTool === 'Arc' || activeTool === 'Camera')) {
+      if (drawing && (activeTool === 'Line' || (activeTool as string) === 'Filo' || activeTool === 'Rectangle' || activeTool === 'Arc' || activeTool === 'Camera')) {
           let snappedResult;
 
           if (drawing.wheelLength !== undefined) {
@@ -13189,7 +13742,13 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
                  })() : undefined
                };
           } else if (activeTool === 'Circle') {
-              const radius = Math.sqrt(Math.pow(snappedResult.point.x - drawing.start.x, 2) + Math.pow(snappedResult.point.y - drawing.start.y, 2));
+              let radius = Math.sqrt(Math.pow(drawing.current.x - drawing.start.x, 2) + Math.pow(drawing.current.y - drawing.start.y, 2));
+              if (circleRadiusInputStringRef.current) {
+                  const parsed = parseFloat(circleRadiusInputStringRef.current.replace(',', '.'));
+                  if (!isNaN(parsed) && parsed > 0) {
+                      radius = parsed;
+                  }
+              }
               newEntity = {
                 id: Date.now().toString(),
                 type: 'circle',
@@ -13201,6 +13760,8 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
                 radius: radius,
                 layer: activeLayerId
               };
+              setCircleRadiusInputString('');
+              circleRadiusInputStringRef.current = '';
           } else if (activeTool === 'Rectangle') {
               newEntity = {
                 id: Date.now().toString(),
@@ -13300,6 +13861,61 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
 
       const isFreehandMode = activeTool === 'Line';
       const isTempOrthoStart = false;
+
+      if (activeTool === 'Circle') {
+          const hasCenterSnap = snapped.snapped && snapped.subtype === 'center';
+          if (hasCenterSnap) {
+              // If we are snapping to a center, strictly bypass tangent mode and clear any partial selections because center dominates!
+              setCircleTangentLine1(null);
+              setCircleTangentClickPt1(null);
+          } else {
+              if (!circleTangentLine1) {
+                  const clickedLine = getLineAtPoint(rawPoint);
+                  if (clickedLine && clickedLine.type === 'line') {
+                      setCircleTangentLine1(clickedLine as LineEntity);
+                      setCircleTangentClickPt1(rawPoint);
+                      setStatusMessage("1ª retta selezionata per il cerchio tangente. Clicca sulla 2ª retta.");
+                      return;
+                  }
+              } else {
+                  const clickedLine2 = getLineAtPoint(rawPoint);
+                  if (clickedLine2 && clickedLine2.type === 'line' && clickedLine2.id !== circleTangentLine1.id) {
+                      const tangentResult = computeCircleTangentTo2Lines(
+                          circleTangentLine1,
+                          clickedLine2 as LineEntity,
+                          circleTangentClickPt1 || rawPoint,
+                          rawPoint
+                      );
+
+                      if (tangentResult && tangentResult.radius > 0.01) {
+                          const newCircle: CircleEntity = {
+                              id: Date.now().toString(),
+                              type: 'circle',
+                              color: defaultLineStyle.color,
+                              lineWidth: defaultLineStyle.lineWidth,
+                              dashed: defaultLineStyle.dashed,
+                              mode: defaultLineStyle.mode,
+                              center: tangentResult.center,
+                              radius: tangentResult.radius,
+                              layer: activeLayerId
+                          };
+                          setEntities(prev => {
+                              onCommitHistory?.(prev);
+                              return [...prev, newCircle];
+                          });
+                          setCircleTangentLine1(null);
+                          setCircleTangentClickPt1(null);
+                          setStatusMessage(null);
+                          return;
+                      }
+                  }
+                  setCircleTangentLine1(null);
+                  setCircleTangentClickPt1(null);
+                  setStatusMessage(null);
+              }
+          }
+      }
+
       setDrawing({ 
         start: snapped.point, 
         current: snapped.point, 
@@ -13819,14 +14435,18 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
     }
 
     const hoveredEnt = getEntityAtPoint(rawPoint, 20);
-    if (hoveredEnt && hoveredEnt.type === 'line') {
-        if (hoveredLineId !== hoveredEnt.id) {
-            setHoveredLineId(hoveredEnt.id);
+    if (hoveredEnt) {
+        if (hoveredEntityId !== hoveredEnt.id) {
+            setHoveredEntityId(hoveredEnt.id);
         }
-    } else {
-        if (hoveredLineId !== null) {
+        if (hoveredEnt.type === 'line' && hoveredLineId !== hoveredEnt.id) {
+            setHoveredLineId(hoveredEnt.id);
+        } else if (hoveredEnt.type !== 'line' && hoveredLineId !== null) {
             setHoveredLineId(null);
         }
+    } else {
+        if (hoveredEntityId !== null) setHoveredEntityId(null);
+        if (hoveredLineId !== null) setHoveredLineId(null);
     }
 
     // TECNIGRAFO HOVER DETECTION (for symbols)
@@ -14331,8 +14951,22 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
       }
       
       if (drawing.wheelLength !== undefined) {
-          const ux = drawing.lockedDir?.x ?? 1;
-          const uy = drawing.lockedDir?.y ?? 0;
+          if (activeTool === 'Circle') {
+              const dx = rawPoint.x - drawing.start.x;
+              const dy = rawPoint.y - drawing.start.y;
+              const len = Math.hypot(dx, dy);
+              const ux = len > 1e-6 ? dx / len : (drawing.lockedDir?.x ?? 1);
+              const uy = len > 1e-6 ? dy / len : (drawing.lockedDir?.y ?? 0);
+              const radius = drawing.wheelLength;
+              setDrawing({
+                  ...drawing,
+                  current: { x: drawing.start.x + ux * radius, y: drawing.start.y + uy * radius }
+              });
+              return;
+          }
+
+          let ux = drawing.lockedDir?.x ?? 1;
+          let uy = drawing.lockedDir?.y ?? 0;
           
           if (!fnAnchorCanvasPosRef.current) {
               fnAnchorCanvasPosRef.current = rawPoint;
@@ -14873,6 +15507,42 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
         return;
     }
     freehandOrthoAnchorRef.current = null;
+    
+    // If we're drawing a circle, commit the circle on mouseup (click-and-drag rule)
+    if (activeTool === 'Circle' && drawing) {
+        let radius = Math.sqrt(Math.pow(drawing.current.x - drawing.start.x, 2) + Math.pow(drawing.current.y - drawing.start.y, 2));
+        if (circleRadiusInputStringRef.current) {
+            const parsed = parseFloat(circleRadiusInputStringRef.current.replace(',', '.'));
+            if (!isNaN(parsed) && parsed > 0) {
+                radius = parsed;
+            }
+        }
+        
+        if (radius > 0.01) {
+            const newCircle: CircleEntity = {
+                id: Date.now().toString(),
+                type: 'circle',
+                color: defaultLineStyle.color,
+                lineWidth: defaultLineStyle.lineWidth,
+                dashed: defaultLineStyle.dashed,
+                mode: defaultLineStyle.mode,
+                center: drawing.start,
+                radius: radius,
+                layer: activeLayerId
+            };
+            
+            lastCircleRadiusRef.current = radius;
+            try { localStorage.setItem('lastCircleRadius', radius.toString()); } catch(err){}
+            setEntities(prev => {
+                onCommitHistory?.(prev);
+                return [...prev, newCircle];
+            });
+            setCircleRadiusInputString('');
+            circleRadiusInputStringRef.current = '';
+            setDrawing(null);
+            return;
+        }
+    }
     
     // If we're freehand drawing, commit the stroke on mouseup
     if (activeTool === 'Line' && drawing && drawing.isFreehand && drawing.freehandPoints && drawing.freehandPoints.length > 1) {
@@ -15501,7 +16171,16 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
     };
 
     const handleKeyDown = (e: KeyboardEvent) => {
+        if (e.repeat) return;
         if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+        
+        // Lettera C per attivare il Cerchio
+        if (e.key.toLowerCase() === 'c') {
+            setActiveTool?.('Circle');
+            setStatusMessage("Strumento Cerchio attivato tramite la scorciatoia 'C'");
+            return;
+        }
+
         // Tasto Invio come conferma (come tasto destro)
         if (e.key === 'Enter') {
             if (activeTool === 'Copy') {
@@ -15642,6 +16321,11 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
                     isFilo: activeTool === 'Filo',
                 } as any;
                 
+                const segLen = Math.hypot(finalPoint.x - drawing.start.x, finalPoint.y - drawing.start.y);
+                if (segLen > 0.01) {
+                    lastSegmentRef.current = { start: drawing.start, end: finalPoint, length: segLen, id: newEntity.id };
+                }
+                
                 setEntities(prev => {
                     onCommitHistory?.(prev);
                     if (newEntity.type === 'line' && !newEntity.isBIM && !newEntity.isFilo) {
@@ -15679,7 +16363,7 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
                 typedChar = '';
             }
 
-            if (!quickEditEntityId && hoveredLineId && typedChar !== null) {
+            if (!quickEditEntityId && hoveredLineId && !drawing && typedChar !== null) {
                 e.preventDefault();
                 const line = entities.find(el => el.id === hoveredLineId) as LineEntity;
                 if (line) {
@@ -16043,6 +16727,31 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
                    </button>
                 </div>
              )}
+          </div>
+      );
+  }
+
+  if (activeTool === 'Circle' && circleTangentLine1) {
+      helpContent = (
+          <div className="flex flex-col gap-2">
+             <div className="text-xs font-medium text-neutral-200">
+                <strong className="text-emerald-400 block mb-1">Cerchio Tangente a 2 Rette</strong>
+                1ª retta selezionata. Clicca sulla seconda retta per creare il cerchio tangente.
+             </div>
+             <div className="flex items-center gap-2 bg-white/10 rounded-xl p-2 pl-3" onPointerDown={e => e.stopPropagation()}>
+                <button 
+                  onClick={(e) => { 
+                     e.stopPropagation();
+                     setCircleTangentLine1(null);
+                     setCircleTangentClickPt1(null);
+                     setStatusMessage(null);
+                  }}
+                  className="bg-white/10 hover:bg-white/20 text-neutral-300 px-3 py-1.5 rounded-lg text-xs font-bold transition-colors flex items-center gap-1.5"
+                >
+                  <X size={14} />
+                  ANNULLA TANGENTE
+                </button>
+             </div>
           </div>
       );
   }
@@ -16418,23 +17127,57 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
 
 
 
-      {hoveredLineId && tooltipMousePos && (
+      {!(drawing && activeTool === 'Circle') && hoveredEntityId && tooltipMousePos && (
           <div 
-              className="absolute bg-[#fef08a] text-[#713f12] border border-[#a16207] font-mono text-[11px] font-black px-1.5 py-0.5 rounded shadow-md pointer-events-none z-[99999] select-none animate-in fade-in duration-75"
+              className="absolute bg-[#fef08a] text-[#713f12] border border-[#a16207] font-mono text-[11px] font-black px-2 py-1 rounded shadow-md pointer-events-none z-[99999] select-none animate-in fade-in duration-75 flex items-center gap-1.5"
               style={{
                   left: `${tooltipMousePos.x + 24}px`,
                   top: `${tooltipMousePos.y - 24}px`,
               }}
           >
               {(() => {
-                  const line = entities.find(el => el.id === hoveredLineId);
-                  if (line && line.type === 'line') {
-                      const dx = line.end.x - line.start.x;
-                      const dy = line.end.y - line.start.y;
-                      return `${Math.sqrt(dx * dx + dy * dy).toFixed(1)} cm`;
+                  const ent = entities.find(el => el.id === hoveredEntityId);
+                  if (!ent) return null;
+                  if (ent.type === 'line') {
+                      const dx = ent.end.x - ent.start.x;
+                      const dy = ent.end.y - ent.start.y;
+                      return `Segmento L: ${Math.sqrt(dx * dx + dy * dy).toFixed(1)} cm`;
+                  } else if (ent.type === 'circle') {
+                      return `Raggio Cerchio R: ${ent.radius.toFixed(1)} cm`;
+                  } else if (ent.type === 'rectangle') {
+                      const w = Math.abs(ent.p2.x - ent.p1.x);
+                      const h = Math.abs(ent.p2.y - ent.p1.y);
+                      return `Rettangolo W: ${w.toFixed(1)} cm | H: ${h.toFixed(1)} cm`;
+                  } else if (ent.type === 'arc') {
+                      return `Raggio Arco R: ${ent.radius.toFixed(1)} cm`;
                   }
-                  return '';
+                  return null;
               })()}
+          </div>
+      )}
+
+      {drawing && activeTool === 'Circle' && tooltipMousePos && (
+          <div 
+              className="absolute bg-slate-900/90 text-emerald-400 border border-emerald-500/60 font-mono text-[12px] font-bold px-3 py-1.5 rounded-xl shadow-2xl pointer-events-none z-[99999] select-none animate-in fade-in duration-75 backdrop-blur-md flex flex-col gap-1"
+              style={{
+                  left: `${tooltipMousePos.x + 24}px`,
+                  top: `${tooltipMousePos.y - 24}px`,
+              }}
+          >
+              <div className="flex items-center gap-1.5">
+                  <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse flex-shrink-0" />
+                  <span>
+                      Raggio R: <strong className="text-white font-extrabold">{circleRadiusInputString || Math.hypot(drawing.current.x - drawing.start.x, drawing.current.y - drawing.start.y).toFixed(1)} cm</strong>
+                  </span>
+              </div>
+              <div className="flex items-center gap-1.5 text-emerald-300">
+                  <span>
+                      Area: <strong className="text-white font-extrabold">{(Math.PI * Math.pow(parseFloat(circleRadiusInputString || String(Math.hypot(drawing.current.x - drawing.start.x, drawing.current.y - drawing.start.y))) || 0, 2)).toFixed(1)} cm²</strong>
+                  </span>
+              </div>
+              <div className="text-[10px] text-emerald-300/80 font-sans tracking-wide mt-0.5">
+                  [Premi INVIO per confermare • ESC per annullare]
+              </div>
           </div>
       )}
 

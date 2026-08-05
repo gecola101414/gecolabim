@@ -123,73 +123,62 @@ export const getIntersections = (entA: Entity, entB: Entity): Point[] => {
         
         const getCircleSegmentIntersections = (s: Point, e: Point): Point[] => {
             const subPts: Point[] = [];
-            const d = { x: e.x - s.x, y: e.y - s.y };
-            const v = { x: s.x - circle.center.x, y: s.y - circle.center.y };
-            const a = d.x * d.x + d.y * d.y;
-            const b = 2 * (v.x * d.x + v.y * d.y);
-            const c = (v.x * v.x + v.y * v.y) - circle.radius * circle.radius;
-            if (a !== 0) {
-                let discriminant = b * b - 4 * a * c;
-                if (discriminant < 0 && discriminant >= -1e-3) {
-                    discriminant = 0;
-                }
-                if (discriminant >= 0) {
-                    const sqrtD = Math.sqrt(discriminant);
-                    const t1 = (-b - sqrtD) / (2 * a);
-                    const t2 = (-b + sqrtD) / (2 * a);
-                    const epsLineCircle = 0.08; 
-                    [t1, t2].forEach(t => {
-                        if (t >= -epsLineCircle && t <= 1 + epsLineCircle) {
-                            const tClamped = Math.max(0, Math.min(1, t));
-                            const p = { x: s.x + tClamped * d.x, y: s.y + tClamped * d.y };
-                            if (circle.type === 'arc') {
-                                const angle = Math.atan2(p.y - circle.center.y, p.x - circle.center.x) * 180 / Math.PI;
-                                if (isAngleInArc(angle, circle.startAngle, circle.endAngle)) {
-                                    subPts.push(p);
-                                }
-                            } else {
-                                subPts.push(p);
-                            }
-                        }
-                    });
-                }
-            }
+            const dx = e.x - s.x, dy = e.y - s.y;
+            const lenSq = dx * dx + dy * dy;
+            if (lenSq < 1e-8) return subPts;
 
-            // Proximity & Quadrant checks for snapping (midpoints, endpoints, quadrant contact points)
-            const epsProximity = 0.8;
-            const checkAndPushPoint = (pt: Point) => {
-                const distToC = Math.hypot(pt.x - circle.center.x, pt.y - circle.center.y);
-                if (Math.abs(distToC - circle.radius) < epsProximity) {
-                    const angle = Math.atan2(pt.y - circle.center.y, pt.x - circle.center.x);
-                    const projP = {
-                        x: circle.center.x + circle.radius * Math.cos(angle),
-                        y: circle.center.y + circle.radius * Math.sin(angle)
-                    };
-                    if (circle.type === 'arc') {
-                        const angleDeg = angle * 180 / Math.PI;
-                        if (!isAngleInArc(angleDeg, circle.startAngle, circle.endAngle)) return;
-                    }
-                    if (!subPts.some(existing => Math.hypot(existing.x - projP.x, existing.y - projP.y) < 0.1)) {
-                        subPts.push(projP);
-                    }
+            const len = Math.sqrt(lenSq);
+            const ux = dx / len, uy = dy / len;
+
+            // Vector from segment start to circle center
+            const vx = circle.center.x - s.x, vy = circle.center.y - s.y;
+
+            // Projection distance along the line segment
+            const proj = vx * ux + vy * uy;
+
+            // Projection point on the line
+            const projPt = { x: s.x + proj * ux, y: s.y + proj * uy };
+
+            // Perpendicular distance from circle center to line
+            const distSq = (circle.center.x - projPt.x) ** 2 + (circle.center.y - projPt.y) ** 2;
+            const dist = Math.sqrt(distSq);
+
+            const R = circle.radius;
+            const epsTangency = 0.5; // CAD tolerance for tangent lines (sub-pixel / floating precision)
+            const epsLine = 0.08;   // Small extension epsilon along segment parameter [0, 1]
+
+            const pushCandidate = (pt: Point) => {
+                if (circle.type === 'arc') {
+                    const angle = Math.atan2(pt.y - circle.center.y, pt.x - circle.center.x) * 180 / Math.PI;
+                    if (!isAngleInArc(angle, circle.startAngle, circle.endAngle)) return;
+                }
+                if (!subPts.some(existing => Math.hypot(existing.x - pt.x, existing.y - pt.y) < 0.01)) {
+                    subPts.push(pt);
                 }
             };
 
-            checkAndPushPoint(s);
-            checkAndPushPoint(e);
-            checkAndPushPoint({ x: (s.x + e.x) / 2, y: (s.y + e.y) / 2 });
-
-            const quads: Point[] = [
-                { x: circle.center.x + circle.radius, y: circle.center.y },
-                { x: circle.center.x, y: circle.center.y + circle.radius },
-                { x: circle.center.x - circle.radius, y: circle.center.y },
-                { x: circle.center.x, y: circle.center.y - circle.radius }
-            ];
-            quads.forEach(q => {
-                if (distToSegment(q, s, e) < epsProximity) {
-                    checkAndPushPoint(q);
+            if (dist > R + epsTangency) {
+                // Line is outside circle completely
+                return subPts;
+            } else if (Math.abs(dist - R) <= epsTangency) {
+                // Tangent or near-tangent contact point
+                const t = proj / len;
+                if (t >= -epsLine && t <= 1 + epsLine) {
+                    const tClamped = Math.max(0, Math.min(1, t));
+                    pushCandidate({ x: s.x + tClamped * dx, y: s.y + tClamped * dy });
                 }
-            });
+            } else {
+                // Secant: line crosses circle at 2 points
+                const h = Math.sqrt(Math.max(0, R * R - distSq));
+                const t1 = (proj - h) / len;
+                const t2 = (proj + h) / len;
+                [t1, t2].forEach(t => {
+                    if (t >= -epsLine && t <= 1 + epsLine) {
+                        const tClamped = Math.max(0, Math.min(1, t));
+                        pushCandidate({ x: s.x + tClamped * dx, y: s.y + tClamped * dy });
+                    }
+                });
+            }
 
             return subPts;
         };
@@ -241,3 +230,123 @@ export const getIntersections = (entA: Entity, entB: Entity): Point[] => {
     }
     return pts;
 };
+
+export const computeCircleTangentTo2Lines = (
+    line1: LineEntity,
+    line2: LineEntity,
+    clickPt1: Point,
+    clickPt2: Point
+): { center: Point; radius: number } | null => {
+    if (!line1 || !line2 || line1.type !== 'line' || line2.type !== 'line') return null;
+    if (line1.id === line2.id) return null;
+
+    const x1 = line1.start.x, y1 = line1.start.y;
+    const x2 = line1.end.x, y2 = line1.end.y;
+    const x3 = line2.start.x, y3 = line2.start.y;
+    const x4 = line2.end.x, y4 = line2.end.y;
+
+    const dx1 = x2 - x1, dy1 = y2 - y1;
+    const len1 = Math.hypot(dx1, dy1);
+    const dx2 = x4 - x3, dy2 = y4 - y3;
+    const len2 = Math.hypot(dx2, dy2);
+
+    if (len1 < 1e-6 || len2 < 1e-6) return null;
+
+    const u1x = dx1 / len1, u1y = dy1 / len1;
+    const u2x = dx2 / len2, u2y = dy2 / len2;
+
+    const denom = (x1 - x2) * (y3 - y4) - (y1 - y2) * (x3 - x4);
+
+    if (Math.abs(denom) < 1e-8) {
+        // PARALLEL LINES
+        const n1x = -u1y, n1y = u1x;
+        const distParallel = Math.abs((x3 - x1) * n1x + (y3 - y1) * n1y);
+        if (distParallel < 1e-4) return null; // Collinear
+
+        const radius = distParallel / 2;
+        const proj1 = (clickPt1.x - x1) * u1x + (clickPt1.y - y1) * u1y;
+        const proj2 = (clickPt2.x - x3) * u2x + (clickPt2.y - y3) * u2y;
+        const avgProj = (proj1 + proj2) / 2;
+
+        const pOn1 = { x: x1 + avgProj * u1x, y: y1 + avgProj * u1y };
+        const normalOffset = ((x3 - x1) * n1x + (y3 - y1) * n1y) / 2;
+        const center = {
+            x: pOn1.x + n1x * normalOffset,
+            y: pOn1.y + n1y * normalOffset,
+        };
+        return { center, radius };
+    }
+
+    // INTERSECTING LINES
+    const intersectX = ((x1 * y2 - y1 * x2) * (x3 - x4) - (x1 - x2) * (x3 * y4 - y3 * x4)) / denom;
+    const intersectY = ((x1 * y2 - y1 * x2) * (y3 - y4) - (y1 - y2) * (x3 * y4 - y3 * x4)) / denom;
+    const I = { x: intersectX, y: intersectY };
+
+    let v1x = clickPt1.x - I.x, v1y = clickPt1.y - I.y;
+    let v2x = clickPt2.x - I.x, v2y = clickPt2.y - I.y;
+
+    let d1 = Math.hypot(v1x, v1y);
+    let d2 = Math.hypot(v2x, v2y);
+
+    let ray1 = d1 > 1e-4 ? { x: v1x / d1, y: v1y / d1 } : { x: u1x, y: u1y };
+    let ray2 = d2 > 1e-4 ? { x: v2x / d2, y: v2y / d2 } : { x: u2x, y: u2y };
+
+    const dot1 = ray1.x * u1x + ray1.y * u1y;
+    const dir1 = dot1 >= 0 ? { x: u1x, y: u1y } : { x: -u1x, y: -u1y };
+
+    const dot2 = ray2.x * u2x + ray2.y * u2y;
+    const dir2 = dot2 >= 0 ? { x: u2x, y: u2y } : { x: -u2x, y: -u2y };
+
+    const bisectX = dir1.x + dir2.x;
+    const bisectY = dir1.y + dir2.y;
+    const bisectLen = Math.hypot(bisectX, bisectY);
+
+    if (bisectLen < 1e-6) return null;
+
+    const b = { x: bisectX / bisectLen, y: bisectY / bisectLen };
+
+    const cosAlpha = Math.max(0.0001, Math.min(0.9999, dir1.x * b.x + dir1.y * b.y));
+    const sinAlpha = Math.sqrt(Math.max(0, 1 - cosAlpha * cosAlpha));
+    const tanAlpha = sinAlpha / cosAlpha;
+
+    // Distances from I to projections of clickPt1 and clickPt2
+    const distFromI1 = (clickPt1.x - I.x) * dir1.x + (clickPt1.y - I.y) * dir1.y;
+    const distFromI2 = (clickPt2.x - I.x) * dir2.x + (clickPt2.y - I.y) * dir2.y;
+
+    // Segment projections along dir1 and dir2 from I
+    const p1a = (line1.start.x - I.x) * dir1.x + (line1.start.y - I.y) * dir1.y;
+    const p1b = (line1.end.x - I.x) * dir1.x + (line1.end.y - I.y) * dir1.y;
+    const min1 = Math.min(p1a, p1b);
+    const max1 = Math.max(p1a, p1b);
+
+    const p2a = (line2.start.x - I.x) * dir2.x + (line2.start.y - I.y) * dir2.y;
+    const p2b = (line2.end.x - I.x) * dir2.x + (line2.end.y - I.y) * dir2.y;
+    const min2 = Math.min(p2a, p2b);
+    const max2 = Math.max(p2a, p2b);
+
+    // Bounding interval for dT so tangent points lie on visible segments
+    const rangeMin = Math.max(0.1, Math.max(min1, min2));
+    const rangeMax = Math.min(max1, max2);
+
+    let rawDT = distFromI2; // Use active cursor distance
+    if (isNaN(rawDT) || rawDT <= 0) rawDT = (distFromI1 + distFromI2) / 2;
+
+    let dT = rawDT;
+    if (rangeMax >= rangeMin && rangeMax > 0.1) {
+        dT = Math.max(rangeMin, Math.min(rangeMax, rawDT));
+    } else {
+        const altMax = Math.min(Math.max(0.1, max1), Math.max(0.1, max2));
+        dT = Math.max(0.1, Math.min(altMax, Math.max(rawDT, 1.0)));
+    }
+
+    const radius = dT * tanAlpha;
+    const distCenterFromI = dT / cosAlpha;
+
+    const center = {
+        x: I.x + b.x * distCenterFromI,
+        y: I.y + b.y * distCenterFromI
+    };
+
+    return { center, radius };
+};
+
