@@ -26,6 +26,32 @@ import { ImageEditorOverlay } from './ImageEditorOverlay';
 import { contours } from 'd3-contour';
 import { computeCircleTangentTo2Lines } from '../utils/geometry';
 
+const getSquadrettaVertices = (sq: { type: '45' | '3060', pos: Point, rotation: number }) => {
+    const pts: Point[] = [];
+    if (sq.type === '45') {
+        const size = 300; // cm
+        pts.push({ x: 0, y: 0 });
+        pts.push({ x: size, y: 0 });
+        pts.push({ x: 0, y: size });
+    } else {
+        const h = 400; // cm
+        const w = h / Math.sqrt(3); 
+        pts.push({ x: 0, y: 0 });
+        pts.push({ x: w, y: 0 });
+        pts.push({ x: 0, y: h });
+    }
+
+    const rad = (sq.rotation * Math.PI) / 180;
+    const cos = Math.cos(rad);
+    const sin = Math.sin(rad);
+
+    return pts.map(p => ({
+        x: sq.pos.x + (p.x * cos - p.y * sin),
+        y: sq.pos.y + (p.x * sin + p.y * cos)
+    }));
+};
+
+
 const getEffectiveCADRenderWidth = (lw: number, mode: string | undefined, zoom: number): number => {
     if (mode === 'ink') {
         // Enforce physical minimums so anti-aliasing doesn't turn it gray, while keeping proportional differences
@@ -44,6 +70,10 @@ const fastCloneEntity = (ent: Entity): Entity => {
     if (ent.type === 'line' || ent.type === 'dimension') {
         cloned.start = { x: ent.start.x, y: ent.start.y };
         cloned.end = { x: ent.end.x, y: ent.end.y };
+        if ((ent as any).retraceStart && (ent as any).retraceEnd) {
+            cloned.retraceStart = { x: (ent as any).retraceStart.x, y: (ent as any).retraceStart.y };
+            cloned.retraceEnd = { x: (ent as any).retraceEnd.x, y: (ent as any).retraceEnd.y };
+        }
         if ((ent as any).isFreehand && (ent as any).inkPoints) {
             (cloned as any).inkPoints = (ent as any).inkPoints.map((p: any) => ({ ...p }));
         }
@@ -97,6 +127,8 @@ export interface CADCanvasAPI {
     flipSide?: boolean, 
     rotation?: number
   ) => void;
+  resetView?: () => void;
+  zoomFit?: () => void;
 }
 
 export type DrawingState = {
@@ -124,6 +156,10 @@ export type DrawingState = {
   isVirtual?: boolean;
   freehandPoints?: Point[];
   isFreehand?: boolean;
+  isTraditionalSegment?: boolean;
+  maxPoint?: Point;
+  maxLength?: number;
+  retraceMinProj?: number;
 };
 
 const normalizeAngle = (a: number) => {
@@ -2843,11 +2879,14 @@ interface CADCanvasProps {
   isContinuousMode?: boolean;
   cancelTrigger?: number;
   parallelTrigger?: number;
+  isOffsetAidActive?: boolean;
   tavole?: Tavola[];
   onUpdateTavole?: (tavole: Tavola[]) => void;
   onDoubleClickTavola?: (id: string) => void;
   selectedTemplateId?: string | null;
   selectedEntityId?: string | null;
+  onLastParameterChange?: (param: { type: 'radius' | 'length' | 'thickness' | 'offset'; value: number; isLocked?: boolean; isAutoFromDrawing?: boolean }) => void;
+  lastInsertedParameter?: { type: 'radius' | 'length' | 'thickness' | 'offset'; value: number; isLocked?: boolean; userSetAt?: number } | null;
   selectedBIMSymbolType?: string | null;
   setSelectedBIMSymbolType?: (val: string | null) => void;
   bimSymbolScale?: number;
@@ -2893,10 +2932,11 @@ interface CADCanvasProps {
 }
 
 const mergeLineSegments = (currentEntities: Entity[], newLine: LineEntity): Entity[] => {
-    const tolerance = 0.5; // 5mm tolerance for snapping/connection/gaps
+    const tolerance = 2.0; // Generous connection tolerance so extended collinear lines always become a single segment
     let entitiesToKeep = [...currentEntities];
 
-    // 1. Line overlay / replacement ("china sulla matita"): if newLine overlaps the interior of existing lines, trim/split those lines
+    // 1. Line overlay / replacement ("china sulla matita"): ONLY if newLine has a different mode (e.g. China over Matita) and overlaps interior, trim/split underlying line.
+    // If same mode, Step 2 will unify them into one single line!
     const v1 = { x: newLine.end.x - newLine.start.x, y: newLine.end.y - newLine.start.y };
     const len1 = Math.hypot(v1.x, v1.y);
     if (len1 > 0.01) {
@@ -2908,7 +2948,7 @@ const mergeLineSegments = (currentEntities: Entity[], newLine: LineEntity): Enti
         const nextEntities: Entity[] = [];
         for (let i = 0; i < entitiesToKeep.length; i++) {
             const ent = entitiesToKeep[i];
-            if (ent.type === 'line' && !ent.isBIM && !(ent as any).isFilo) {
+            if (ent.type === 'line' && !ent.isBIM && !(ent as any).isFilo && ent.mode !== newLine.mode) {
                 const line = ent as LineEntity;
                 const v2 = { x: line.end.x - line.start.x, y: line.end.y - line.start.y };
                 const len2 = Math.hypot(v2.x, v2.y);
@@ -2969,7 +3009,7 @@ const mergeLineSegments = (currentEntities: Entity[], newLine: LineEntity): Enti
             if (ent.type === 'line' && ent.layer === merged.layer && !ent.isBIM && !(ent as any).isFilo) {
                 const line = ent as LineEntity;
 
-                // Check collinearity using direction vectors for ALL line types (CAD and freehand)
+                // Check collinearity using direction vectors for ALL line types (CAD, China, Matita)
                 const v1 = { x: merged.end.x - merged.start.x, y: merged.end.y - merged.start.y };
                 const v2 = { x: line.end.x - line.start.x, y: line.end.y - line.start.y };
                 const len1 = Math.hypot(v1.x, v1.y);
@@ -2981,7 +3021,7 @@ const mergeLineSegments = (currentEntities: Entity[], newLine: LineEntity): Enti
                     
                     // Collinear if sin_theta < 0.12 (approx 7 degrees) - never merge at 90 degrees or other angles!
                     if (sin_theta < 0.12) {
-                        // Also check distance of line's start point to merged's infinite line
+                        // Check perpendicular distance between the two collinear lines
                         const dx = line.start.x - merged.start.x;
                         const dy = line.start.y - merged.start.y;
                         const distToLine = Math.abs(v1.y * dx - v1.x * dy) / len1;
@@ -3002,66 +3042,80 @@ const mergeLineSegments = (currentEntities: Entity[], newLine: LineEntity): Enti
                             const a2 = Math.min(t_l1, t_l2);
                             const b2 = Math.max(t_l1, t_l2);
 
-                            // Check overlap/closeness in 1D intervals
+                            // Check overlap/closeness in 1D intervals: ALWAYS merge collinear touching/overlapping lines into a single unified segment!
                             if (Math.max(a1, a2) <= Math.min(b1, b2) + tolerance) {
-                                // Find the junction point(s)
+                                // Detect if the new stroke actually overlaps the existing segment (2nd pass / ricalco!)
+                                const overlapStartProj = Math.max(a1, a2);
+                                const overlapEndProj = Math.min(b1, b2);
+                                const overlapLen = overlapEndProj - overlapStartProj;
+                                const overlapThreshold = Math.max(0.4, Math.min(len1, len2) * 0.12);
+
+                                // Use the longer segment's axis as the master axis so the unified line stays straight and crisp
+                                const refOrigin = len2 >= len1 ? line.start : merged.start;
+                                const refUx = len2 >= len1 ? (v2.x / len2) : ux;
+                                const refUy = len2 >= len1 ? (v2.y / len2) : uy;
+
+                                // Collect any existing retraced intervals + new overlap interval if this is a second pass over the line
+                                const retracePts: Point[] = [];
+                                if ((line as any).retraceStart && (line as any).retraceEnd) {
+                                    retracePts.push((line as any).retraceStart, (line as any).retraceEnd);
+                                }
+                                if ((merged as any).retraceStart && (merged as any).retraceEnd) {
+                                    retracePts.push((merged as any).retraceStart, (merged as any).retraceEnd);
+                                }
+                                if (overlapLen > overlapThreshold && (merged.mode === 'ink' || merged.mode === 'pencil' || line.mode === 'ink' || line.mode === 'pencil')) {
+                                    retracePts.push(
+                                        { x: merged.start.x + ux * overlapStartProj, y: merged.start.y + uy * overlapStartProj },
+                                        { x: merged.start.x + ux * overlapEndProj, y: merged.start.y + uy * overlapEndProj }
+                                    );
+                                }
+
                                 const pts = [merged.start, merged.end, line.start, line.end];
-                                
-                                // The junction points are those that are NOT the furthest apart
-                                let maxDist = -1;
-                                let bestIdxP = 0, bestIdxQ = 1;
-                                for (let p = 0; p < 4; p++) {
-                                    for (let q = p + 1; q < 4; q++) {
-                                        const d = Math.hypot(pts[p].x - pts[q].x, pts[p].y - pts[q].y);
-                                        if (d > maxDist) {
-                                            maxDist = d;
-                                            bestIdxP = p;
-                                            bestIdxQ = q;
-                                        }
-                                    }
-                                }
-                                
-                                const junctionPts = pts.filter((_, idx) => idx !== bestIdxP && idx !== bestIdxQ);
-                                
-                                // Check if any junction point is an intersection with another non-collinear line
-                                let hasIntersectionAtJunction = false;
-                                for (const junction of junctionPts) {
-                                    for (const other of entitiesToKeep) {
-                                        if (other.id === line.id || other.id === merged.id) continue;
-                                        if (other.type !== 'line') continue;
-                                        
-                                        const oLine = other as LineEntity;
-                                        // Check if junction is on other line
-                                        const d = distToSegment(junction, oLine.start, oLine.end);
-                                        if (d < tolerance) {
-                                            // It's on the other line. Is the other line collinear?
-                                            const ov = { x: oLine.end.x - oLine.start.x, y: oLine.end.y - oLine.start.y };
-                                            const olen = Math.hypot(ov.x, ov.y);
-                                            if (olen > 0) {
-                                                const cross2 = v1.x * ov.y - v1.y * ov.x;
-                                                const sin_theta2 = Math.abs(cross2 / (len1 * olen));
-                                                if (sin_theta2 > 0.12) {
-                                                    // Intersection with a non-collinear line!
-                                                    hasIntersectionAtJunction = true;
-                                                    break;
-                                                }
-                                            }
-                                        }
-                                    }
-                                    if (hasIntersectionAtJunction) break;
+                                let minProj = Infinity;
+                                let maxProj = -Infinity;
+                                for (const p of pts) {
+                                    const pr = (p.x - refOrigin.x) * refUx + (p.y - refOrigin.y) * refUy;
+                                    if (pr < minProj) minProj = pr;
+                                    if (pr > maxProj) maxProj = pr;
                                 }
 
-                                if (hasIntersectionAtJunction) {
-                                    continue; // Don't merge if there's an intersection
+                                merged.start = {
+                                    x: refOrigin.x + refUx * minProj,
+                                    y: refOrigin.y + refUy * minProj
+                                };
+                                merged.end = {
+                                    x: refOrigin.x + refUx * maxProj,
+                                    y: refOrigin.y + refUy * maxProj
+                                };
+
+                                if (retracePts.length >= 2) {
+                                    let minRetrace = Infinity;
+                                    let maxRetrace = -Infinity;
+                                    for (const rp of retracePts) {
+                                        const rpr = (rp.x - refOrigin.x) * refUx + (rp.y - refOrigin.y) * refUy;
+                                        if (rpr < minRetrace) minRetrace = rpr;
+                                        if (rpr > maxRetrace) maxRetrace = rpr;
+                                    }
+                                    minRetrace = Math.max(minProj, minRetrace);
+                                    maxRetrace = Math.min(maxProj, maxRetrace);
+                                    if (maxRetrace - minRetrace > 0.2) {
+                                        (merged as any).retraceStart = {
+                                            x: refOrigin.x + refUx * minRetrace,
+                                            y: refOrigin.y + refUy * minRetrace
+                                        };
+                                        (merged as any).retraceEnd = {
+                                            x: refOrigin.x + refUx * maxRetrace,
+                                            y: refOrigin.y + refUy * maxRetrace
+                                        };
+                                    }
                                 }
 
-                                // They overlap or are close enough to merge!
-                                merged.start = pts[bestIdxP];
-                                merged.end = pts[bestIdxQ];
+                                // Preserve existing line ID if extending an existing segment
+                                merged.id = line.id;
                                 if (merged.inkPoints || line.inkPoints) {
                                     const ptsMerged = merged.inkPoints || [{ x: merged.start.x, y: merged.start.y, width: 1, alpha: 1 }, { x: merged.end.x, y: merged.end.y, width: 1, alpha: 1 }];
                                     const ptsLine = line.inkPoints || [{ x: line.start.x, y: line.start.y, width: 1, alpha: 1 }, { x: line.end.x, y: line.end.y, width: 1, alpha: 1 }];
-                                    merged.inkPoints = [...ptsMerged, ...ptsLine];
+                                    merged.inkPoints = [...ptsLine, ...ptsMerged];
                                 }
                                 entitiesToKeep.splice(i, 1);
                                 mergedAny = true;
@@ -3076,13 +3130,35 @@ const mergeLineSegments = (currentEntities: Entity[], newLine: LineEntity): Enti
     return [...entitiesToKeep, merged];
 };
 
-export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entities, activeTool, setActiveTool, setEntities: originalSetEntities, setEntitiesSilent, liveMirrorAxis, onUpdateLiveMirrorAxis, onCommitHistory, onSelect, onContextMenu, activeLayerId, layers, defaultLineStyle, setDefaultLineStyle, defaultFiloColor = '#ff5500', defaultHatchStyle, defaultTextStyle = { fontFamily: 'sans-serif', fontSize: 14, fontWeight: 'normal', textAlign: 'left' }, setDefaultTextStyle, eraserRadius, setEraserRadius, eraserType = 'pencil', setEraserType, eraserIntensity = 55, setEraserIntensity, onMouseMovePosition, rulerStyle = 'tecnigrafo', orthoMode = false, snapEnabled = true, setOrthoMode, isContinuousMode = false, cancelTrigger = 0, parallelTrigger = 0, tavole, onUpdateTavole, onDoubleClickTavola, selectedTemplateId, selectedEntityId, selectedBIMSymbolType, setSelectedBIMSymbolType, bimSymbolScale = 1, raccordoConfig, dimensionScale = 1, dimensionDecimals = 2, dimensionMode = 'two-points', dimensionStyle = 'linear', selectionMode = 'manual', onEditRaccordo, onOpenPenneSidebar, onDoubleClickDimension, onDoubleClickBIMElement, onActionStart, onAreaDetected, onSelectionComplete, initialSelectedIds, selectedEntityIds = [], highlightedPoints, rotationEntityId, onSelectForRotation, bimWallHeight = 270, bimDoorHeight = 210, bimWindowHeight = 140, bimWallThickness = 15, bimWallType = 'Forati (Laterizio)', bimWallRenderMode = 'solid', sketchParams = [], highlightedSketchId = null, selectedLine = null, selectedLineClickPoint = null, referenceLine = null, showFloatingManual = false, isLavagna = false }, ref) => {
+export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entities, activeTool, setActiveTool, setEntities: originalSetEntities, setEntitiesSilent, liveMirrorAxis, onUpdateLiveMirrorAxis, onCommitHistory, onSelect, onContextMenu, activeLayerId, layers, defaultLineStyle, setDefaultLineStyle, defaultFiloColor = '#ff5500', defaultHatchStyle, defaultTextStyle = { fontFamily: 'sans-serif', fontSize: 14, fontWeight: 'normal', textAlign: 'left' }, setDefaultTextStyle, eraserRadius, setEraserRadius, eraserType = 'pencil', setEraserType, eraserIntensity = 55, setEraserIntensity, onMouseMovePosition, rulerStyle = 'tecnigrafo', orthoMode = false, snapEnabled = true, setOrthoMode, isContinuousMode = false, cancelTrigger = 0, parallelTrigger = 0, isOffsetAidActive = false, tavole, onUpdateTavole, onDoubleClickTavola, selectedTemplateId, selectedEntityId, selectedBIMSymbolType, setSelectedBIMSymbolType, bimSymbolScale = 1, raccordoConfig, dimensionScale = 1, dimensionDecimals = 2, dimensionMode = 'two-points', dimensionStyle = 'linear', selectionMode = 'manual', onEditRaccordo, onOpenPenneSidebar, onDoubleClickDimension, onDoubleClickBIMElement, onActionStart, onAreaDetected, onSelectionComplete, initialSelectedIds, selectedEntityIds = [], highlightedPoints, rotationEntityId, onSelectForRotation, bimWallHeight = 270, bimDoorHeight = 210, bimWindowHeight = 140, bimWallThickness = 15, bimWallType = 'Forati (Laterizio)', bimWallRenderMode = 'solid', sketchParams = [], highlightedSketchId = null, selectedLine = null, selectedLineClickPoint = null, referenceLine = null, showFloatingManual = false, isLavagna = false, lastInsertedParameter = null, onLastParameterChange }, ref) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const entitiesRef = useRef(entities);
   const lastSegmentRef = useRef<{ start: Point; end: Point; length: number; id?: string } | null>(null);
+  const virtualCursorOffsetRef = useRef<Point | null>(null);
+  const isProgrammaticAlignRef = useRef(false);
+
+  const lastUserSetAtRef = useRef<number>(0);
+  const [hasUsedInputSnap, setHasUsedInputSnap] = useState<boolean>(false);
+
+  useEffect(() => {
+    const userSetAt = (lastInsertedParameter as any)?.userSetAt || 0;
+    if (userSetAt && userSetAt !== lastUserSetAtRef.current) {
+      lastUserSetAtRef.current = userSetAt;
+      setHasUsedInputSnap(false);
+    }
+  }, [(lastInsertedParameter as any)?.userSetAt, lastInsertedParameter?.value, lastInsertedParameter?.type]);
+
   useEffect(() => {
     entitiesRef.current = entities;
   }, [entities]);
+
+  useEffect(() => {
+    if (isProgrammaticAlignRef.current) {
+      isProgrammaticAlignRef.current = false;
+      return;
+    }
+    virtualCursorOffsetRef.current = null;
+  }, [activeTool]);
 
   const [liveMirrorState, setLiveMirrorState] = useState<'axis_start' | 'axis_end'>('axis_start');
   const [liveMirrorAxisPt1, setLiveMirrorAxisPt1] = useState<Point | null>(null);
@@ -3191,6 +3267,10 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
             start: { x: ent.start.x + deltaX, y: ent.start.y + deltaY }, 
             end: { x: ent.end.x + deltaX, y: ent.end.y + deltaY } 
         } as any;
+        if ((ent as any).retraceStart && (ent as any).retraceEnd) {
+            (updated as any).retraceStart = { x: (ent as any).retraceStart.x + deltaX, y: (ent as any).retraceStart.y + deltaY };
+            (updated as any).retraceEnd = { x: (ent as any).retraceEnd.x + deltaX, y: (ent as any).retraceEnd.y + deltaY };
+        }
         if (ent.isFreehand && ent.inkPoints) {
             (updated as any).inkPoints = ent.inkPoints.map(p => ({ ...p, x: p.x + deltaX, y: p.y + deltaY }));
         }
@@ -3533,6 +3613,18 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
   const [activeMoveSnapPoint, setActiveMoveSnapPoint] = useState<Point | null>(null);
   const [selectionWindow, setSelectionWindow] = useState<{ start: Point; current: Point } | null>(null);
   const [dragOffset, setDragOffset] = useState<Point>({x: 0, y: 0});
+  const [showSquadrette, setShowSquadrette] = useState(false);
+  const [squadrette, setSquadrette] = useState<{
+    id: string;
+    type: '45' | '3060';
+    pos: Point;
+    rotation: number;
+  }[]>([]);
+  const [dragSquadrettaId, setDragSquadrettaId] = useState<string | null>(null);
+  const [dragSquadrettaOffset, setDragSquadrettaOffset] = useState<Point>({ x: 0, y: 0 });
+  const [lastSquadrettaInteractionAt, setLastSquadrettaInteractionAt] = useState(0);
+  const [quickEditReferenceId, setQuickEditReferenceId] = useState<string | null>(null);
+
   const [eraserPos, setEraserPos] = useState({x: 0, y: 0});
   const [parallelDistance, setParallelDistance] = useState<number>(() => {
     try {
@@ -3633,6 +3725,16 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
       setParallelMouse(actualMousePosRef.current);
       fnStepValueRef.current = commitDistance;
       setIsParallelBarHidden(true);
+      lastParallelOffsetInfoRef.current = {
+          distance: commitDistance,
+          lineId: newLineId,
+          refLineId: line.id,
+          nx,
+          ny,
+          dirSign: curSign,
+          timestamp: Date.now()
+      };
+      justOffsetLineIdRef.current = newLineId;
   };
   const [parallelMouse, setParallelMouse] = useState<Point | null>(null);
   const [isParallelWheelActive, setIsParallelWheelActive] = useState(false);
@@ -3655,6 +3757,12 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
   // Parallel input is triggered by typing on the keyboard instead of opening automatically
 
   const [isJollyActive, setIsJollyActive] = useState(false);
+  const isJollyActiveRef = useRef(false);
+  useEffect(() => {
+    isJollyActiveRef.current = isJollyActive;
+  }, [isJollyActive]);
+  const [isMagicCopyActive, setIsMagicCopyActive] = useState(false);
+  const isMagicCopyActiveRef = useRef(false);
   const [circleTangentLine1, setCircleTangentLine1] = useState<LineEntity | null>(null);
   const [circleTangentClickPt1, setCircleTangentClickPt1] = useState<Point | null>(null);
 
@@ -3710,19 +3818,25 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
 
   const [quickEditEntityId, setQuickEditEntityId] = useState<string | null>(null);
   const [quickEditValue, setQuickEditValue] = useState<string>('');
+  const [quickEditOffset, setQuickEditOffset] = useState<string>('0');
   const [quickEditPos, setQuickEditPos] = useState<Point | null>(null);
   const [hoveredLineId, setHoveredLineId] = useState<string | null>(null);
+  const [hoveredLineIdPending, setHoveredLineIdPending] = useState<string | null>(null);
+  const [hoveredCircleId, setHoveredCircleId] = useState<string | null>(null);
 
 
 
 
-  const handleQuickEditCommit = (newValueStr: string, commitHistory = true) => {
+  const handleQuickEditCommit = (newValueStr: string, newOffsetStr: string, commitHistory = true) => {
       if (!quickEditEntityId) return;
       const val = parseFloat(newValueStr.replace(',', '.'));
+      const offsetVal = parseFloat(newOffsetStr.replace(',', '.'));
       if (isNaN(val) || val <= 0) {
           setQuickEditEntityId(null);
           return;
       }
+
+      let updatedLineRef: LineEntity | null = null;
 
       setEntities(prev => {
           onCommitHistory?.(prev);
@@ -3736,23 +3850,63 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
                   if (currentL === 0) return ent;
                   const nx = dx / currentL;
                   const ny = dy / currentL;
+
+                  const perpX = -dy / currentL;
+                  const perpY = dx / currentL;
+
+                  let newStart = { ...line.start };
+                  let newEnd = {
+                      x: line.start.x + nx * val,
+                      y: line.start.y + ny * val
+                  };
+
+                  if (!isNaN(offsetVal)) {
+                      if (quickEditReferenceId) {
+                          const refEnt = prev.find(e => e.id === quickEditReferenceId);
+                          if (refEnt && refEnt.type === 'line') {
+                              const refLine = refEnt as LineEntity;
+                              // Calculate current offset vector from reference
+                              const refDx = refLine.end.x - refLine.start.x;
+                              const refDy = refLine.end.y - refLine.start.y;
+                              const refL = Math.hypot(refDx, refDy);
+                              if (refL > 0) {
+                                  const rnx = -refDy / refL;
+                                  const rny = refDx / refL;
+                                  const curOff = (newStart.x - refLine.start.x) * rnx + (newStart.y - refLine.start.y) * rny;
+                                  const sign = curOff >= 0 ? 1 : -1;
+                                  const moveDist = (offsetVal * sign) - curOff;
+                                  
+                                  newStart.x += rnx * moveDist;
+                                  newStart.y += rny * moveDist;
+                                  newEnd.x += rnx * moveDist;
+                                  newEnd.y += rny * moveDist;
+                              }
+                          }
+                      } else if (offsetVal !== 0) {
+                          newStart.x += perpX * offsetVal;
+                          newStart.y += perpY * offsetVal;
+                          newEnd.x += perpX * offsetVal;
+                          newEnd.y += perpY * offsetVal;
+                      }
+                  }
+
                   let updatedInkPoints = line.inkPoints;
                   if (line.inkPoints && currentL > 0) {
                       const scale = val / currentL;
                       updatedInkPoints = line.inkPoints.map(pt => ({
                           ...pt,
-                          x: line.start.x + (pt.x - line.start.x) * scale,
-                          y: line.start.y + (pt.y - line.start.y) * scale
+                          x: newStart.x + (pt.x - line.start.x) * scale,
+                          y: newStart.y + (pt.y - line.start.y) * scale
                       }));
                   }
-                  return {
+                  const updatedLine = {
                       ...line,
-                      end: {
-                          x: line.start.x + nx * val,
-                          y: line.start.y + ny * val
-                      },
+                      start: newStart,
+                      end: newEnd,
                       inkPoints: updatedInkPoints
                   };
+                  updatedLineRef = updatedLine;
+                  return updatedLine;
               } else if (ent.type === 'circle') {
                   return {
                       ...ent,
@@ -3775,6 +3929,10 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
       });
       setQuickEditEntityId(null);
       setQuickEditValue('');
+      setQuickEditOffset('0');
+      if (updatedLineRef) {
+          alignCursorToLineEndpointInternal(updatedLineRef);
+      }
   };
 
   interface TextDialogState {
@@ -3812,6 +3970,7 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
   const fnAnchorCanvasPosRef = useRef<Point | null>(null);
   const freehandOrthoAnchorRef = useRef<Point | null>(null);
   const dragStartPosRef = useRef<Point | null>(null);
+  const previousToolBeforeShortcutRef = useRef<string | null>(null);
   const [copyPhase, setCopyPhase] = useState<'idle' | 'selectBasePoint' | 'selectDestinationPoint'>('idle');
   const [copyBasePoint, setCopyBasePoint] = useState<Point | null>(null);
   const [movePhase, setMovePhase] = useState<'idle' | 'selectBasePoint' | 'selectDestinationPoint'>('idle');
@@ -3820,11 +3979,213 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [tooltipMousePos, setTooltipMousePos] = useState<{ x: number, y: number } | null>(null);
   const [hoveredEntityId, setHoveredEntityId] = useState<string | null>(null);
+  const [hoveredEntityIdPending, setHoveredEntityIdPending] = useState<string | null>(null);
   const [circleRadiusInputString, setCircleRadiusInputString] = useState<string>('');
   const circleRadiusInputStringRef = useRef(circleRadiusInputString);
   useEffect(() => {
     circleRadiusInputStringRef.current = circleRadiusInputString;
   }, [circleRadiusInputString]);
+
+  // Active parallel pair detected in render loop for direct keyboard numeric distance override
+  const activeParallelPairRef = useRef<{
+    lineId: string;
+    refLineId: string;
+    nx: number;
+    ny: number;
+    signedDist: number;
+    currentDist: number;
+  } | null>(null);
+
+  // Memorizza l'ultimo offset impostato per creare automaticamente il riferimento per gli offset successivi uguali
+  // (Attivo SOLO se l'utente ha cliccato sul pulsante Offset)
+  const isOffsetAidActiveRef = useRef<boolean>(isOffsetAidActive);
+  const lastParallelOffsetInfoRef = useRef<{
+    distance: number;
+    lineId: string;
+    refLineId: string;
+    nx: number;
+    ny: number;
+    dirSign: number;
+    timestamp: number;
+  } | null>(null);
+  const justOffsetLineIdRef = useRef<string | null>(null);
+  const parallelOverrideLockedLineRef = useRef<{
+    lineId: string;
+    mousePosAtLock: Point;
+    timestamp: number;
+  } | null>(null);
+
+  useEffect(() => {
+    isOffsetAidActiveRef.current = isOffsetAidActive;
+    if (!isOffsetAidActive) {
+      parallelOverrideLockedLineRef.current = null;
+    }
+    renderRef.current?.();
+  }, [isOffsetAidActive]);
+
+  const isMoveCopyOrOffsetAidActive = (): boolean => {
+    return (
+      isOffsetAidActiveRef.current ||
+      activeToolRef.current === 'Parallel' ||
+      activeToolRef.current === 'Move' ||
+      activeToolRef.current === 'Copy' ||
+      isJollyActiveRef.current ||
+      isMagicCopyActiveRef.current
+    );
+  };
+
+  const getEffectiveLastParallelOffset = (ents?: Entity[]): number => {
+    if (!isMoveCopyOrOffsetAidActive()) {
+      return 0;
+    }
+    if (lastParallelOffsetInfoRef.current && lastParallelOffsetInfoRef.current.distance > 0.05) {
+      return lastParallelOffsetInfoRef.current.distance;
+    }
+    const list = ents || entitiesRef.current;
+    if (list && list.length >= 2) {
+      const lines = list.filter(e => e.type === 'line' && !(e as any).isSimmetryAxis && !(e as any).hideIn2D) as LineEntity[];
+      for (let i = lines.length - 1; i >= Math.max(0, lines.length - 8); i--) {
+        const l1 = lines[i];
+        const dx1 = l1.end.x - l1.start.x;
+        const dy1 = l1.end.y - l1.start.y;
+        const len1 = Math.hypot(dx1, dy1);
+        if (len1 < 0.5) continue;
+        const tx1 = dx1 / len1;
+        const ty1 = dy1 / len1;
+        const nx1 = -ty1;
+        const ny1 = tx1;
+
+        let bestD = Infinity;
+        let bestRef: LineEntity | null = null;
+        let bestSign = 1;
+        for (let j = i - 1; j >= 0; j--) {
+          const l2 = lines[j];
+          const dx2 = l2.end.x - l2.start.x;
+          const dy2 = l2.end.y - l2.start.y;
+          const len2 = Math.hypot(dx2, dy2);
+          if (len2 < 0.5) continue;
+          const tx2 = dx2 / len2;
+          const ty2 = dy2 / len2;
+          if (Math.abs(tx1 * tx2 + ty1 * ty2) > 0.995) {
+            const pS = (l2.start.x - l1.start.x) * tx1 + (l2.start.y - l1.start.y) * ty1;
+            const pE = (l2.end.x - l1.start.x) * tx1 + (l2.end.y - l1.start.y) * ty1;
+            const minP = Math.min(pS, pE);
+            const maxP = Math.max(pS, pE);
+            if (Math.min(len1, maxP) - Math.max(0, minP) > -50) {
+              const sD = (l1.start.x - l2.start.x) * nx1 + (l1.start.y - l2.start.y) * ny1;
+              const d = Math.abs(sD);
+              if (d > 0.2 && d < 600 && d < bestD) {
+                bestD = d;
+                bestRef = l2;
+                bestSign = sD >= 0 ? 1 : -1;
+              }
+            }
+          }
+        }
+        if (bestRef && bestD < 600) {
+          lastParallelOffsetInfoRef.current = {
+            distance: bestD,
+            lineId: l1.id,
+            refLineId: bestRef.id,
+            nx: nx1,
+            ny: ny1,
+            dirSign: bestSign,
+            timestamp: Date.now()
+          };
+          return bestD;
+        }
+      }
+    }
+    try {
+      const saved = localStorage.getItem('lastParallelDistance');
+      if (saved) {
+        const parsed = parseFloat(saved);
+        if (!isNaN(parsed) && parsed > 0.05) {
+          return parsed;
+        }
+      }
+    } catch (e) {}
+    return 0;
+  };
+
+  const recordParallelOffsetFromNewLine = (newLine: LineEntity, ents: Entity[]) => {
+    if (!isMoveCopyOrOffsetAidActive()) return;
+    const dx = newLine.end.x - newLine.start.x;
+    const dy = newLine.end.y - newLine.start.y;
+    const len = Math.hypot(dx, dy);
+    if (len < 0.5) return;
+    const tx = dx / len;
+    const ty = dy / len;
+    const nx = -ty;
+    const ny = tx;
+
+    let minD = Infinity;
+    let bestRef: LineEntity | null = null;
+    let bestSign = 1;
+    for (const other of ents) {
+      if (other.id !== newLine.id && other.type === 'line' && !(other as any).isSimmetryAxis && !(other as any).hideIn2D) {
+        const oLine = other as LineEntity;
+        const odx = oLine.end.x - oLine.start.x;
+        const ody = oLine.end.y - oLine.start.y;
+        const oLen = Math.hypot(odx, ody);
+        if (oLen < 0.5) continue;
+        const otx = odx / oLen;
+        const oty = ody / oLen;
+        if (Math.abs(tx * otx + ty * oty) > 0.995) {
+          const pS = (oLine.start.x - newLine.start.x) * tx + (oLine.start.y - newLine.start.y) * ty;
+          const pE = (oLine.end.x - newLine.start.x) * tx + (oLine.end.y - newLine.start.y) * ty;
+          const minP = Math.min(pS, pE);
+          const maxP = Math.max(pS, pE);
+          if (Math.min(len, maxP) - Math.max(0, minP) > -60) {
+            const sD = (newLine.start.x - oLine.start.x) * nx + (newLine.start.y - oLine.start.y) * ny;
+            const d = Math.abs(sD);
+            if (d > 0.2 && d < 600 && d < minD) {
+              minD = d;
+              bestRef = oLine;
+              bestSign = sD >= 0 ? 1 : -1;
+            }
+          }
+        }
+      }
+    }
+    if (bestRef && minD < 600) {
+      lastParallelOffsetInfoRef.current = {
+        distance: minD,
+        lineId: newLine.id,
+        refLineId: bestRef.id,
+        nx,
+        ny,
+        dirSign: bestSign,
+        timestamp: Date.now()
+      };
+      justOffsetLineIdRef.current = newLine.id;
+    }
+  };
+
+  const [liveNumericOverride, setLiveNumericOverride] = useState<{
+    kind: 'parallel_dist' | 'drawing_line' | 'line_length';
+    text: string;
+    lineId?: string;
+    refLineId?: string;
+    nx?: number;
+    ny?: number;
+    dirFromRefToLine?: number;
+    timestamp: number;
+  } | null>(null);
+  const liveNumericOverrideRef = useRef(liveNumericOverride);
+  useEffect(() => {
+    liveNumericOverrideRef.current = liveNumericOverride;
+  }, [liveNumericOverride]);
+
+  useEffect(() => {
+    if (hoveredLineIdPending && activeTool !== 'Trim') {
+        setHoveredLineId(hoveredLineIdPending);
+        setHoveredEntityId(hoveredEntityIdPending);
+    } else if (!hoveredLineIdPending) {
+        setHoveredLineId(null);
+        setHoveredEntityId(null);
+    }
+  }, [hoveredLineIdPending, hoveredEntityIdPending, activeTool]);
 
   const activeToolRef = useRef(activeTool);
   useEffect(() => {
@@ -3844,6 +4205,9 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
   useEffect(() => {
     if (!drawing) {
         setCircleRadiusInputString('');
+        if (liveNumericOverrideRef.current?.kind === 'drawing_line') {
+            setLiveNumericOverride(null);
+        }
     }
   }, [drawing]);
 
@@ -3851,7 +4215,6 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
     if (!drawing?.wheelLength && !isParallelWheelActive) {
         fnAnchorCanvasPosRef.current = null;
         fnStepValueRef.current = 0;
-        setIsJollyActive(false);
     }
   }, [drawing?.wheelLength, isParallelWheelActive]);
 
@@ -3893,22 +4256,38 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
 
   const [isShiftPressed, setIsShiftPressed] = useState(false);
   const isShiftPressedRef = useRef(false);
+  const isWheelDecimalRef = useRef(false);
+  const lastCapsLockStateRef = useRef<boolean | null>(null);
   const isPanningRef = useRef(false);
   const [isZoomActive, setIsZoomActive] = useState(false);
   useEffect(() => {
+    const isBlocFnEvent = (e: KeyboardEvent) => {
+      const k = (e.key || '').toLowerCase();
+      return (
+        e.key === 'Shift' ||
+        e.code === 'ShiftLeft' ||
+        e.code === 'ShiftRight' ||
+        e.key === 'CapsLock' ||
+        e.code === 'CapsLock' ||
+        e.keyCode === 20 ||
+        (e as any).which === 20 ||
+        e.key === 'Fn' ||
+        e.code === 'Fn' ||
+        e.key === 'FnLock' ||
+        e.code === 'FnLock' ||
+        e.key === 'ShiftLock' ||
+        k === 'f'
+      );
+    };
+
     const handleKeyUp = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement;
       if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) {
         return;
       }
-      if (e.key === 'Shift' || e.key.toLowerCase() === 'f') {
+      if (isBlocFnEvent(e)) {
         setIsShiftPressed(false);
         isShiftPressedRef.current = false;
-      }
-      if (e.key.toLowerCase() === 'z') {
-        isZoomModeRef.current = false;
-        setIsZoomActive(false);
-        zoomFocusRef.current = null;
       }
     };
 
@@ -4048,14 +4427,9 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
       }
 
       handleArrowsLine(e);
-      if (e.key === 'Shift' || e.key.toLowerCase() === 'f') {
+      if (isBlocFnEvent(e)) {
         setIsShiftPressed(true);
         isShiftPressedRef.current = true;
-      }
-      if (e.key.toLowerCase() === 'z') {
-        isZoomModeRef.current = true;
-        setIsZoomActive(true);
-        zoomFocusRef.current = lastMouseRef.current;
       }
     };
     const handleBlur = () => {
@@ -4176,6 +4550,9 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
   }, []);
 
   useImperativeHandle(ref, () => ({
+    alignCursorToLineEndpoint: (updatedLine: LineEntity) => {
+      alignCursorToLineEndpointInternal(updatedLine);
+    },
     getCurrentMousePosition: () => lastMouseRef.current,
     rotateMaskAtPoint: (e: React.MouseEvent | React.PointerEvent) => {
       const canvas = canvasRef.current;
@@ -4544,6 +4921,67 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
         onCommitHistory?.(next);
         return next;
       });
+    },
+    resetView: () => {
+      setView({
+        zoom: 0.15,
+        pan: {
+          x: window.innerWidth > 0 ? (window.innerWidth / 2) - 150 : 250,
+          y: window.innerHeight > 0 ? (window.innerHeight / 2) - 220 : 80
+        }
+      });
+    },
+    zoomFit: () => {
+      const allEnts = entitiesRef.current || [];
+      if (allEnts.length === 0) {
+        setView({
+          zoom: 0.15,
+          pan: {
+            x: window.innerWidth > 0 ? (window.innerWidth / 2) - 150 : 250,
+            y: window.innerHeight > 0 ? (window.innerHeight / 2) - 220 : 80
+          }
+        });
+        return;
+      }
+      let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+      allEnts.forEach(ent => {
+        if (ent.type === 'line' || ent.type === 'dimension') {
+          minX = Math.min(minX, ent.start.x, ent.end.x);
+          maxX = Math.max(maxX, ent.start.x, ent.end.x);
+          minY = Math.min(minY, ent.start.y, ent.end.y);
+          maxY = Math.max(maxY, ent.start.y, ent.end.y);
+        } else if (ent.type === 'circle' || ent.type === 'arc') {
+          minX = Math.min(minX, ent.center.x - ent.radius);
+          maxX = Math.max(maxX, ent.center.x + ent.radius);
+          minY = Math.min(minY, ent.center.y - ent.radius);
+          maxY = Math.max(maxY, ent.center.y + ent.radius);
+        } else if (ent.type === 'rectangle') {
+          minX = Math.min(minX, ent.p1.x, ent.p2.x);
+          maxX = Math.max(maxX, ent.p1.x, ent.p2.x);
+          minY = Math.min(minY, ent.p1.y, ent.p2.y);
+          maxY = Math.max(maxY, ent.p1.y, ent.p2.y);
+        } else if ((ent as any).points) {
+          (ent as any).points.forEach((p: Point) => {
+            minX = Math.min(minX, p.x); maxX = Math.max(maxX, p.x);
+            minY = Math.min(minY, p.y); maxY = Math.max(maxY, p.y);
+          });
+        }
+      });
+      if (!isFinite(minX)) return;
+      const w = Math.max(40, maxX - minX);
+      const h = Math.max(40, maxY - minY);
+      const cx = (minX + maxX) / 2;
+      const cy = (minY + maxY) / 2;
+      const canvasW = canvasRef.current?.width || window.innerWidth || 800;
+      const canvasH = canvasRef.current?.height || window.innerHeight || 600;
+      const newZoom = Math.min(1.5, Math.max(0.02, Math.min((canvasW * 0.75) / w, (canvasH * 0.75) / h)));
+      setView({
+        zoom: newZoom,
+        pan: {
+          x: canvasW / 2 - cx * newZoom,
+          y: canvasH / 2 - cy * newZoom
+        }
+      });
     }
   }));
 
@@ -4632,41 +5070,38 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
 
   const getEffectiveOrtho = (e?: any, isToolMatching: boolean = true): boolean => {
     if (!isToolMatching) return false;
-    let hardwareCaps = false;
-    let scrollLock = false;
-    let numLock = false;
+    let isShiftOrFn = isShiftPressedRef.current;
     if (e) {
       const native = e.nativeEvent || e;
-      if (native.getModifierState) {
-        hardwareCaps = !!native.getModifierState('CapsLock');
-        scrollLock = !!native.getModifierState('ScrollLock');
-        numLock = !!native.getModifierState('NumLock');
-      }
+      if (native.shiftKey) isShiftOrFn = true;
+      if (native.key === 'Fn' || native.code === 'Fn') isShiftOrFn = true;
     }
-    const isFnActive = hardwareCaps || scrollLock || numLock;
-    // We trust the orthoMode prop which already accounts for Shift/F toggle from App.tsx.
-    // Hardware locks (Caps/Num/Scroll) act as additive forces for Ortho mode.
-    return orthoMode || isFnActive;
+    return orthoMode || isShiftOrFn;
   };
 
   const getDampenedCoordinate = (actualRawPoint: Point, e?: React.PointerEvent | React.MouseEvent | MouseEvent | KeyboardEvent): Point => {
-    actualMousePosRef.current = actualRawPoint;
+    let basePoint = { ...actualRawPoint };
+    if (virtualCursorOffsetRef.current) {
+      basePoint.x += virtualCursorOffsetRef.current.x;
+      basePoint.y += virtualCursorOffsetRef.current.y;
+    }
+    actualMousePosRef.current = basePoint;
     
     // Rallentiamo il movimento solo se il tasto "S" è premuto
     if (isSKeyPressedRef.current) {
       // Precision movement: only move a small fraction of the way to the real mouse
-      const last = lastControlledPointRef.current || actualRawPoint;
+      const last = lastControlledPointRef.current || basePoint;
       const dampedFactor = 0.03; // Molto più lento per massima precisione
       const dampenedPoint = {
-        x: last.x + (actualRawPoint.x - last.x) * dampedFactor,
-        y: last.y + (actualRawPoint.y - last.y) * dampedFactor
+        x: last.x + (basePoint.x - last.x) * dampedFactor,
+        y: last.y + (basePoint.y - last.y) * dampedFactor
       };
       lastControlledPointRef.current = dampenedPoint;
       return dampenedPoint;
     }
     
-    lastControlledPointRef.current = actualRawPoint;
-    return actualRawPoint;
+    lastControlledPointRef.current = basePoint;
+    return basePoint;
   };
 
   const canvasToScreen = (x: number, y: number): Point => {
@@ -4691,11 +5126,36 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
 
   // Manual input bubble will stay open until committed or closed by user.
 
+  const isSnapActive = (): boolean => {
+    return snapEnabled || isShiftPressedRef.current || isContinuousMode;
+  };
+
   const getSnapPoints = (point: Point, entities: Entity[], activeTool: string, drawing: {start: Point, current?: Point} | null): {point: Point, type: 'CAD' | 'smart', subtype?: string, refPoint?: Point, refEntityId?: string, constraintAxis?: 'x' | 'y'}[] => {
-    if (!snapEnabled || activeTool === 'Gomma') {
+    if (!isSnapActive() || activeTool === 'Gomma') {
         return [];
     }
+    const isShift = isShiftPressedRef.current;
+    const isBlocFnEssentialOnly = !snapEnabled || isShift;
     const snaps: {point: Point, type: 'CAD' | 'smart', subtype?: string, refPoint?: Point, refEntityId?: string, constraintAxis?: 'x' | 'y'}[] = [];
+    
+    if (!isBlocFnEssentialOnly && drawing && lastInsertedParameter && lastInsertedParameter.value > 0 && !hasUsedInputSnap) {
+        const valueInCm = lastInsertedParameter.value;
+        const distSq = (point.x - drawing.start.x)**2 + (point.y - drawing.start.y)**2;
+        
+        if (lastInsertedParameter.isLocked || Math.abs(Math.sqrt(distSq) - valueInCm) < (120 / view.zoom)) {
+            const angle = Math.atan2(point.y - drawing.start.y, point.x - drawing.start.x);
+            snaps.push({
+                point: {
+                    x: drawing.start.x + Math.cos(angle) * valueInCm,
+                    y: drawing.start.y + Math.sin(angle) * valueInCm
+                },
+                type: 'smart',
+                subtype: 'input',
+                refLength: valueInCm
+            } as any);
+        }
+    }
+    
     const keyPoints: Point[] = [];
     
     // Spatial Culling Optimization: if entities dataset is large, pre-filter entities near the cursor to make snap queries instantly fast O(1)
@@ -4742,7 +5202,8 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
 
     // Trace and unconditionally add all vertices of the connected structure if drawing
     // This allows for "distant" snapping and tracking from anything physically connected to the start point
-    if (drawing) {
+    // EXCLUDE distant structure tracking if Shift is held (keep only local snaps)
+    if (drawing && !isBlocFnEssentialOnly) {
         const connectedVertices: Point[] = [];
         const visitedIds = new Set<string>();
         const visitedPoints = new Set<string>();
@@ -4911,7 +5372,7 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
         keyPoints.push(entity.end);
         keyPoints.push(midPoint);
 
-        // --- DYNAMIC SUB-SEGMENT MIDPOINTS (INTERSECTION AWARE) ---
+        // --- DYNAMIC SUB-SEGMENT MIDPOINTS (INTERSECTION AWARE - ALWAYS ACTIVE INCLUDING WITH BLOC FN) ---
         if (entity.type === 'line') {
             const intersections: Point[] = [];
             projectedEntities.forEach(other => {
@@ -4961,8 +5422,8 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
             }
         }
 
-        // Perpendicular snap if drawing
-        if (drawing) {
+        // Perpendicular snap if drawing (only when full Snap is active)
+        if (drawing && !isBlocFnEssentialOnly) {
             const pStart = drawing.start;
             const dx = line.end.x - line.start.x;
             const dy = line.end.y - line.start.y;
@@ -4998,22 +5459,56 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
         keyPoints.push(qLeft);
         keyPoints.push(qRight);
 
-        // Tangent snap
-        const pSrc = drawing ? drawing.start : point;
-        const dcx = pSrc.x - entity.center.x;
-        const dcy = pSrc.y - entity.center.y;
-        const distC = Math.sqrt(dcx * dcx + dcy * dcy);
-        if (distC > r + 0.001) {
-            const theta = Math.atan2(dcy, dcx);
-            const ratio = r / distC;
-            if (ratio >= -1 && ratio <= 1) {
-                const ac = Math.acos(ratio);
-                const t1 = { x: entity.center.x + r * Math.cos(theta + ac), y: entity.center.y + r * Math.sin(theta + ac) };
-                const t2 = { x: entity.center.x + r * Math.cos(theta - ac), y: entity.center.y + r * Math.sin(theta - ac) };
-                snaps.push({ point: t1, type: 'CAD', refPoint: t1, refEntityId: entity.id, subtype: 'tangent' });
-                snaps.push({ point: t2, type: 'CAD', refPoint: t2, refEntityId: entity.id, subtype: 'tangent' });
-                keyPoints.push(t1);
-                keyPoints.push(t2);
+        // Tangent snap:
+        // 1) When drawing from an external point to this circle: exact geometric tangent points t1, t2
+        // 2) When drawing from a point ON this circle: tangent line projection
+        // 3) When hovering circle circumference before starting a line: circumference tangent contact point
+        if (drawing && drawing.start) {
+            const pSrc = drawing.start;
+            const dcx = pSrc.x - entity.center.x;
+            const dcy = pSrc.y - entity.center.y;
+            const distC = Math.sqrt(dcx * dcx + dcy * dcy);
+            if (distC > r + 0.5) {
+                const theta = Math.atan2(dcy, dcx);
+                const ratio = r / distC;
+                if (ratio >= -1 && ratio <= 1) {
+                    const ac = Math.acos(ratio);
+                    const t1 = { x: entity.center.x + r * Math.cos(theta + ac), y: entity.center.y + r * Math.sin(theta + ac) };
+                    const t2 = { x: entity.center.x + r * Math.cos(theta - ac), y: entity.center.y + r * Math.sin(theta - ac) };
+                    snaps.push({ point: t1, type: 'CAD', refPoint: t1, refEntityId: entity.id, subtype: 'tangent' });
+                    snaps.push({ point: t2, type: 'CAD', refPoint: t2, refEntityId: entity.id, subtype: 'tangent' });
+                    keyPoints.push(t1);
+                    keyPoints.push(t2);
+                }
+            } else if (r > 0.1 && Math.abs(distC - r) <= 1.5) {
+                // Starting point is on the circle circumference -> project cursor onto tangent direction at pSrc
+                const tx = -dcy / distC;
+                const ty = dcx / distC;
+                const projLen = (point.x - pSrc.x) * tx + (point.y - pSrc.y) * ty;
+                if (Math.abs(projLen) > 1.0) {
+                    const tanPt = { x: pSrc.x + tx * projLen, y: pSrc.y + ty * projLen };
+                    snaps.push({ point: tanPt, type: 'CAD', refPoint: pSrc, refEntityId: entity.id, subtype: 'tangent' });
+                }
+            }
+        } else if (r > 0.1) {
+            // Hovering near circle circumference (away from quadrants) to start a tangent line
+            const dcx = point.x - entity.center.x;
+            const dcy = point.y - entity.center.y;
+            const distToCenter = Math.hypot(dcx, dcy);
+            if (Math.abs(distToCenter - r) < 18 / view.zoom && distToCenter > 0.001) {
+                const onCirc = {
+                    x: entity.center.x + (dcx / distToCenter) * r,
+                    y: entity.center.y + (dcy / distToCenter) * r
+                };
+                const minQuadDist = Math.min(
+                    Math.hypot(onCirc.x - qTop.x, onCirc.y - qTop.y),
+                    Math.hypot(onCirc.x - qBottom.x, onCirc.y - qBottom.y),
+                    Math.hypot(onCirc.x - qLeft.x, onCirc.y - qLeft.y),
+                    Math.hypot(onCirc.x - qRight.x, onCirc.y - qRight.y)
+                );
+                if (minQuadDist > 10 / view.zoom) {
+                    snaps.push({ point: onCirc, type: 'CAD', refPoint: onCirc, refEntityId: entity.id, subtype: 'tangent' });
+                }
             }
         }
       } else if (entity.type === 'rectangle') {
@@ -5086,43 +5581,46 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
       }
     });
 
-    // 5. Add intersection points for lines, circles, and arcs (Optimized with spatial culling)
-    const intersectionThreshold = 150 / view.zoom;
-    const nearEntitiesForIntersections = visibleEntities.filter(ent => {
-      if (ent.type !== 'line' && ent.type !== 'circle' && ent.type !== 'arc') return false;
-      let minX = 0, maxX = 0, minY = 0, maxY = 0;
-      if (ent.type === 'line') {
-          minX = Math.min(ent.start.x, ent.end.x);
-          maxX = Math.max(ent.start.x, ent.end.x);
-          minY = Math.min(ent.start.y, ent.end.y);
-          maxY = Math.max(ent.start.y, ent.end.y);
-      } else {
-          const c = ent as (CircleEntity | ArcEntity);
-          minX = c.center.x - c.radius;
-          maxX = c.center.x + c.radius;
-          minY = c.center.y - c.radius;
-          maxY = c.center.y + c.radius;
-      }
-      return !(maxX < point.x - intersectionThreshold || minX > point.x + intersectionThreshold || 
-               maxY < point.y - intersectionThreshold || minY > point.y + intersectionThreshold);
-    });
+    // 5. Add intersection points for lines, circles, and arcs (including when Bloc Fn is pressed!)
+    {
+        const intersectionThreshold = 150 / view.zoom;
+        const nearEntitiesForIntersections = visibleEntities.filter(ent => {
+          if (ent.type !== 'line' && ent.type !== 'circle' && ent.type !== 'arc') return false;
+          let minX = 0, maxX = 0, minY = 0, maxY = 0;
+          if (ent.type === 'line') {
+              minX = Math.min(ent.start.x, ent.end.x);
+              maxX = Math.max(ent.start.x, ent.end.x);
+              minY = Math.min(ent.start.y, ent.end.y);
+              maxY = Math.max(ent.start.y, ent.end.y);
+          } else {
+              const c = ent as (CircleEntity | ArcEntity);
+              minX = c.center.x - c.radius;
+              maxX = c.center.x + c.radius;
+              minY = c.center.y - c.radius;
+              maxY = c.center.y + c.radius;
+          }
+          return !(maxX < point.x - intersectionThreshold || minX > point.x + intersectionThreshold || 
+                   maxY < point.y - intersectionThreshold || minY > point.y + intersectionThreshold);
+        });
 
-    for (let i = 0; i < nearEntitiesForIntersections.length; i++) {
-        for (let j = i + 1; j < nearEntitiesForIntersections.length; j++) {
-            const ent1 = nearEntitiesForIntersections[i];
-            const ent2 = nearEntitiesForIntersections[j];
-            const inters = getIntersections(ent1, ent2);
-            inters.forEach(p => {
-                const distToPoint = Math.hypot(p.x - point.x, p.y - point.y);
-                if (distToPoint < intersectionThreshold) {
-                    snaps.push({ point: p, type: 'CAD', refPoint: p, subtype: 'intersection' });
-                }
-            });
+        for (let i = 0; i < nearEntitiesForIntersections.length; i++) {
+            for (let j = i + 1; j < nearEntitiesForIntersections.length; j++) {
+                const ent1 = nearEntitiesForIntersections[i];
+                const ent2 = nearEntitiesForIntersections[j];
+                const inters = getIntersections(ent1, ent2);
+                inters.forEach(p => {
+                    const distToPoint = Math.hypot(p.x - point.x, p.y - point.y);
+                    if (distToPoint < intersectionThreshold) {
+                        snaps.push({ point: p, type: 'CAD', refPoint: p, subtype: 'intersection' });
+                    }
+                });
+            }
         }
     }
 
     const isDrawingTool = ['Line', 'Circle', 'Arc', 'Rectangle', 'Hatch', 'Dimension', 'Muro', 'BIM_Muro', 'BIM_Porta', 'BIM_Finestra', 'BIM_Symbol', 'BIM_DisegnaStanza', 'BIM_DisegnaLineare', 'BIM_TracciaSegmento', 'Copy', 'Move'].includes(activeTool);
-    if (isDrawingTool && snapEnabled) {
+    // EXCLUDE orthogonal smart alignments if Senza Snap + Bloc Fn is active (only local CAD points)
+    if (isDrawingTool && !isBlocFnEssentialOnly) {
         const threshold = 12 / view.zoom;
         const uniqueKeyPoints: Point[] = [];
         const seen = new Set<string>();
@@ -5157,50 +5655,133 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
                 }
             }
         });
-
-        // 2. Line Extension Snaps disabled as requested (only orthogonal 90-degree distant interceptions are allowed)
-        /*
-        visibleEntities.forEach(entity => {
-            if (entity.type === 'line') {
-                const line = entity as LineEntity;
-                const dx = line.end.x - line.start.x;
-                const dy = line.end.y - line.start.y;
-                const L = Math.sqrt(dx * dx + dy * dy);
-                if (L < 0.1) return;
-
-                const nx = -dy / L;
-                const ny = dx / L;
-                
-                const dist = (point.x - line.start.x) * nx + (point.y - line.start.y) * ny;
-                if (Math.abs(dist) < threshold) {
-                    const snapPt = { x: point.x - nx * dist, y: point.y - ny * dist };
-                    const dStart = Math.sqrt((snapPt.x - line.start.x) ** 2 + (snapPt.y - line.end.x) ** 2);
-                    const dEnd = Math.sqrt((snapPt.x - line.end.x) ** 2 + (snapPt.y - line.end.y) ** 2);
-                    const refPoint = dStart < dEnd ? line.start : line.end;
-
-                    const ang = (Math.atan2(dy, dx) * 180 / Math.PI + 360) % 180;
-                    if (Math.abs(ang - 0) > 0.5 && Math.abs(ang - 90) > 0.5 && Math.abs(ang - 180) > 0.5) {
-                        snaps.push({
-                            point: snapPt,
-                            type: 'smart',
-                            refPoint: refPoint,
-                            refEntityId: line.id
-                        });
-                    }
-                }
-            }
-        });
-        */
     }
     
+    // 6. Suggerimento e aggancio magnetico alla distanza dell'offset precedente durante il tracciamento di una linea parallela
+    // (Attivo SOLO se l'utente ha cliccato sul pulsante Offset)
+    const isLineTracingTool = ['Line', 'Filo', 'Muro', 'BIM_Muro'].includes(activeTool);
+    if (isLineTracingTool && isOffsetAidActiveRef.current) {
+        const refD = getEffectiveLastParallelOffset(visibleEntities);
+        if (refD > 0.05) {
+            const offsetSnapTol = 18 / view.zoom;
+            const endSnapTol = 22 / view.zoom;
+            const spanMargin = Math.max(80, 120 / view.zoom);
+
+            for (const ent of visibleEntities) {
+                if (ent.type !== 'line' || (ent as any).isSimmetryAxis) continue;
+                const oLine = ent as LineEntity;
+                const odx = oLine.end.x - oLine.start.x;
+                const ody = oLine.end.y - oLine.start.y;
+                const oLen = Math.hypot(odx, ody);
+                if (oLen < 0.5) continue;
+
+                const tx = odx / oLen;
+                const ty = ody / oLen;
+                const nx = -ty;
+                const ny = tx;
+
+                const signedD = (point.x - oLine.start.x) * nx + (point.y - oLine.start.y) * ny;
+                const perpD = Math.abs(signedD);
+                if (Math.abs(perpD - refD) > offsetSnapTol) continue;
+
+                const proj = (point.x - oLine.start.x) * tx + (point.y - oLine.start.y) * ty;
+                if (proj < -spanMargin || proj > oLen + spanMargin) continue;
+
+                // Se stiamo già tracciando un segmento, verifica che il punto iniziale sia compatibile (a distanza ~refD da oLine oppure su oLine)
+                if (drawing && drawing.start) {
+                    const startSignedD = (drawing.start.x - oLine.start.x) * nx + (drawing.start.y - oLine.start.y) * ny;
+                    const startPerpD = Math.abs(startSignedD);
+                    const isStartAtOffset = Math.abs(startPerpD - refD) < offsetSnapTol && (startSignedD * signedD >= 0);
+                    const isStartOnLine = startPerpD < 2.0;
+                    if (!isStartAtOffset && !isStartOnLine) continue;
+                }
+
+                const sideSign = signedD >= 0 ? 1 : -1;
+                const shiftX = nx * sideSign * refD;
+                const shiftY = ny * sideSign * refD;
+                const gStart = { x: oLine.start.x + shiftX, y: oLine.start.y + shiftY };
+                const gEnd = { x: oLine.end.x + shiftX, y: oLine.end.y + shiftY };
+
+                // A. Estremi allineati alla linea di riferimento ad offset refD
+                if (Math.hypot(point.x - gStart.x, point.y - gStart.y) < endSnapTol) {
+                    snaps.push({
+                        point: gStart,
+                        type: 'CAD',
+                        subtype: 'parallel_offset_end',
+                        refPoint: oLine.start,
+                        refEntityId: oLine.id,
+                        refLength: refD
+                    } as any);
+                }
+                if (Math.hypot(point.x - gEnd.x, point.y - gEnd.y) < endSnapTol) {
+                    snaps.push({
+                        point: gEnd,
+                        type: 'CAD',
+                        subtype: 'parallel_offset_end',
+                        refPoint: oLine.end,
+                        refEntityId: oLine.id,
+                        refLength: refD
+                    } as any);
+                }
+
+                // B. Intersezioni della guida di offset con altri segmenti esistenti (es. muro perpendicolare su cui partire o arrivare)
+                const virtualOffsetLine: LineEntity = {
+                    id: 'virtual_offset_guide',
+                    type: 'line',
+                    start: { x: gStart.x - tx * spanMargin, y: gStart.y - ty * spanMargin },
+                    end: { x: gEnd.x + tx * spanMargin, y: gEnd.y + ty * spanMargin },
+                    color: '#10b981',
+                    lineWidth: 1,
+                    layer: oLine.layer,
+                    mode: 'CAD'
+                };
+                for (const other of nearEntities) {
+                    if (other.id === oLine.id || other.type !== 'line') continue;
+                    const interPts = getIntersections(virtualOffsetLine, other);
+                    for (const ip of interPts) {
+                        if (Math.hypot(point.x - ip.x, point.y - ip.y) < endSnapTol) {
+                            snaps.push({
+                                point: ip,
+                                type: 'CAD',
+                                subtype: 'parallel_offset_end',
+                                refPoint: ip,
+                                refEntityId: oLine.id,
+                                refLength: refD
+                            } as any);
+                        }
+                    }
+                }
+
+                // C. Proiezione continua lungo la linea di offset precedente
+                const projOnG = {
+                    x: oLine.start.x + tx * proj + shiftX,
+                    y: oLine.start.y + ty * proj + shiftY
+                };
+                snaps.push({
+                    point: projOnG,
+                    type: 'CAD',
+                    subtype: 'parallel_offset',
+                    refPoint: { x: oLine.start.x + tx * proj, y: oLine.start.y + ty * proj },
+                    refEntityId: oLine.id,
+                    refLength: refD
+                } as any);
+            }
+        }
+    }
+
+    if (isBlocFnEssentialOnly) {
+        // SENZA SNAP + BLOC FN: attiva estremi, medio, centro, tangente, i 4 punti del cerchio (quadrant), incroci (intersection) E suggerimento offset precedente
+        return snaps.filter(s => s.type === 'CAD' && ['endpoint', 'midpoint', 'center', 'tangent', 'quadrant', 'intersection', 'parallel_offset', 'parallel_offset_end'].includes(s.subtype || ''));
+    }
+
     if (activeTool === 'Copy' || activeTool === 'Move') {
-        return snaps.filter(s => s.type === 'smart' || (s.type === 'CAD' && (s.subtype === 'endpoint' || s.subtype === 'midpoint' || s.subtype === 'intersection' || s.subtype === 'center' || s.subtype === 'quadrant')));
+        return snaps.filter(s => s.type === 'smart' || (s.type === 'CAD' && (s.subtype === 'endpoint' || s.subtype === 'midpoint' || s.subtype === 'intersection' || s.subtype === 'center' || s.subtype === 'quadrant' || s.subtype === 'tangent')));
     }
     
     return snaps;
   };
 
-  const getSnappedPoint = (point: Point, entities: Entity[], activeTool: string, drawing: {start: Point, current?: Point} | null): {
+  const getSnappedPoint = (point: Point, entities: Entity[], activeTool: string, drawing: {start: Point, current?: Point, isFreehand?: boolean} | null): {
     point: Point;
     snapped: boolean;
     type: 'CAD' | 'smart';
@@ -5215,18 +5796,26 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
     constraintAxis2?: 'x' | 'y';
     hasDoubleSmart?: boolean;
   } => {
-    if (!snapEnabled || activeTool === 'Gomma') {
+    const isShiftHeld = isShiftPressedRef.current;
+    if ((!isSnapActive() || activeTool === 'Gomma') && !isShiftHeld) {
         return { point, snapped: false, type: 'CAD' };
     }
-    const snaps = getSnapPoints(point, entities, activeTool, drawing);
-    const threshold = 25 / view.zoom;
-    
+
+    const snaps = getSnapPoints(point, entities, activeTool, drawing as any);
+    const isFreehand = drawing?.isFreehand;
+    const threshold = isFreehand ? (8 / view.zoom) : (25 / view.zoom);
+
+
     const getSubtypePriority = (subtype?: string): number => {
       switch (subtype) {
+        case 'input': return 1000;
         case 'center': return 100;
-        case 'intersection': return 90;
-        case 'endpoint': return 80;
-        case 'midpoint': return 70;
+        case 'intersection': return 95;
+        case 'parallel_offset_end': return 94;
+        case 'endpoint': return 92;
+        case 'midpoint': return 90;
+        case 'parallel_offset': return 82;
+        case 'equal_length': return 75;
         case 'quadrant': return 60;
         case 'perpendicular': return 50;
         case 'tangent': return 40;
@@ -5234,61 +5823,30 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
       }
     };
 
-    let closestStandard = null;
-    const candidateSnaps = [];
+    const candidateSnaps: { snap: any; dist: number }[] = [];
 
+    // 1. Gather all valid snaps from snaps array (CAD and smart like input)
     for (const snap of snaps) {
-      if (snap.type === 'CAD' && isPointInViewport(snap.point, 50)) {
+      if (isPointInViewport(snap.point, 50)) {
         const dist = Math.sqrt((point.x - snap.point.x) ** 2 + (point.y - snap.point.y) ** 2);
-        if (dist < threshold) {
+        
+        // PROXIMITY SNAP FILTER FOR SENZA SNAP + BLOC FN
+        if (!snapEnabled || isShiftHeld) {
+            // Only notable points: endpoint (estremi), midpoint (medio), center (centro), tangent (tangente), quadrant (4 punti del cerchio), intersection (incroci di segmenti), parallel_offset
+            if (!['endpoint', 'midpoint', 'center', 'tangent', 'quadrant', 'intersection', 'parallel_offset', 'parallel_offset_end'].includes(snap.subtype)) continue;
+            const proximityThreshold = 25 / view.zoom;
+            if (dist > proximityThreshold) continue;
+        }
+
+        const maxDist = snap.type === 'smart' ? (snap.subtype === 'input' ? (45 / view.zoom) : (60 / view.zoom)) : threshold;
+        if (dist < maxDist) {
           candidateSnaps.push({ snap, dist });
         }
       }
     }
 
-    if (candidateSnaps.length > 0) {
-      candidateSnaps.sort((a, b) => {
-        const pA = getSubtypePriority(a.snap.subtype);
-        const pB = getSubtypePriority(b.snap.subtype);
-        
-        // Center priority: if one of the candidate snaps is a center, it takes absolute precedence!
-        if (a.snap.subtype === 'center' && b.snap.subtype !== 'center') return -1;
-        if (b.snap.subtype === 'center' && a.snap.subtype !== 'center') return 1;
-        
-        const distBetweenSnaps = Math.sqrt((a.snap.point.x - b.snap.point.x) ** 2 + (a.snap.point.y - b.snap.point.y) ** 2);
-        const distOnScreen = distBetweenSnaps * view.zoom;
-        
-        if (distOnScreen < 15) {
-          // If they are physically very close to each other on screen (overlapping or nearly so),
-          // prioritize strictly by subtype priority (preferring center, intersection, etc. over lines).
-          return pB - pA;
-        }
-        
-        // Otherwise, if they are physically distinct points, prefer the one closer to the cursor,
-        // with a small weight applied to prioritize stronger snap subtypes if distances are close.
-        const weightedDistA = a.dist - (pA * 0.05);
-        const weightedDistB = b.dist - (pB * 0.05);
-        return weightedDistA - weightedDistB;
-      });
-
-      closestStandard = candidateSnaps[0].snap;
-    }
-
-    if (closestStandard) {
-      return { 
-        point: closestStandard.point, 
-        snapped: true, 
-        type: 'CAD', 
-        subtype: closestStandard.subtype,
-        refPoint: closestStandard.refPoint, 
-        refEntityId: closestStandard.refEntityId,
-        constraintAxis: closestStandard.constraintAxis 
-      };
-    }
-
-    // Check for Equal Length Smart Snap suggestion (matching previous segment length)
+    // 2. Add Equal Length smart snap ONLY when full Snap is active (not in Senza Snap + Bloc Fn mode)
     const refSeg = (() => {
-      // Always prioritize lastSegmentRef if valid, or fallback to the last drawn line in entities
       if (lastSegmentRef.current && lastSegmentRef.current.length > 0.01) {
         return lastSegmentRef.current;
       }
@@ -5305,47 +5863,92 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
       return null;
     })();
 
-    if (drawing && drawing.start && refSeg && refSeg.length > 0.01) {
-      const refLen = refSeg.length;
+    if (snapEnabled && !isShiftHeld && drawing && drawing.start) {
+      const lengthsToTest: { refLen: number; refSeg?: any }[] = [];
+      if (refSeg && refSeg.length > 0.01) {
+        lengthsToTest.push({ refLen: refSeg.length, refSeg });
+      }
+      if (lastInsertedParameter && lastInsertedParameter.value > 0) {
+        if (!lengthsToTest.some(l => Math.abs(l.refLen - lastInsertedParameter.value) < 0.001)) {
+          lengthsToTest.push({ refLen: lastInsertedParameter.value });
+        }
+      }
 
-      // Determine directional reference point considering Ortho / Angle Snapping
-      let dirPt = point;
       const isLineLikeTool = ['Line', 'Filo', 'Muro', 'BIM_Muro', 'BIM_DisegnaLineare', 'BIM_TracciaSegmento'].includes(activeTool);
       const effectiveOrthoMode = getEffectiveOrtho(undefined, isLineLikeTool);
-
+      let dirPt = point;
       if (effectiveOrthoMode) {
         const isHoriz = Math.abs(point.x - drawing.start.x) >= Math.abs(point.y - drawing.start.y);
         dirPt = isHoriz ? { x: point.x, y: drawing.start.y } : { x: drawing.start.x, y: point.y };
       } else if (isLineLikeTool) {
         dirPt = applyAngleSnapping(drawing.start, point);
       }
-
       const dx = dirPt.x - drawing.start.x;
       const dy = dirPt.y - drawing.start.y;
       const currentDist = Math.hypot(dx, dy);
+      const lenTolerance = 55 / view.zoom;
 
-      // Generous 35 screen pixels threshold in world units
-      const lenTolerance = 35 / view.zoom;
-      if (Math.abs(currentDist - refLen) < lenTolerance && currentDist > 0.01) {
-        const ux = dx / currentDist;
-        const uy = dy / currentDist;
-        const snappedPt = {
-          x: drawing.start.x + ux * refLen,
-          y: drawing.start.y + uy * refLen
-        };
-        return {
-          point: snappedPt,
-          snapped: true,
-          type: 'smart',
-          subtype: 'equal_length',
-          refSegment: refSeg,
-          refLength: refLen
-        };
+      for (const item of lengthsToTest) {
+        const refLen = item.refLen;
+        if (Math.abs(currentDist - refLen) < lenTolerance && currentDist > 0.01) {
+          const angle = Math.atan2(dy, dx);
+          const snappedPt = {
+            x: drawing.start.x + Math.cos(angle) * refLen,
+            y: drawing.start.y + Math.sin(angle) * refLen
+          };
+          const dist = Math.hypot(point.x - snappedPt.x, point.y - snappedPt.y);
+          candidateSnaps.push({
+            snap: {
+              point: snappedPt,
+              type: 'smart',
+              subtype: 'equal_length',
+              refSegment: item.refSeg || { start: drawing.start, end: snappedPt, length: refLen, id: 'input_param' },
+              refLength: refLen
+            },
+            dist
+          });
+        }
       }
     }
 
-    // Check for Equal Radius Smart Snap suggestion (matching previous circle/arc radius)
-    if (drawing && drawing.start && (activeTool === 'Circle' || (activeTool === 'Arc' && !(drawing as any).arcStartPoint))) {
+    if (candidateSnaps.length > 0) {
+      candidateSnaps.sort((a, b) => {
+        const pA = getSubtypePriority(a.snap.subtype);
+        const pB = getSubtypePriority(b.snap.subtype);
+        
+        if (a.snap.subtype === 'input' && b.snap.subtype !== 'input') return -1;
+        if (b.snap.subtype === 'input' && a.snap.subtype !== 'input') return 1;
+        if (a.snap.subtype === 'center' && b.snap.subtype !== 'center') return -1;
+        if (b.snap.subtype === 'center' && a.snap.subtype !== 'center') return 1;
+        
+        const distBetweenSnaps = Math.sqrt((a.snap.point.x - b.snap.point.x) ** 2 + (a.snap.point.y - b.snap.point.y) ** 2);
+        const distOnScreen = distBetweenSnaps * view.zoom;
+        
+        if (distOnScreen < 15) {
+          return pB - pA;
+        }
+        
+        const weightedDistA = a.dist - (pA * 0.05);
+        const weightedDistB = b.dist - (pB * 0.05);
+        return weightedDistA - weightedDistB;
+      });
+
+      const best = candidateSnaps[0].snap;
+      return {
+        point: best.point,
+        snapped: true,
+        type: best.type || 'CAD',
+        subtype: best.subtype,
+        refPoint: best.refPoint,
+        refEntityId: best.refEntityId,
+        refSegment: best.refSegment,
+        refLength: best.refLength,
+        constraintAxis: best.constraintAxis
+      };
+    }
+
+    // Check for Equal Radius Smart Snap suggestion ONLY when full Snap is active
+    if (snapEnabled && !isShiftHeld && drawing && drawing.start && (activeTool === 'Circle' || (activeTool === 'Arc' && !(drawing as any).arcStartPoint))) {
       const refCircleInfo = (() => {
         if (lastCircleRadiusRef.current && lastCircleRadiusRef.current > 0.01) {
           const matchingEnt = entities.slice().reverse().find(e => (e.type === 'circle' || e.type === 'arc') && Math.abs((e as any).radius - lastCircleRadiusRef.current!) < 0.001);
@@ -5391,9 +5994,8 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
       }
     }
 
-    // Check for smart snaps only if standard snaps are not active
-    // Enabled for all drawing tools to support distant tracking and virtual intersections
-    const isSmartAllowed = activeTool !== 'Circle' && (drawing !== null || ['Move', 'Copy', 'Specchio'].includes(activeTool));
+    // Check for smart snaps ONLY when full Snap is active
+    const isSmartAllowed = snapEnabled && !isShiftHeld && activeTool !== 'Circle' && (drawing !== null || ['Move', 'Copy', 'Specchio'].includes(activeTool));
 
     const candidateSmartSnaps = isSmartAllowed
       ? snaps.filter(s => s.type === 'smart').map(s => {
@@ -6057,6 +6659,70 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
   };
   const renderRef = useRef<(() => void) | null>(null);
 
+  const alignCursorToLineEndpointInternal = (updatedLine: LineEntity) => {
+      const p1 = updatedLine.start;
+      const p2 = updatedLine.end;
+      
+      let targetEndpoint = p2;
+      if (selectedLineClickPoint) {
+          const d1 = Math.hypot(p1.x - selectedLineClickPoint.x, p1.y - selectedLineClickPoint.y);
+          const d2 = Math.hypot(p2.x - selectedLineClickPoint.x, p2.y - selectedLineClickPoint.y);
+          targetEndpoint = d1 < d2 ? p1 : p2;
+      } else {
+          // Fallback to connections-based terminal check
+          const pointsEqual = (pt1: Point, pt2: Point) => Math.hypot(pt1.x - pt2.x, pt1.y - pt2.y) < 0.2;
+          let p1Connections = 0;
+          let p2Connections = 0;
+          const currentEntities = entitiesRef.current || entities;
+          currentEntities.forEach(ent => {
+              if (ent.type === 'line' && ent.id !== updatedLine.id) {
+                  const l = ent as LineEntity;
+                  if (pointsEqual(l.start, p1) || pointsEqual(l.end, p1)) {
+                      p1Connections++;
+                  }
+                  if (pointsEqual(l.start, p2) || pointsEqual(l.end, p2)) {
+                      p2Connections++;
+                  }
+              }
+          });
+          targetEndpoint = p1Connections < p2Connections ? p1 : p2;
+      }
+
+      // Automatically switch to the Line tool so the user is immediately ready to draw the next segment
+      isProgrammaticAlignRef.current = true;
+      setActiveTool?.('Line');
+
+      // Update drawing state so continuous segment tranches start from here
+      setDrawing({
+          start: targetEndpoint,
+          current: targetEndpoint,
+          snapType: 'CAD',
+          startSnapped: true,
+          isVirtual: false,
+          isFreehand: true
+      });
+
+      // Calculate and save the virtual offset between the physical mouse position and the new target endpoint
+      const physicalMouse = selectedLineClickPoint || lastMouseRef.current || targetEndpoint;
+      virtualCursorOffsetRef.current = {
+          x: targetEndpoint.x - physicalMouse.x,
+          y: targetEndpoint.y - physicalMouse.y
+      };
+
+      // Update actual mouse coordinates and tracking so snap/guides render seamlessly at the new endpoint
+      actualMousePosRef.current = targetEndpoint;
+      lastMouseRef.current = targetEndpoint;
+      lastControlledPointRef.current = targetEndpoint;
+
+      // Update tecnigrafo origin if it is active
+      if (tecnigrafoOrigin) {
+          setTecnigrafoOrigin(targetEndpoint);
+      }
+
+      // Force an immediate frame repaint so the cursor position updates instantly on the screen
+      renderRef.current?.();
+  };
+
   useEffect(() => {
     const canvas = canvasRef.current;
     const container = containerRef.current;
@@ -6120,6 +6786,661 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
           return `rgba(${r}, ${g}, ${b}, ${alpha})`;
         }
         return `rgba(${defaultRGB}, ${alpha})`;
+      };
+
+      // Reset active parallel pair at the start of each frame
+      activeParallelPairRef.current = null;
+
+      const applyCustomLineDash = (lineType?: string, dashed?: boolean) => {
+        if (lineType) {
+          if (lineType === 'dashed') ctx.setLineDash([8 / view.zoom, 4 / view.zoom]);
+          else if (lineType === 'dotted') ctx.setLineDash([2 / view.zoom, 3 / view.zoom]);
+          else if (lineType === 'dashdot') ctx.setLineDash([12 / view.zoom, 4 / view.zoom, 2 / view.zoom, 4 / view.zoom]);
+          else if (lineType === 'dashdash') ctx.setLineDash([15 / view.zoom, 4 / view.zoom, 4 / view.zoom, 4 / view.zoom]);
+          else ctx.setLineDash([]);
+        } else if (dashed) {
+          ctx.setLineDash([5 / view.zoom, 5 / view.zoom]);
+        } else {
+          ctx.setLineDash([]);
+        }
+      };
+
+      // Deterministic coordinate hash in [0, 1) so paper-fiber grain, sbavature, and nib footprints never flicker
+      const hashPaper2D = (x: number, y: number, salt: number): number => {
+        const s = Math.sin(x * 12.9898 + y * 78.233 + salt * 37.719) * 43758.5453;
+        return s - Math.floor(s);
+      };
+
+      // --- HIGH-CRAFT TRADITIONAL & CAD STROKE ENGINE (MATITA / CHINA / CAD) ---
+      const drawTraditionalOrCADLine = (
+        p1: Point,
+        p2: Point,
+        mode: 'pencil' | 'ink' | 'CAD' | undefined,
+        rawColor: string | undefined,
+        lineWidthVal: number,
+        lineType?: string,
+        dashed?: boolean,
+        isHighlighted?: boolean,
+        highlightColor?: string | CanvasGradient | CanvasPattern,
+        highlightWidth?: number,
+        isSecondPass?: boolean
+      ) => {
+        const dx = p2.x - p1.x;
+        const dy = p2.y - p1.y;
+        const len = Math.hypot(dx, dy);
+        if (len < 0.0001) return;
+
+        ctx.save();
+        const effectiveMode = mode || 'CAD';
+        const isCustomDash = (lineType && lineType !== 'continuous') || dashed;
+        const ux = dx / len;
+        const uy = dy / len;
+        const nx = -uy;
+        const ny = ux;
+
+        if (isHighlighted && highlightColor) {
+          applyCustomLineDash(lineType, dashed);
+          ctx.strokeStyle = highlightColor;
+          ctx.lineWidth = highlightWidth || (getEffectiveCADRenderWidth(lineWidthVal, effectiveMode, view.zoom) + 2 / view.zoom);
+          ctx.lineCap = 'round';
+          ctx.beginPath();
+          ctx.moveTo(p1.x, p1.y);
+          ctx.lineTo(p2.x, p2.y);
+          ctx.stroke();
+          ctx.restore();
+          return;
+        }
+
+        if (effectiveMode === 'ink') {
+          // CHINA (Rapidograph / Rotring Technical India Ink on Cotton Drafting Paper):
+          const w = getEffectiveCADRenderWidth(lineWidthVal, 'ink', view.zoom);
+          const inkHex = isLavagna
+            ? '#FAF9F6'
+            : (!rawColor || rawColor === '#000000' || rawColor === '#000' || rawColor === '#444444' || rawColor === '#bbbbbb'
+                ? (isSecondPass ? '#010203' : '#0b0e14')
+                : rawColor);
+          const fallbackRgb = isLavagna ? '250, 249, 246' : (isSecondPass ? '1, 2, 3' : '11, 14, 20');
+          const paperSkipHex = isLavagna ? '#1e293b' : '#f4f1ea';
+          const paperSkipRgb = isLavagna ? '30, 41, 59' : '244, 241, 234';
+
+          applyCustomLineDash(lineType, dashed);
+
+          if (isSecondPass) {
+            // --- 2° PASSO (RICALCO CHINA): Corregge le sbavature e le fibre secche, diventando TUTTA SCURA, piena e profonda ---
+            // 1. Deep saturated capillary consolidation halo that absorbs first-pass irregularities
+            ctx.strokeStyle = getAlphaColor(inkHex, 0.34, fallbackRgb);
+            ctx.lineWidth = w * 1.42;
+            ctx.lineCap = 'butt';
+            ctx.beginPath();
+            ctx.moveTo(p1.x, p1.y);
+            ctx.lineTo(p2.x, p2.y);
+            ctx.stroke();
+
+            // 2. Full-bodied, pitch-black saturated India ink core (chiude ogni micro-vuoto della carta)
+            ctx.strokeStyle = getAlphaColor(inkHex, 1.0, fallbackRgb);
+            ctx.lineWidth = w * 1.18;
+            ctx.lineCap = 'butt';
+            ctx.beginPath();
+            ctx.moveTo(p1.x, p1.y);
+            ctx.lineTo(p2.x, p2.y);
+            ctx.stroke();
+
+            // 3. Crisp wet-ink sheen along the borders
+            if (!isCustomDash) {
+              const borderOff = w * 0.26;
+              ctx.strokeStyle = getAlphaColor(inkHex, 0.92, fallbackRgb);
+              ctx.lineWidth = w * 0.65;
+              ctx.beginPath();
+              ctx.moveTo(p1.x + nx * borderOff, p1.y + ny * borderOff);
+              ctx.lineTo(p2.x + nx * borderOff, p2.y + ny * borderOff);
+              ctx.moveTo(p1.x - nx * borderOff, p1.y - ny * borderOff);
+              ctx.lineTo(p2.x - nx * borderOff, p2.y - ny * borderOff);
+              ctx.stroke();
+            }
+          } else {
+            // --- 1° PASSO (PRIMA STESURA CHINA): Viva, con micro-sbavature capillari e leggere resistenze della carta ---
+            // 1. Subtle outer capillary paper-fiber bleed
+            ctx.strokeStyle = getAlphaColor(inkHex, 0.14, fallbackRgb);
+            ctx.lineWidth = w * 1.32;
+            ctx.lineCap = 'butt';
+            ctx.beginPath();
+            ctx.moveTo(p1.x, p1.y);
+            ctx.lineTo(p2.x, p2.y);
+            ctx.stroke();
+
+            // 2. First-pass ink core (leggermente meno saturo del 2° passo, così il ricalco scurisce davvero)
+            ctx.strokeStyle = getAlphaColor(inkHex, 0.82, fallbackRgb);
+            ctx.lineWidth = w * 0.95;
+            ctx.lineCap = 'butt';
+            ctx.beginPath();
+            ctx.moveTo(p1.x, p1.y);
+            ctx.lineTo(p2.x, p2.y);
+            ctx.stroke();
+
+            if (!isCustomDash) {
+              // 3. Irregular edge modulation along paper fibers
+              const edgeOff = w * 0.24;
+              ctx.setLineDash([7.0 / view.zoom, 2.2 / view.zoom, 11.5 / view.zoom, 1.8 / view.zoom]);
+              ctx.strokeStyle = getAlphaColor(inkHex, 0.48, fallbackRgb);
+              ctx.lineWidth = w * 0.52;
+              ctx.beginPath();
+              ctx.moveTo(p1.x + nx * edgeOff, p1.y + ny * edgeOff);
+              ctx.lineTo(p2.x + nx * edgeOff, p2.y + ny * edgeOff);
+              ctx.stroke();
+
+              ctx.setLineDash([9.5 / view.zoom, 2.5 / view.zoom, 5.0 / view.zoom, 2.1 / view.zoom]);
+              ctx.beginPath();
+              ctx.moveTo(p1.x - nx * edgeOff * 0.9, p1.y - ny * edgeOff * 0.9);
+              ctx.lineTo(p2.x - nx * edgeOff * 0.9, p2.y - ny * edgeOff * 0.9);
+              ctx.stroke();
+              ctx.setLineDash([]);
+
+              // 4. Lungo il percorso: sbavature capillari asimmetriche e micro-graffi di fibra secca (che spariscono col 2° passo!)
+              const worldStep = 8.5; // deterministic spacing in world units
+              const numSamples = Math.min(55, Math.max(2, Math.floor(len / worldStep)));
+              const actualStep = len / numSamples;
+
+              for (let i = 1; i < numSamples; i++) {
+                const distAlong = i * actualStep;
+                const sx = p1.x + ux * distAlong;
+                const sy = p1.y + uy * distAlong;
+                // Quantize world position for deterministic seed
+                const qx = Math.round(sx * 2) * 0.5;
+                const qy = Math.round(sy * 2) * 0.5;
+                const hType = hashPaper2D(qx, qy, 11);
+                const hSide = hashPaper2D(qx, qy, 23);
+                const hShape = hashPaper2D(qx, qy, 37);
+
+                if (hType > 0.60) {
+                  // SBAVATURA CAPILLARE (micro-bavetta obliqua d'inchiostro nelle fibre della carta)
+                  const side = hSide > 0.5 ? 1 : -1;
+                  const smearLen = w * (1.1 + hShape * 1.6);
+                  const smearOut = w * (0.42 + hSide * 0.52) * side;
+                  const skew = (hShape - 0.35) * smearLen * 0.85;
+
+                  ctx.fillStyle = getAlphaColor(inkHex, 0.52 + hShape * 0.26, fallbackRgb);
+                  ctx.beginPath();
+                  ctx.moveTo(sx - ux * smearLen * 0.55, sy - uy * smearLen * 0.55);
+                  ctx.lineTo(sx + ux * skew + nx * smearOut, sy + uy * skew + ny * smearOut);
+                  ctx.lineTo(sx + ux * (skew + w * 0.38) + nx * (smearOut * 0.55), sy + uy * (skew + w * 0.38) + ny * (smearOut * 0.55));
+                  ctx.lineTo(sx + ux * smearLen * 0.55, sy + uy * smearLen * 0.55);
+                  ctx.closePath();
+                  ctx.fill();
+                } else if (hType < 0.30) {
+                  // MICRO- MANCANZA / FIBRA RUVIDA DELLA CARTA (dove la china al 1° passo resta leggermente scarica)
+                  const skipLen = Math.min(actualStep * 0.45, w * (1.6 + hShape * 2.1));
+                  const skipOff = (hSide - 0.5) * w * 0.42;
+                  ctx.strokeStyle = getAlphaColor(paperSkipHex, 0.44, paperSkipRgb);
+                  ctx.lineWidth = w * (0.30 + hShape * 0.16);
+                  ctx.lineCap = 'butt';
+                  ctx.beginPath();
+                  ctx.moveTo(sx - ux * skipLen * 0.5 + nx * skipOff, sy - uy * skipLen * 0.5 + ny * skipOff);
+                  ctx.lineTo(sx + ux * skipLen * 0.5 - nx * skipOff * 0.6, sy + uy * skipLen * 0.5 - ny * skipOff * 0.6);
+                  ctx.stroke();
+                }
+              }
+
+              // 5. Attacco (p1) e Stacco (p2) del pennino a China: NON rotondi, sottili, asimmetrici e mai uguali!
+              const hStart1 = hashPaper2D(p1.x, p1.y, 101);
+              const hStart2 = hashPaper2D(p1.x, p1.y, 107);
+              const hEnd1 = hashPaper2D(p2.x, p2.y, 211);
+              const hEnd2 = hashPaper2D(p2.x, p2.y, 223);
+
+              // Attacco (p1): micro-impronta obliqua a cuneo / baffo capillare (mai una pallina tonda!)
+              const sSide = hStart1 > 0.5 ? 1 : -1;
+              const sBack = w * (0.35 + hStart2 * 0.45);
+              const sFwd = w * (0.65 + hStart1 * 0.55);
+              const sLat = w * (0.46 + hStart2 * 0.18) * sSide;
+              ctx.fillStyle = getAlphaColor(inkHex, 0.90, fallbackRgb);
+              ctx.beginPath();
+              ctx.moveTo(p1.x - ux * sBack + nx * (sLat * 0.65), p1.y - uy * sBack + ny * (sLat * 0.65));
+              ctx.lineTo(p1.x + ux * (sFwd * 0.35) + nx * sLat, p1.y + uy * (sFwd * 0.35) + ny * sLat);
+              ctx.lineTo(p1.x + ux * sFwd, p1.y + uy * sFwd);
+              ctx.lineTo(p1.x - ux * (sBack * 0.45) - nx * (sLat * 0.48), p1.y - uy * (sBack * 0.45) - ny * (sLat * 0.48));
+              ctx.closePath();
+              ctx.fill();
+
+              // Stacco (p2): micro-codina asimmetrica di rilascio del pennino (sfilacciatura obliqua)
+              const eSide = hEnd1 > 0.5 ? 1 : -1;
+              const eTail = w * (0.45 + hEnd2 * 0.55);
+              const eBack = w * (0.60 + hEnd1 * 0.45);
+              const eLat = w * (0.42 + hEnd1 * 0.16) * eSide;
+              ctx.beginPath();
+              ctx.moveTo(p2.x - ux * eBack + nx * (eLat * 0.5), p2.y - uy * eBack + ny * (eLat * 0.5));
+              ctx.lineTo(p2.x + ux * eTail + nx * (eLat * 0.85), p2.y + uy * eTail + ny * (eLat * 0.85));
+              ctx.lineTo(p2.x + ux * (eTail * 0.35) - nx * (eLat * 0.4), p2.y + uy * (eTail * 0.35) - ny * (eLat * 0.4));
+              ctx.lineTo(p2.x - ux * (eBack * 0.7) - nx * (eLat * 0.55), p2.y - uy * (eBack * 0.7) - ny * (eLat * 0.55));
+              ctx.closePath();
+              ctx.fill();
+            }
+          }
+        } else if (effectiveMode === 'pencil') {
+          // MATITA (Authentic Graphite Lead 2H / HB / 2B on Textured Cotton Drafting Paper):
+          const w = Math.max(0.95 / view.zoom, (lineWidthVal * 1.18) / view.zoom);
+          const isSoftLead = lineWidthVal >= 2.2; // 2B
+          const isHardLead = lineWidthVal <= 1.2; // 2H
+          const defaultGraphite = isLavagna
+            ? '#e2e8f0'
+            : (isSecondPass
+                ? (isSoftLead ? '#0f1217' : (isHardLead ? '#2d333b' : '#181c22'))
+                : (isSoftLead ? '#252a32' : (isHardLead ? '#646f7d' : '#404852')));
+          const graphiteHex = (!rawColor || rawColor === '#000000' || rawColor === '#444444' || rawColor === '#bbbbbb' || rawColor === '#111111')
+            ? defaultGraphite
+            : rawColor;
+          const fallbackRgb = isSecondPass ? '24, 28, 34' : '64, 72, 82';
+          const baseAlpha = isSecondPass
+            ? (isSoftLead ? 0.97 : (isHardLead ? 0.86 : 0.93))
+            : (isSoftLead ? 0.76 : (isHardLead ? 0.50 : 0.64));
+
+          if (isCustomDash) {
+            applyCustomLineDash(lineType, dashed);
+            ctx.strokeStyle = getAlphaColor(graphiteHex, baseAlpha, fallbackRgb);
+            ctx.lineWidth = isSecondPass ? w * 1.15 : w;
+            ctx.beginPath();
+            ctx.moveTo(p1.x, p1.y);
+            ctx.lineTo(p2.x, p2.y);
+            ctx.stroke();
+          } else if (isSecondPass) {
+            // --- 2° PASSO MATITA (RICALCO GRAFITE): La mina riempie i pori della carta e diventa scura, satura e profonda ---
+            ctx.setLineDash([]);
+            // 1. Warm burnished graphite halo
+            ctx.strokeStyle = getAlphaColor(graphiteHex, baseAlpha * 0.32, fallbackRgb);
+            ctx.lineWidth = w * 1.65;
+            ctx.lineCap = 'butt';
+            ctx.beginPath();
+            ctx.moveTo(p1.x, p1.y);
+            ctx.lineTo(p2.x, p2.y);
+            ctx.stroke();
+
+            // 2. Dense, continuous dark graphite core (chiude la grana bianca del primo passaggio)
+            ctx.setLineDash([7.5 / view.zoom, 0.25 / view.zoom, 9.2 / view.zoom, 0.2 / view.zoom]);
+            ctx.strokeStyle = getAlphaColor(graphiteHex, baseAlpha, fallbackRgb);
+            ctx.lineWidth = w * 1.14;
+            ctx.beginPath();
+            ctx.moveTo(p1.x, p1.y);
+            ctx.lineTo(p2.x, p2.y);
+            ctx.stroke();
+
+            // 3. Burnished crystalline graphite ridge
+            const ridgeOff = w * 0.18;
+            ctx.setLineDash([]);
+            ctx.strokeStyle = getAlphaColor(graphiteHex, baseAlpha * 0.88, fallbackRgb);
+            ctx.lineWidth = w * 0.82;
+            ctx.beginPath();
+            ctx.moveTo(p1.x + nx * ridgeOff, p1.y + ny * ridgeOff);
+            ctx.lineTo(p2.x - nx * ridgeOff * 0.5, p2.y - ny * ridgeOff * 0.5);
+            ctx.stroke();
+          } else {
+            // --- 1° PASSO MATITA: Grana porosa della carta ruvida + micro-sbavature polverose di grafite ---
+            // 1. Soft graphite powder smudge halo on paper fibers
+            ctx.setLineDash([]);
+            ctx.strokeStyle = getAlphaColor(graphiteHex, baseAlpha * 0.20, fallbackRgb);
+            ctx.lineWidth = w * 1.68;
+            ctx.lineCap = 'butt';
+            ctx.beginPath();
+            ctx.moveTo(p1.x, p1.y);
+            ctx.lineTo(p2.x, p2.y);
+            ctx.stroke();
+
+            // 2. Primary graphite core with visible cotton-paper tooth micro-grain
+            ctx.setLineDash([2.4 / view.zoom, 0.85 / view.zoom, 3.6 / view.zoom, 0.75 / view.zoom, 1.8 / view.zoom, 0.9 / view.zoom]);
+            ctx.strokeStyle = getAlphaColor(graphiteHex, baseAlpha * 0.92, fallbackRgb);
+            ctx.lineWidth = w * 0.94;
+            ctx.beginPath();
+            ctx.moveTo(p1.x, p1.y);
+            ctx.lineTo(p2.x, p2.y);
+            ctx.stroke();
+
+            // 3. Secondary offset paper-weave grain pass inside core
+            const weaveOff = w * 0.18;
+            ctx.setLineDash([3.1 / view.zoom, 1.05 / view.zoom, 1.9 / view.zoom, 0.95 / view.zoom]);
+            ctx.strokeStyle = getAlphaColor(graphiteHex, baseAlpha * 0.68, fallbackRgb);
+            ctx.lineWidth = w * 0.68;
+            ctx.beginPath();
+            ctx.moveTo(p1.x + nx * weaveOff, p1.y + ny * weaveOff);
+            ctx.lineTo(p2.x - nx * weaveOff * 0.5, p2.y - ny * weaveOff * 0.5);
+            ctx.stroke();
+
+            // 4. Upper & lower crystalline graphite micro-strands (sharpened conical lead facets)
+            const strandOff = w * 0.36;
+            ctx.setLineDash([3.5 / view.zoom, 1.45 / view.zoom, 2.2 / view.zoom, 1.25 / view.zoom]);
+            ctx.strokeStyle = getAlphaColor(graphiteHex, baseAlpha * 0.54, fallbackRgb);
+            ctx.lineWidth = w * 0.42;
+            ctx.beginPath();
+            ctx.moveTo(p1.x + nx * strandOff, p1.y + ny * strandOff);
+            ctx.lineTo(p2.x + nx * strandOff, p2.y + ny * strandOff);
+            ctx.stroke();
+
+            ctx.setLineDash([2.3 / view.zoom, 1.55 / view.zoom, 3.9 / view.zoom, 1.15 / view.zoom]);
+            ctx.strokeStyle = getAlphaColor(graphiteHex, baseAlpha * 0.48, fallbackRgb);
+            ctx.beginPath();
+            ctx.moveTo(p1.x - nx * strandOff * 0.9, p1.y - ny * strandOff * 0.9);
+            ctx.lineTo(p2.x - nx * strandOff * 0.9, p2.y - ny * strandOff * 0.9);
+            ctx.stroke();
+            ctx.setLineDash([]);
+
+            // 5. Micro-sbavature polverose di mina lungo il percorso (che al 2° passo vengono assorbite nel tratto scuro)
+            const worldStep = 9.0;
+            const numSamples = Math.min(50, Math.max(2, Math.floor(len / worldStep)));
+            const actualStep = len / numSamples;
+            for (let i = 1; i < numSamples; i++) {
+              const distAlong = i * actualStep;
+              const sx = p1.x + ux * distAlong;
+              const sy = p1.y + uy * distAlong;
+              const qx = Math.round(sx * 2) * 0.5;
+              const qy = Math.round(sy * 2) * 0.5;
+              const h1 = hashPaper2D(qx, qy, 53);
+              const h2 = hashPaper2D(qx, qy, 67);
+              if (h1 > 0.62) {
+                const side = h2 > 0.5 ? 1 : -1;
+                const dustLen = w * (1.2 + h1 * 1.5);
+                const dustOut = w * (0.45 + h2 * 0.55) * side;
+                ctx.strokeStyle = getAlphaColor(graphiteHex, baseAlpha * 0.42, fallbackRgb);
+                ctx.lineWidth = w * 0.36;
+                ctx.beginPath();
+                ctx.moveTo(sx - ux * dustLen * 0.4, sy - uy * dustLen * 0.4);
+                ctx.lineTo(sx + ux * dustLen * 0.6 + nx * dustOut, sy + uy * dustLen * 0.6 + ny * dustOut);
+                ctx.stroke();
+              }
+            }
+          }
+        } else {
+          // CAD: Clean, razor-sharp geometric vector stroke
+          const w = getEffectiveCADRenderWidth(lineWidthVal, 'CAD', view.zoom);
+          const cadColor = isLavagna
+            ? (!rawColor || rawColor === '#000000' || rawColor === '#444444' || rawColor === '#bbbbbb' ? '#FAF9F6' : rawColor)
+            : (rawColor || '#000000');
+          applyCustomLineDash(lineType, dashed);
+          ctx.strokeStyle = cadColor;
+          ctx.lineWidth = w;
+          ctx.lineCap = 'butt';
+          ctx.beginPath();
+          ctx.moveTo(p1.x, p1.y);
+          ctx.lineTo(p2.x, p2.y);
+          ctx.stroke();
+        }
+        ctx.restore();
+      };
+
+      const drawTraditionalOrCADCircleOrArc = (
+        center: Point,
+        radius: number,
+        startAngleRad: number,
+        endAngleRad: number,
+        mode: 'pencil' | 'ink' | 'CAD' | undefined,
+        rawColor: string | undefined,
+        lineWidthVal: number,
+        lineType?: string,
+        dashed?: boolean,
+        isHighlighted?: boolean,
+        highlightColor?: string | CanvasGradient | CanvasPattern,
+        highlightWidth?: number
+      ) => {
+        if (radius <= 0.0001) return;
+        ctx.save();
+        const effectiveMode = mode || 'CAD';
+        const isCustomDash = (lineType && lineType !== 'continuous') || dashed;
+
+        if (isHighlighted && highlightColor) {
+          applyCustomLineDash(lineType, dashed);
+          ctx.strokeStyle = highlightColor;
+          ctx.lineWidth = highlightWidth || (getEffectiveCADRenderWidth(lineWidthVal, effectiveMode, view.zoom) + 2 / view.zoom);
+          ctx.beginPath();
+          ctx.arc(center.x, center.y, radius, startAngleRad, endAngleRad);
+          ctx.stroke();
+          ctx.restore();
+          return;
+        }
+
+        if (effectiveMode === 'ink') {
+          const w = getEffectiveCADRenderWidth(lineWidthVal, 'ink', view.zoom);
+          const inkHex = isLavagna
+            ? '#FAF9F6'
+            : (!rawColor || rawColor === '#000000' || rawColor === '#000' || rawColor === '#444444' || rawColor === '#bbbbbb'
+                ? '#030508'
+                : rawColor);
+          const fallbackRgb = isLavagna ? '250, 249, 246' : '3, 5, 8';
+          applyCustomLineDash(lineType, dashed);
+
+          ctx.strokeStyle = getAlphaColor(inkHex, 0.19, fallbackRgb);
+          ctx.lineWidth = w * 1.56;
+          ctx.beginPath();
+          ctx.arc(center.x, center.y, radius, startAngleRad, endAngleRad);
+          ctx.stroke();
+
+          ctx.strokeStyle = getAlphaColor(inkHex, 1.0, fallbackRgb);
+          ctx.lineWidth = w * 1.04;
+          ctx.beginPath();
+          ctx.arc(center.x, center.y, radius, startAngleRad, endAngleRad);
+          ctx.stroke();
+        } else if (effectiveMode === 'pencil') {
+          const w = Math.max(0.95 / view.zoom, (lineWidthVal * 1.18) / view.zoom);
+          const isSoftLead = lineWidthVal >= 2.2;
+          const isHardLead = lineWidthVal <= 1.2;
+          const defaultGraphite = isLavagna
+            ? '#e2e8f0'
+            : (isSoftLead ? '#1e2229' : (isHardLead ? '#5c6672' : '#383f47'));
+          const graphiteHex = (!rawColor || rawColor === '#000000' || rawColor === '#444444' || rawColor === '#bbbbbb' || rawColor === '#111111')
+            ? defaultGraphite
+            : rawColor;
+          const baseAlpha = isSoftLead ? 0.90 : (isHardLead ? 0.62 : 0.78);
+
+          if (isCustomDash) {
+            applyCustomLineDash(lineType, dashed);
+            ctx.strokeStyle = getAlphaColor(graphiteHex, baseAlpha, '56, 63, 71');
+            ctx.lineWidth = w;
+            ctx.beginPath();
+            ctx.arc(center.x, center.y, radius, startAngleRad, endAngleRad);
+            ctx.stroke();
+          } else {
+            ctx.setLineDash([]);
+            ctx.strokeStyle = getAlphaColor(graphiteHex, baseAlpha * 0.24, '56, 63, 71');
+            ctx.lineWidth = w * 1.75;
+            ctx.beginPath();
+            ctx.arc(center.x, center.y, radius, startAngleRad, endAngleRad);
+            ctx.stroke();
+
+            ctx.setLineDash([2.9 / view.zoom, 0.55 / view.zoom, 4.4 / view.zoom, 0.5 / view.zoom]);
+            ctx.strokeStyle = getAlphaColor(graphiteHex, baseAlpha * 0.94, '56, 63, 71');
+            ctx.lineWidth = w * 0.96;
+            ctx.beginPath();
+            ctx.arc(center.x, center.y, radius, startAngleRad, endAngleRad);
+            ctx.stroke();
+
+            const rOff = w * 0.30;
+            ctx.setLineDash([4.1 / view.zoom, 1.15 / view.zoom, 2.6 / view.zoom, 0.95 / view.zoom]);
+            ctx.strokeStyle = getAlphaColor(graphiteHex, baseAlpha * 0.55, '56, 63, 71');
+            ctx.lineWidth = w * 0.44;
+            ctx.beginPath();
+            ctx.arc(center.x, center.y, Math.max(0.01, radius + rOff), startAngleRad, endAngleRad);
+            ctx.stroke();
+            ctx.setLineDash([]);
+          }
+        } else {
+          const w = getEffectiveCADRenderWidth(lineWidthVal, 'CAD', view.zoom);
+          const cadColor = isLavagna
+            ? (!rawColor || rawColor === '#000000' || rawColor === '#444444' || rawColor === '#bbbbbb' ? '#FAF9F6' : rawColor)
+            : (rawColor || '#000000');
+          applyCustomLineDash(lineType, dashed);
+          ctx.strokeStyle = cadColor;
+          ctx.lineWidth = w;
+          ctx.beginPath();
+          ctx.arc(center.x, center.y, radius, startAngleRad, endAngleRad);
+          ctx.stroke();
+        }
+        ctx.restore();
+      };
+
+      // --- LIVE GRAPHICAL NIB / DRAFTING INSTRUMENT RENDERED AT DRAWING TIP (3 TIPOLOGIE: CAD, CHINA, MATITA) ---
+      const drawActiveInstrumentNib = (tip: Point) => {
+        if (isPanningRef.current || isJollyActive || isMagicCopyActive) return;
+        const isDrawingTool =
+          activeTool === 'Line' ||
+          activeTool === 'Circle' ||
+          activeTool === 'Arc' ||
+          activeTool === 'Rectangle' ||
+          activeTool === 'Parallel';
+        if (!isDrawingTool) return;
+
+        const mode = defaultLineStyle.mode || 'CAD';
+        const s = 1.15 / view.zoom; // Constant screen-space scale so the pen/pencil is always crisp at any zoom
+
+        ctx.save();
+        ctx.translate(view.pan.x, view.pan.y);
+        ctx.scale(view.zoom, view.zoom);
+        ctx.translate(tip.x, tip.y);
+        ctx.setLineDash([]);
+
+        if (mode === 'ink') {
+          // PENNINO A CHINA (Simbolo Rapidograph / Rotring Tecnico ad Alta Precisione che scrive sulla punta)
+          ctx.rotate(-38 * Math.PI / 180);
+
+          // Soft paper drop shadow
+          ctx.fillStyle = 'rgba(15, 23, 42, 0.24)';
+          ctx.beginPath();
+          ctx.moveTo(2.4 * s, 2.4 * s);
+          ctx.lineTo(7 * s, -42 * s);
+          ctx.lineTo(-1 * s, -42 * s);
+          ctx.closePath();
+          ctx.fill();
+
+          // 1. Glistening wet India ink droplet right at contact point (0,0)
+          ctx.fillStyle = '#030508';
+          ctx.beginPath();
+          ctx.arc(0, 0, 2.2 * s, 0, Math.PI * 2);
+          ctx.fill();
+
+          // 2. Ultra-fine stainless steel capillary needle (0 -> -8.5)
+          ctx.strokeStyle = '#ffffff';
+          ctx.lineWidth = 2.2 * s;
+          ctx.beginPath();
+          ctx.moveTo(0, 0);
+          ctx.lineTo(0, -8.5 * s);
+          ctx.stroke();
+
+          ctx.strokeStyle = '#334155';
+          ctx.lineWidth = 1.3 * s;
+          ctx.beginPath();
+          ctx.moveTo(0, 0);
+          ctx.lineTo(0, -8.5 * s);
+          ctx.stroke();
+
+          // 3. Stepped chrome capillary guide tube (-8.5 -> -15.5)
+          ctx.fillStyle = '#f1f5f9';
+          ctx.strokeStyle = '#1e293b';
+          ctx.lineWidth = 1.0 * s;
+          ctx.beginPath();
+          ctx.rect(-2.2 * s, -15.5 * s, 4.4 * s, 7.0 * s);
+          ctx.fill();
+          ctx.stroke();
+
+          // 4. Conical chrome nib holder (-15.5 -> -23.5)
+          ctx.fillStyle = '#94a3b8';
+          ctx.beginPath();
+          ctx.moveTo(-2.2 * s, -15.5 * s);
+          ctx.lineTo(2.2 * s, -15.5 * s);
+          ctx.lineTo(5.0 * s, -23.5 * s);
+          ctx.lineTo(-5.0 * s, -23.5 * s);
+          ctx.closePath();
+          ctx.fill();
+          ctx.stroke();
+
+          // 5. Classic Rotring ruby-red calibration ring (-23.5 -> -28.5)
+          ctx.fillStyle = '#dc2626';
+          ctx.beginPath();
+          ctx.rect(-5.2 * s, -28.5 * s, 10.4 * s, 5.0 * s);
+          ctx.fill();
+          ctx.stroke();
+
+          // 6. Matte-black technical barrel (-28.5 -> -50)
+          ctx.fillStyle = '#0f172a';
+          ctx.beginPath();
+          ctx.roundRect(-5.2 * s, -50 * s, 10.4 * s, 21.5 * s, [2.5 * s, 2.5 * s, 0, 0]);
+          ctx.fill();
+          ctx.stroke();
+
+          // Knurled grip ridges
+          ctx.strokeStyle = '#64748b';
+          ctx.lineWidth = 0.85 * s;
+          [-31.5, -34.5, -37.5].forEach(yOff => {
+            ctx.beginPath();
+            ctx.moveTo(-4.8 * s, yOff * s);
+            ctx.lineTo(4.8 * s, yOff * s);
+            ctx.stroke();
+          });
+        } else if (mode === 'pencil') {
+          // MATITA TECNICA (Simbolo Matita Esagonale in Grafite 2H / HB / 2B che scrive sulla punta)
+          ctx.rotate(-38 * Math.PI / 180);
+
+          // Soft paper drop shadow
+          ctx.fillStyle = 'rgba(15, 23, 42, 0.22)';
+          ctx.beginPath();
+          ctx.moveTo(2.2 * s, 2.2 * s);
+          ctx.lineTo(7 * s, -42 * s);
+          ctx.lineTo(-1 * s, -42 * s);
+          ctx.closePath();
+          ctx.fill();
+
+          // Exposed conical graphite lead tip (0 -> -8.5)
+          const gradeLabel = defaultLineStyle.lineWidth <= 1.2 ? '2H' : defaultLineStyle.lineWidth >= 2.2 ? '2B' : 'HB';
+          ctx.fillStyle = gradeLabel === '2B' ? '#1e2229' : gradeLabel === '2H' ? '#64748b' : '#334155';
+          ctx.strokeStyle = '#0f172a';
+          ctx.lineWidth = 0.7 * s;
+          ctx.beginPath();
+          ctx.moveTo(0, 0);
+          ctx.lineTo(2.2 * s, -8.5 * s);
+          ctx.lineTo(-2.2 * s, -8.5 * s);
+          ctx.closePath();
+          ctx.fill();
+          ctx.stroke();
+
+          // Shaved cedar wood collar (-8.5 -> -19.5)
+          ctx.fillStyle = '#fde68a';
+          ctx.strokeStyle = '#92400e';
+          ctx.lineWidth = 0.95 * s;
+          ctx.beginPath();
+          ctx.moveTo(-2.2 * s, -8.5 * s);
+          ctx.lineTo(2.2 * s, -8.5 * s);
+          ctx.lineTo(5.2 * s, -19.5 * s);
+          ctx.lineTo(-5.2 * s, -19.5 * s);
+          ctx.closePath();
+          ctx.fill();
+          ctx.stroke();
+
+          // Hexagonal drafting pencil barrel (-19.5 -> -48)
+          ctx.fillStyle = '#1d4ed8'; // Staedtler Mars Lumograph classic drafting blue
+          ctx.strokeStyle = '#1e3a8a';
+          ctx.beginPath();
+          ctx.roundRect(-5.2 * s, -48 * s, 10.4 * s, 28.5 * s, [2.5 * s, 2.5 * s, 0, 0]);
+          ctx.fill();
+          ctx.stroke();
+
+          // Center hexagonal facet highlight
+          ctx.fillStyle = '#3b82f6';
+          ctx.fillRect(-2.0 * s, -46 * s, 4.0 * s, 26.5 * s);
+
+          // White & black end crown ring
+          ctx.fillStyle = '#f8fafc';
+          ctx.fillRect(-5.2 * s, -43 * s, 10.4 * s, 3.0 * s);
+        } else {
+          // CAD: Precision Vernier Vector Reticle
+          ctx.strokeStyle = '#06b6d4';
+          ctx.lineWidth = 1.4 * s;
+          const r = 6.2 * s;
+          ctx.beginPath();
+          ctx.arc(0, 0, r, 0, Math.PI * 2);
+          ctx.moveTo(-11.5 * s, 0);
+          ctx.lineTo(-2.5 * s, 0);
+          ctx.moveTo(2.5 * s, 0);
+          ctx.lineTo(11.5 * s, 0);
+          ctx.moveTo(0, -11.5 * s);
+          ctx.lineTo(0, -2.5 * s);
+          ctx.moveTo(0, 2.5 * s);
+          ctx.lineTo(0, 11.5 * s);
+          ctx.stroke();
+        }
+
+        ctx.restore();
       };
 
       // --- Performance Optimization: Pre-calculate Data for the loop ---
@@ -6260,7 +7581,7 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
         } else if (activeTool === 'Dimension' && selectionMode === 'object' && entity.id === hoveredDimensionEntityId) {
             ctx.strokeStyle = '#22c55e'; // Green highlight for hovered entity in dimension object selection mode
             ctx.lineWidth = (1.2 / view.zoom) + 2 / view.zoom;
-        } else if ((dragEntityIds.includes(entity.id) || entity.id === highlightedTrimLine?.id) && (activeTool === 'Move' || activeTool === 'Cancella' || activeTool === 'Join' || activeTool === 'Copy')) {
+        } else if ((dragEntityIds.includes(entity.id) || entity.id === dragEntityId || entity.id === highlightedTrimLine?.id) && (activeTool === 'Move' || activeTool === 'Cancella' || activeTool === 'Join' || activeTool === 'Copy' || isJollyActive || isMagicCopyActive)) {
             ctx.strokeStyle = activeTool === 'Cancella' ? '#ef4444' : activeTool === 'Join' ? '#22c55e' : '#3b82f6';
             const isGreenHighlight = activeTool === 'Join';
             const hBaseWidth = isGreenHighlight ? (1.2 / view.zoom) : baseWidth;
@@ -6271,11 +7592,278 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
         } else if (moveSourceEntityIds.includes(entity.id) && activeTool === 'Move') {
             ctx.strokeStyle = '#22c55e'; // Green highlight for original object(s) to move
             ctx.lineWidth = (1.2 / view.zoom) + 3 / view.zoom; // thin normal
-        } else if (entity.id === hoveredLineId) {
-            ctx.strokeStyle = '#3b82f6'; // Blue highlight for hovered line
-            ctx.lineWidth = baseWidth + 2.2 / view.zoom;
-        } else if (activeTool === 'Trim' && highlightedTrimSegment && entity.id === highlightedTrimLine?.id) {
-            // Eraser highlight only
+        }
+
+        // --- 1. SPOSTA TUTTO / COPIA E SPOSTA (Z) / MOVE / COPY: MOSTRA SOLO LA DISTANZA PARALLELA ---
+        // --- 2. CLICK SUL SEGMENTO (selectedEntityId): MOSTRA SOLO LA LUNGHEZZA DEL SEGMENTO ---
+        // --- 3. SEMPLICE PASSAGGIO DEL MOUSE (hover): NESSUNA FINESTRA APERTA, DISEGNO LIBERO ---
+        const isSpostaTuttoActive =
+            isJollyActive ||
+            isMagicCopyActive ||
+            activeTool === 'Move' ||
+            activeTool === 'Copy' ||
+            !!dragEntityId ||
+            dragEntityIds.length > 0 ||
+            !!positioningEntityId;
+
+        const shouldShowParallelDistance =
+            entity.type === 'line' &&
+            isSpostaTuttoActive &&
+            (entity.id === dragEntityId ||
+             dragEntityIds.includes(entity.id) ||
+             entity.id === positioningEntityId ||
+             entity.id === hoveredLineId ||
+             entity.id === selectedEntityId);
+
+        const shouldShowSegmentLength =
+            entity.type === 'line' &&
+            !isSpostaTuttoActive &&
+            entity.id === selectedEntityId;
+
+        if (shouldShowParallelDistance || shouldShowSegmentLength) {
+            const line = entity as LineEntity;
+            const dx = line.end.x - line.start.x;
+            const dy = line.end.y - line.start.y;
+            const len = Math.sqrt(dx * dx + dy * dy);
+            if (len > 0.1) {
+                const tx = dx / len;
+                const ty = dy / len;
+                const nx = -dy / len;
+                const ny = dx / len;
+
+                if (shouldShowParallelDistance) {
+                    let minParallelDist = Infinity;
+                    let bestSignedDist = 0;
+                    let nearestLine: LineEntity | null = null;
+
+                    entities.forEach(other => {
+                        if (other.id !== line.id && !dragEntityIds.includes(other.id) && other.type === 'line') {
+                            const oLine = other as LineEntity;
+                            const odx = oLine.end.x - oLine.start.x;
+                            const ody = oLine.end.y - oLine.start.y;
+                            const olen = Math.sqrt(odx * odx + ody * ody);
+                            if (olen > 0.1) {
+                                const onx = -ody / olen;
+                                const ony = odx / olen;
+                                const dot = Math.abs(nx * onx + ny * ony);
+                                if (dot > 0.992) { // Parallel segments
+                                    const signedD = (oLine.start.x - line.start.x) * nx + (oLine.start.y - line.start.y) * ny;
+                                    const dist = Math.abs(signedD);
+                                    if (dist > 0.05 && dist < minParallelDist) {
+                                        minParallelDist = dist;
+                                        bestSignedDist = signedD;
+                                        nearestLine = oLine;
+                                    }
+                                }
+                            }
+                        }
+                    });
+
+                    if (nearestLine && minParallelDist < Infinity) {
+                        const oLine = nearestLine as LineEntity;
+                        activeParallelPairRef.current = {
+                            lineId: line.id,
+                            refLineId: oLine.id,
+                            nx,
+                            ny,
+                            signedDist: bestSignedDist,
+                            currentDist: minParallelDist
+                        };
+
+                        const tO1 = (oLine.start.x - line.start.x) * tx + (oLine.start.y - line.start.y) * ty;
+                        const tO2 = (oLine.end.x - line.start.x) * tx + (oLine.end.y - line.start.y) * ty;
+                        const oMin = Math.min(tO1, tO2);
+                        const oMax = Math.max(tO1, tO2);
+                        const overlapStart = Math.max(0, oMin);
+                        const overlapEnd = Math.min(len, oMax);
+                        const anchorT = overlapEnd >= overlapStart ? (overlapStart + overlapEnd) / 2 : len / 2;
+
+                        const midX = line.start.x + tx * anchorT;
+                        const midY = line.start.y + ty * anchorT;
+                        const targetX = midX + nx * bestSignedDist;
+                        const targetY = midY + ny * bestSignedDist;
+
+                        ctx.save();
+                        if (anchorT < oMin || anchorT > oMax) {
+                            const nearEnd = Math.hypot(targetX - oLine.start.x, targetY - oLine.start.y) < Math.hypot(targetX - oLine.end.x, targetY - oLine.end.y)
+                                ? oLine.start
+                                : oLine.end;
+                            ctx.strokeStyle = 'rgba(245, 158, 11, 0.45)';
+                            ctx.lineWidth = 1 / view.zoom;
+                            ctx.setLineDash([3 / view.zoom, 3 / view.zoom]);
+                            ctx.beginPath();
+                            ctx.moveTo(nearEnd.x, nearEnd.y);
+                            ctx.lineTo(targetX, targetY);
+                            ctx.stroke();
+                        }
+
+                        const isTypingParallelOverride =
+                            liveNumericOverride?.kind === 'parallel_dist' &&
+                            liveNumericOverride.lineId === line.id &&
+                            (Date.now() - liveNumericOverride.timestamp < 5000);
+
+                        ctx.strokeStyle = isTypingParallelOverride ? '#10b981' : '#f59e0b';
+                        ctx.lineWidth = (isTypingParallelOverride ? 2.4 : 2) / view.zoom;
+                        ctx.setLineDash([5 / view.zoom, 4 / view.zoom]);
+                        ctx.beginPath();
+                        ctx.moveTo(midX, midY);
+                        ctx.lineTo(targetX, targetY);
+                        ctx.stroke();
+
+                        ctx.setLineDash([]);
+                        ctx.fillStyle = isTypingParallelOverride ? '#10b981' : '#f59e0b';
+                        ctx.beginPath();
+                        ctx.arc(midX, midY, 3.5 / view.zoom, 0, Math.PI * 2);
+                        ctx.arc(targetX, targetY, 3.5 / view.zoom, 0, Math.PI * 2);
+                        ctx.fill();
+
+                        const tickSize = 6 / view.zoom;
+                        ctx.strokeStyle = isTypingParallelOverride ? '#059669' : '#d97706';
+                        ctx.lineWidth = 1.5 / view.zoom;
+                        ctx.beginPath();
+                        ctx.moveTo(midX - tx * tickSize, midY - ty * tickSize);
+                        ctx.lineTo(midX + tx * tickSize, midY + ty * tickSize);
+                        ctx.moveTo(targetX - tx * tickSize, targetY - ty * tickSize);
+                        ctx.lineTo(targetX + tx * tickSize, targetY + ty * tickSize);
+                        ctx.stroke();
+
+                        const zoomDecimals = view.zoom >= 1.2 ? 3 : (view.zoom >= 0.45 ? 2 : (view.zoom >= 0.20 ? 1 : 0));
+                        const formattedDist = zoomDecimals === 0
+                            ? `${Math.round(minParallelDist)}`
+                            : minParallelDist.toFixed(zoomDecimals).replace('.', ',');
+                        const badgeLabel = isTypingParallelOverride
+                            ? `${liveNumericOverride.text.replace('.', ',')}▌ cm`
+                            : `${formattedDist} cm`;
+
+                        const labelX = (midX + targetX) / 2;
+                        const labelY = (midY + targetY) / 2;
+
+                        ctx.font = `bold ${16.5 / view.zoom}px monospace`;
+                        const textW = ctx.measureText(badgeLabel).width;
+                        const padX = 11 / view.zoom;
+                        const boxW = textW + padX * 2;
+                        const boxH = 29 / view.zoom;
+
+                        ctx.fillStyle = isTypingParallelOverride ? 'rgba(6, 78, 59, 0.96)' : 'rgba(15, 23, 42, 0.95)';
+                        ctx.strokeStyle = isTypingParallelOverride ? '#34d399' : '#f59e0b';
+                        ctx.lineWidth = (isTypingParallelOverride ? 2.5 : 2.2) / view.zoom;
+                        ctx.beginPath();
+                        ctx.roundRect(labelX - boxW / 2, labelY - boxH / 2, boxW, boxH, 7 / view.zoom);
+                        ctx.fill();
+                        ctx.stroke();
+
+                        ctx.fillStyle = isTypingParallelOverride ? '#a7f3d0' : '#fde047';
+                        ctx.textAlign = 'center';
+                        ctx.textBaseline = 'middle';
+                        ctx.fillText(badgeLabel, labelX, labelY);
+
+                        // --- LINEA DI RIFERIMENTO AUTOMATICA UGUALE ALL'ULTIMO OFFSET PER FACILITARE OFFSET SUCCESSIVI ---
+                        // (Compare se attivo Offset oppure se si usa Sposta o Copia)
+                        const refD = isMoveCopyOrOffsetAidActive() ? getEffectiveLastParallelOffset(entities) : 0;
+                        if (refD > 0.05) {
+                            // Il lato su cui si trova la linea trascinata rispetto a oLine:
+                            // bestSignedDist = (oLine - line) · n, quindi da oLine verso line il segno lungo n è -Math.sign(bestSignedDist)
+                            const sideFromRef = bestSignedDist >= 0 ? -1 : 1;
+                            const guideShiftX = nx * sideFromRef * refD;
+                            const guideShiftY = ny * sideFromRef * refD;
+
+                            // Costruiamo la linea di riferimento uguale all'ultima linea di riferimento (oLine) traslata di refD
+                            const gStart = { x: oLine.start.x + guideShiftX, y: oLine.start.y + guideShiftY };
+                            const gEnd = { x: oLine.end.x + guideShiftX, y: oLine.end.y + guideShiftY };
+                            const isSnappedToEqualOffset = Math.abs(minParallelDist - refD) < 0.05;
+
+                            ctx.save();
+                            ctx.strokeStyle = isSnappedToEqualOffset ? '#10b981' : 'rgba(16, 185, 129, 0.85)';
+                            ctx.lineWidth = (isSnappedToEqualOffset ? 2.6 : 1.8) / view.zoom;
+                            ctx.setLineDash([8 / view.zoom, 5 / view.zoom]);
+                            ctx.beginPath();
+                            ctx.moveTo(gStart.x, gStart.y);
+                            ctx.lineTo(gEnd.x, gEnd.y);
+                            ctx.stroke();
+
+                            // Estremi della linea di riferimento
+                            ctx.setLineDash([]);
+                            ctx.fillStyle = '#10b981';
+                            ctx.beginPath();
+                            ctx.arc(gStart.x, gStart.y, 3.2 / view.zoom, 0, Math.PI * 2);
+                            ctx.arc(gEnd.x, gEnd.y, 3.2 / view.zoom, 0, Math.PI * 2);
+                            ctx.fill();
+
+                            // Etichetta sulla linea di riferimento dell'offset precedente
+                            const gMidX = (gStart.x + gEnd.x) / 2;
+                            const gMidY = (gStart.y + gEnd.y) / 2;
+                            const refFormatted = zoomDecimals === 0
+                                ? `${Math.round(refD)}`
+                                : refD.toFixed(zoomDecimals).replace('.', ',');
+                            const refTag = isSnappedToEqualOffset
+                                ? `= ${refFormatted} cm (Offset uguale)`
+                                : `Rif. ${refFormatted} cm`;
+                            ctx.font = `bold ${12.5 / view.zoom}px monospace`;
+                            const rW = ctx.measureText(refTag).width + 14 / view.zoom;
+                            const rH = 21 / view.zoom;
+                            const tagOffsetX = tx * (len * 0.22);
+                            const tagOffsetY = ty * (len * 0.22);
+                            const tagX = gMidX + tagOffsetX;
+                            const tagY = gMidY + tagOffsetY;
+
+                            ctx.fillStyle = isSnappedToEqualOffset ? 'rgba(6, 78, 59, 0.96)' : 'rgba(15, 23, 42, 0.90)';
+                            ctx.strokeStyle = '#10b981';
+                            ctx.lineWidth = 1.6 / view.zoom;
+                            ctx.beginPath();
+                            ctx.roundRect(tagX - rW / 2, tagY - rH / 2, rW, rH, 5 / view.zoom);
+                            ctx.fill();
+                            ctx.stroke();
+
+                            ctx.fillStyle = '#6ee7b7';
+                            ctx.textAlign = 'center';
+                            ctx.textBaseline = 'middle';
+                            ctx.fillText(refTag, tagX, tagY);
+                            ctx.restore();
+                        }
+
+                        ctx.restore();
+                    }
+                } else if (shouldShowSegmentLength) {
+                    const isTypingLineLengthOverride =
+                        liveNumericOverride?.kind === 'line_length' &&
+                        liveNumericOverride.lineId === line.id &&
+                        (Date.now() - liveNumericOverride.timestamp < 6000);
+
+                    const segDecimals = view.zoom >= 1.2 ? 3 : (view.zoom >= 0.45 ? 2 : (view.zoom >= 0.20 ? 1 : 0));
+                    const formattedSegLen = segDecimals === 0
+                        ? `${Math.round(len)}`
+                        : len.toFixed(segDecimals).replace('.', ',');
+                    const segLabel = isTypingLineLengthOverride
+                        ? `L = ${liveNumericOverride.text.replace('.', ',')}▌ cm`
+                        : `L = ${formattedSegLen} cm`;
+
+                    const segMidX = (line.start.x + line.end.x) / 2;
+                    const segMidY = (line.start.y + line.end.y) / 2;
+                    const segBadgeX = segMidX + nx * (22 / view.zoom);
+                    const segBadgeY = segMidY + ny * (22 / view.zoom);
+
+                    ctx.save();
+                    ctx.font = `bold ${16.5 / view.zoom}px monospace`;
+                    const sTextW = ctx.measureText(segLabel).width;
+                    const sPadX = 11 / view.zoom;
+                    const sBoxW = sTextW + sPadX * 2;
+                    const sBoxH = 29 / view.zoom;
+
+                    ctx.fillStyle = isTypingLineLengthOverride ? 'rgba(6, 78, 59, 0.96)' : 'rgba(15, 23, 42, 0.94)';
+                    ctx.strokeStyle = isTypingLineLengthOverride ? '#34d399' : '#38bdf8';
+                    ctx.lineWidth = (isTypingLineLengthOverride ? 2.5 : 2.0) / view.zoom;
+                    ctx.beginPath();
+                    ctx.roundRect(segBadgeX - sBoxW / 2, segBadgeY - sBoxH / 2, sBoxW, sBoxH, 7 / view.zoom);
+                    ctx.fill();
+                    ctx.stroke();
+
+                    ctx.fillStyle = isTypingLineLengthOverride ? '#a7f3d0' : '#f8fafc';
+                    ctx.textAlign = 'center';
+                    ctx.textBaseline = 'middle';
+                    ctx.fillText(segLabel, segBadgeX, segBadgeY);
+                    ctx.restore();
+                }
+            }
         }
         
         let isHighlighted = false;
@@ -6284,9 +7872,6 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
              isHighlighted = true;
         } else if ((entity.id === selectedParallelLine?.id && blink) || (selectedEntityId === entity.id) || isReallySelected || (positioningGroupId && entity.groupId === positioningGroupId) || (positioningEntityId && entity.id === positioningEntityId) || selectedRaccordoLineIds.includes(entity.id)) {
              isHighlighted = true;
-        } else if (entity.id === hoveredLineId) {
-             isHighlighted = true;
-             highlightColor = '#3b82f6';
         } else if (activeTool === 'Dimension' && selectionMode === 'object' && entity.id === hoveredDimensionEntityId) {
              isHighlighted = true;
              highlightColor = '#22c55e';
@@ -6613,119 +8198,76 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
                   ctx.lineTo(l.end.x, l.end.y);
                   ctx.stroke();
               }
-          } else if ((l.mode === 'ink' || l.mode === 'pencil') && l.isFreehand) {
+          } else if ((l.mode === 'ink' || l.mode === 'pencil') && l.isFreehand && l.inkPoints && l.inkPoints.length > 2) {
+              // Genuine freehand curves with multiple captured points
               const entityLineType = (l as any).lineType;
               const isStyled = entityLineType && entityLineType !== 'continuous';
               if (isStyled) {
                   ctx.save();
-                  if (entityLineType === 'dashed') {
-                      ctx.setLineDash([8 / view.zoom, 4 / view.zoom]);
-                  } else if (entityLineType === 'dotted') {
-                      ctx.setLineDash([2 / view.zoom, 3 / view.zoom]);
-                  } else if (entityLineType === 'dashdot') {
-                      ctx.setLineDash([12 / view.zoom, 4 / view.zoom, 2 / view.zoom, 4 / view.zoom]);
-                  } else if (entityLineType === 'dashdash') {
-                      ctx.setLineDash([15 / view.zoom, 4 / view.zoom, 4 / view.zoom, 4 / view.zoom]);
-                  }
+                  applyCustomLineDash(entityLineType, l.dashed);
                   ctx.lineWidth = l.mode === 'ink'
                       ? getEffectiveCADRenderWidth(l.lineWidth, l.mode, view.zoom)
                       : Math.max(0.1, l.lineWidth / view.zoom);
                   ctx.strokeStyle = isHighlighted ? highlightColor : l.color || '#000000';
                   ctx.beginPath();
                   ctx.moveTo(l.start.x, l.start.y);
-                  if (l.inkPoints) {
-                      for (let i = 0; i < l.inkPoints.length; i++) {
-                          ctx.lineTo(l.inkPoints[i].x, l.inkPoints[i].y);
-                      }
-                  } else {
-                      ctx.lineTo(l.end.x, l.end.y);
+                  for (let i = 0; i < l.inkPoints.length; i++) {
+                      ctx.lineTo(l.inkPoints[i].x, l.inkPoints[i].y);
                   }
                   ctx.stroke();
                   ctx.restore();
-              } else if (l.inkPoints) {
+              } else {
                   let lastX = l.start.x;
                   let lastY = l.start.y;
-                  for(let i=0; i<l.inkPoints.length; i++) {
+                  for (let i = 0; i < l.inkPoints.length; i++) {
                       const pt = l.inkPoints[i];
-                      const px = pt.x;
-                      const py = pt.y;
-     
-                      ctx.beginPath();
-                      // Per i pennini Kina usiamo lo spessore pieno in modo più netto, calcolato con la nuova logica
-                      ctx.lineWidth = (isHighlighted || l.mode === 'ink')                          ? isHighlighted ? (1.5 / view.zoom) : (getEffectiveCADRenderWidth(l.lineWidth, l.mode, view.zoom) * (0.8 + pt.width * 0.4))
-                          : Math.max(0.1, pt.width * (l.lineWidth / view.zoom));
-                      ctx.strokeStyle = isHighlighted ? highlightColor : (l.mode === 'ink' ? getAlphaColor('#000000', pt.alpha) : getAlphaColor(l.color, pt.alpha));
-                      ctx.moveTo(lastX, lastY);
-                      ctx.lineTo(px, py);
-                      ctx.stroke();
-                      
-                      lastX = px;
-                      lastY = py;
+                      drawTraditionalOrCADLine(
+                        { x: lastX, y: lastY },
+                        { x: pt.x, y: pt.y },
+                        l.mode,
+                        l.color,
+                        l.lineWidth,
+                        undefined,
+                        false,
+                        isHighlighted,
+                        highlightColor,
+                        ctx.lineWidth
+                      );
+                      lastX = pt.x;
+                      lastY = pt.y;
                   }
-              } else {
-                  // Fallback for existing ink lines
-                  const steps = 20;
-                  const dx = l.end.x - l.start.x;
-                  const dy = l.end.y - l.start.y;
-                  const len = Math.sqrt(dx * dx + dy * dy);
-                  const nx = len > 0 ? -dy / len : 0;
-                  const ny = len > 0 ? dx / len : 0;
-                  let lastX = l.start.x;
-                  let lastY = l.start.y;
-                  for(let i=1; i<=steps; i++) {
-                      const t = i/steps;
-                      const bx = l.start.x + dx * t;
-                      const by = l.start.y + dy * t;
-                      const wave = Math.sin(t * Math.PI * 4) * (0.6 / view.zoom);
-                      const px = bx + nx * wave;
-                      const py = by + ny * wave;
-
-                      ctx.beginPath();
-                      ctx.lineWidth = (isHighlighted || l.mode === 'ink')
-                          ? isHighlighted ? (1.5 / view.zoom) : getEffectiveCADRenderWidth(l.lineWidth, l.mode, view.zoom)
-                          : Math.max(0.2, (0.5 + Math.random() * 0.5) * (l.lineWidth / view.zoom));
-                      ctx.strokeStyle = isHighlighted ? highlightColor : (l.mode === 'ink' ? '#000000' : getAlphaColor(l.color, 0.3 + Math.random() * 0.4));
-                      ctx.moveTo(lastX, lastY);
-                      ctx.lineTo(px, py);
-                      ctx.stroke();
-                      
-                      lastX = px;
-                      lastY = py;
-                  }
-              }
-          } else if (l.mode === 'pencil' && l.isFreehand) {
-              // Realistic pencil rendering
-              const dx = l.end.x - l.start.x;
-              const dy = l.end.y - l.start.y;
-              const len = Math.sqrt(dx * dx + dy * dy);
-              if (len > 0.1) {
-                  const steps = Math.max(10, Math.floor(len * 2));
-                  let lastX = l.start.x;
-                  let lastY = l.start.y;
-                  ctx.strokeStyle = isHighlighted ? highlightColor : getAlphaColor(l.color, 0.4);
-                  ctx.lineWidth = Math.max(0.1, 0.4 * (l.lineWidth / view.zoom));
-                  for(let i=1; i<=steps; i++) {
-                      const t = i/steps;
-                      const px = l.start.x + dx * t + (Math.random() - 0.5) * (0.1 / view.zoom);
-                      const py = l.start.y + dy * t + (Math.random() - 0.5) * (0.1 / view.zoom);
-                      ctx.beginPath();
-                      ctx.moveTo(lastX, lastY);
-                      ctx.lineTo(px, py);
-                      ctx.stroke();
-                      lastX = px;
-                      lastY = py;
-                  }
-              } else {
-                  ctx.moveTo(l.start.x, l.start.y);
-                  ctx.lineTo(l.end.x, l.end.y);
-                  ctx.stroke();
               }
           } else {
-              ctx.moveTo(l.start.x, l.start.y);
-              ctx.lineTo(l.end.x, l.end.y);
-              ctx.stroke();
-
               const isFiloEntity = (l as any).isFilo || l.layer === 'Fili';
+              drawTraditionalOrCADLine(
+                l.start,
+                l.end,
+                isFiloEntity ? 'CAD' : l.mode,
+                finalColor || l.color,
+                l.lineWidth,
+                lineType,
+                l.dashed,
+                isHighlighted,
+                highlightColor,
+                ctx.lineWidth,
+                false
+              );
+              // Render permanent ricalco (second pass of ink or graphite when the user backtracked or passed twice over the segment)
+              if (!isFiloEntity && (l.mode === 'ink' || l.mode === 'pencil') && (l as any).retraceStart && (l as any).retraceEnd) {
+                drawTraditionalOrCADLine(
+                  (l as any).retraceStart,
+                  (l as any).retraceEnd,
+                  l.mode,
+                  finalColor || l.color,
+                  l.lineWidth || 0.25,
+                  lineType,
+                  l.dashed,
+                  false,
+                  highlightColor,
+                  ctx.lineWidth,
+                  true
+                );
+              }
               if (isFiloEntity) {
                   ctx.save();
                   // Let's compute direction and perpendicular vectors
@@ -7017,21 +8559,49 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
             ctx.fillText(entity.customText || valueStr, 0, 0);
             ctx.restore();
         } else if (entity.type === 'circle') {
-          ctx.arc(entity.center.x, entity.center.y, entity.radius, 0, Math.PI * 2);
-          ctx.stroke();
+          drawTraditionalOrCADCircleOrArc(
+            entity.center,
+            entity.radius,
+            0,
+            Math.PI * 2,
+            entity.mode,
+            finalColor || entity.color,
+            entity.lineWidth,
+            lineType,
+            entity.dashed,
+            isHighlighted,
+            highlightColor,
+            ctx.lineWidth
+          );
         } else if (entity.type === 'arc') {
-          ctx.arc(entity.center.x, entity.center.y, entity.radius, entity.startAngle * Math.PI / 180, entity.endAngle * Math.PI / 180);
-          ctx.stroke();
+          drawTraditionalOrCADCircleOrArc(
+            entity.center,
+            entity.radius,
+            entity.startAngle * Math.PI / 180,
+            entity.endAngle * Math.PI / 180,
+            entity.mode,
+            finalColor || entity.color,
+            entity.lineWidth,
+            lineType,
+            entity.dashed,
+            isHighlighted,
+            highlightColor,
+            ctx.lineWidth
+          );
         } else if (entity.type === 'point') {
           ctx.beginPath();
           ctx.arc(entity.point.x, entity.point.y, 2 / view.zoom, 0, Math.PI * 2);
           ctx.fillStyle = isLavagna ? '#FAF9F6' : '#000000'; // Force white points on blackboard, black otherwise
           ctx.fill();
         } else if (entity.type === 'rectangle') {
-          const width = entity.p2.x - entity.p1.x;
-          const height = entity.p2.y - entity.p1.y;
-          ctx.rect(entity.p1.x, entity.p1.y, width, height);
-          ctx.stroke();
+          const pA = { x: entity.p1.x, y: entity.p1.y };
+          const pB = { x: entity.p2.x, y: entity.p1.y };
+          const pC = { x: entity.p2.x, y: entity.p2.y };
+          const pD = { x: entity.p1.x, y: entity.p2.y };
+          drawTraditionalOrCADLine(pA, pB, entity.mode, finalColor || entity.color, entity.lineWidth, lineType, entity.dashed, isHighlighted, highlightColor, ctx.lineWidth);
+          drawTraditionalOrCADLine(pB, pC, entity.mode, finalColor || entity.color, entity.lineWidth, lineType, entity.dashed, isHighlighted, highlightColor, ctx.lineWidth);
+          drawTraditionalOrCADLine(pC, pD, entity.mode, finalColor || entity.color, entity.lineWidth, lineType, entity.dashed, isHighlighted, highlightColor, ctx.lineWidth);
+          drawTraditionalOrCADLine(pD, pA, entity.mode, finalColor || entity.color, entity.lineWidth, lineType, entity.dashed, isHighlighted, highlightColor, ctx.lineWidth);
         } else if (entity.type === 'camera') {
           // Draw Camera Icon
           ctx.save();
@@ -7435,7 +9005,7 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
 
       // Draw Tecnigrafo "Squadretta" (Drafting Machine Effect)
       // We draw this before the drawing preview so the "pen" appears to write on top of it.
-      if (tecnigrafoOrigin) {
+      if (tecnigrafoOrigin && !showSquadrette) {
         ctx.save();
         
         const isX = tecnigrafoLock === 'x' || !tecnigrafoLock;
@@ -7526,7 +9096,84 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
         ctx.stroke();
         
         ctx.restore();
+      } else if (tecnigrafoOrigin && showSquadrette) {
+          // If squadrette are shown, just draw the pivot head
+          ctx.save();
+          ctx.beginPath();
+          ctx.arc(tecnigrafoOrigin.x, tecnigrafoOrigin.y, 10 / view.zoom, 0, Math.PI * 2);
+          ctx.fillStyle = '#64748b';
+          ctx.fill();
+          ctx.strokeStyle = '#fff';
+          ctx.lineWidth = 2 / view.zoom;
+          ctx.stroke();
+          ctx.restore();
       }
+
+      if (showSquadrette) {
+          squadrette.forEach(sq => {
+              const verts = getSquadrettaVertices(sq);
+              ctx.save();
+              ctx.fillStyle = 'rgba(255, 230, 100, 0.35)'; // Classic yellow transparent plastic
+              ctx.strokeStyle = 'rgba(120, 80, 0, 0.6)';
+              ctx.lineWidth = 1.5 / view.zoom;
+              ctx.beginPath();
+              ctx.moveTo(verts[0].x, verts[0].y);
+              ctx.lineTo(verts[1].x, verts[1].y);
+              ctx.lineTo(verts[2].x, verts[2].y);
+              ctx.closePath();
+              ctx.fill();
+              ctx.stroke();
+
+              // Measurement markings
+              ctx.strokeStyle = 'rgba(0, 0, 0, 0.4)';
+              ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
+              const miniMarkStep = 1; // 1 cm markings
+              
+              const drawMarks = (pA: Point, pB: Point) => {
+                  const dx = pB.x - pA.x;
+                  const dy = pB.y - pA.y;
+                  const L = Math.hypot(dx, dy);
+                  const ux = dx / L;
+                  const uy = dy / L;
+                  const nx = -uy;
+                  const ny = ux;
+                  
+                  // Smallest marking is 0.1cm (1mm)
+                  const step = 0.1;
+                  for (let d = 0; d <= L; d += step) {
+                      const p = { x: pA.x + ux * d, y: pA.y + uy * d };
+                      const isCm = Math.abs(d % 1) < 0.001;
+                      const isHalfCm = Math.abs(d % 0.5) < 0.001;
+                      
+                      let h = 3 / view.zoom;
+                      if (isCm) h = (Math.abs(d % 5) < 0.001) ? (Math.abs(d % 10) < 0.001 ? 15 / view.zoom : 10 / view.zoom) : 7 / view.zoom;
+                      else if (isHalfCm) h = 5 / view.zoom;
+                      
+                      // Only draw sub-millimeter if zoom is high enough to see them
+                      if (!isCm && !isHalfCm && view.zoom < 1.5) continue;
+
+                      ctx.beginPath();
+                      ctx.moveTo(p.x, p.y);
+                      ctx.lineTo(p.x + nx * h, p.y + ny * h);
+                      ctx.stroke();
+                      
+                      if (isCm && d > 0 && Math.abs(d % 5) < 0.001) {
+                          ctx.save();
+                          ctx.translate(p.x + nx * (h + 6/view.zoom), p.y + ny * (h + 6/view.zoom));
+                          ctx.font = `bold ${11 / view.zoom}px sans-serif`;
+                          ctx.textAlign = 'center';
+                          ctx.textBaseline = 'middle';
+                          ctx.fillText((d).toString(), 0, 0);
+                          ctx.restore();
+                      }
+                  }
+              };
+              drawMarks(verts[0], verts[1]);
+              drawMarks(verts[0], verts[2]);
+              ctx.restore();
+          });
+      }
+
 
       // Removed Redundant Tecnigrafo measurement label block here
 
@@ -7912,52 +9559,132 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
             }
             ctx.restore();
         } else {
-            ctx.strokeStyle = drawing.isVirtual
-                ? '#9ca3af' // Gray for virtual
-                : (isKnownAngle 
-                    ? '#22c55e' 
-                    : ((activeTool as string) === 'Filo'
-                        ? (defaultFiloColor || '#ff5500')
-                        : (isLavagna ? '#FAF9F6' : (defaultLineStyle.color || ((defaultLineStyle.mode === 'pencil') ? 'rgba(187, 187, 187, 0.5)' : (defaultLineStyle.mode === 'ink' ? '#000000' : 'rgba(0, 0, 0, 1.0)'))))));
-            ctx.lineWidth = drawing.wheelLength !== undefined 
-                ? 4 / view.zoom 
+            // Live Drawing Preview using the EXACT selected pen style (China, Matita, or CAD) — NO green dashed line!
+            const previewMode = (activeTool as string) === 'Filo' ? 'CAD' : defaultLineStyle.mode;
+            const previewColor = drawing.isVirtual
+                ? '#9ca3af'
                 : ((activeTool as string) === 'Filo'
-                    ? 1.5 / view.zoom
-                    : (defaultLineStyle.mode === 'ink' 
-                        ? getEffectiveCADRenderWidth(defaultLineStyle.lineWidth, defaultLineStyle.mode, view.zoom) 
-                        : (defaultLineStyle.mode === 'CAD' ? defaultLineStyle.lineWidth / view.zoom : 2 / view.zoom)));
-            if ((activeTool as string) === 'Filo') {
-                ctx.setLineDash([]);
-            } else if (defaultLineStyle.lineType) {
-                const lt = defaultLineStyle.lineType;
-                if (lt === 'dashed') {
-                    ctx.setLineDash([8 / view.zoom, 4 / view.zoom]);
-                } else if (lt === 'dotted') {
-                    ctx.setLineDash([2 / view.zoom, 3 / view.zoom]);
-                } else if (lt === 'dashdot') {
-                    ctx.setLineDash([12 / view.zoom, 4 / view.zoom, 2 / view.zoom, 4 / view.zoom]);
-                } else if (lt === 'dashdash') {
-                    ctx.setLineDash([15 / view.zoom, 4 / view.zoom, 4 / view.zoom, 4 / view.zoom]);
-                } else {
-                    ctx.setLineDash([]);
-                }
-            } else {
-                ctx.setLineDash((defaultLineStyle.mode === 'CAD') ? [] : [5, 5]);
-            }
-            ctx.beginPath();
+                    ? (defaultFiloColor || '#ff5500')
+                    : defaultLineStyle.color);
+            const previewWidth = (activeTool as string) === 'Filo' ? 1.5 : defaultLineStyle.lineWidth;
+            const previewLineType = (activeTool as string) === 'Filo' ? 'continuous' : defaultLineStyle.lineType;
+            const previewDashed = (activeTool as string) === 'Filo' ? false : (drawing.isVirtual ? true : defaultLineStyle.dashed);
+
             if (activeTool === 'Line' || (activeTool as string) === 'Filo' || activeTool === 'Dimension') {
-                ctx.moveTo(drawing.start.x, drawing.start.y);
-                ctx.lineTo(drawing.current.x, drawing.current.y);
+                const isTraditionalSeg = activeTool === 'Line' && (previewMode === 'ink' || previewMode === 'pencil') && drawing.isTraditionalSegment;
+                const effectiveEnd = isTraditionalSeg ? (drawing.maxPoint || drawing.current) : drawing.current;
+                drawTraditionalOrCADLine(
+                    drawing.start,
+                    effectiveEnd,
+                    previewMode,
+                    previewColor,
+                    previewWidth,
+                    previewLineType,
+                    previewDashed,
+                    false,
+                    undefined,
+                    undefined,
+                    false
+                );
+                // 1) If user moved backwards along the drawn segment with China or Matita, render the live Ricalco (second pass: tutta scura e senza sbavature)
+                if (
+                    isTraditionalSeg &&
+                    drawing.retraceMinProj !== undefined &&
+                    drawing.lockedDir &&
+                    (drawing.maxLength || 0) - drawing.retraceMinProj > 0.05
+                ) {
+                    const retraceStartPt = {
+                        x: drawing.start.x + drawing.lockedDir.x * drawing.retraceMinProj,
+                        y: drawing.start.y + drawing.lockedDir.y * drawing.retraceMinProj
+                    };
+                    drawTraditionalOrCADLine(
+                        retraceStartPt,
+                        effectiveEnd,
+                        previewMode,
+                        previewColor,
+                        previewWidth,
+                        previewLineType,
+                        previewDashed,
+                        false,
+                        undefined,
+                        undefined,
+                        true
+                    );
+                }
+                // 2) If user is drawing a new China/Matita stroke directly on top of an existing collinear line, preview the 2nd-pass dark saturation live!
+                if (isTraditionalSeg) {
+                    const pdx = effectiveEnd.x - drawing.start.x;
+                    const pdy = effectiveEnd.y - drawing.start.y;
+                    const plen = Math.hypot(pdx, pdy);
+                    if (plen > 0.5) {
+                        const pux = pdx / plen;
+                        const puy = pdy / plen;
+                        for (const ent of entities) {
+                            if (ent.type === 'line' && ent.layer === activeLayerId && (ent.mode === 'ink' || ent.mode === 'pencil')) {
+                                const ldx = ent.end.x - ent.start.x;
+                                const ldy = ent.end.y - ent.start.y;
+                                const llen = Math.hypot(ldx, ldy);
+                                if (llen > 0.5) {
+                                    const sinT = Math.abs(pdx * ldy - pdy * ldx) / (plen * llen);
+                                    const perpD = Math.abs(pdy * (ent.start.x - drawing.start.x) - pdx * (ent.start.y - drawing.start.y)) / plen;
+                                    if (sinT < 0.12 && perpD < 2.0) {
+                                        const t1 = (ent.start.x - drawing.start.x) * pux + (ent.start.y - drawing.start.y) * puy;
+                                        const t2 = (ent.end.x - drawing.start.x) * pux + (ent.end.y - drawing.start.y) * puy;
+                                        const ovS = Math.max(0, Math.min(t1, t2));
+                                        const ovE = Math.min(plen, Math.max(t1, t2));
+                                        if (ovE - ovS > 0.4) {
+                                            drawTraditionalOrCADLine(
+                                                { x: drawing.start.x + pux * ovS, y: drawing.start.y + puy * ovS },
+                                                { x: drawing.start.x + pux * ovE, y: drawing.start.y + puy * ovE },
+                                                previewMode,
+                                                previewColor,
+                                                previewWidth,
+                                                previewLineType,
+                                                previewDashed,
+                                                false,
+                                                undefined,
+                                                undefined,
+                                                true
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
             } else if (activeTool === 'Circle') {
                 const radius = Math.sqrt(Math.pow(drawing.current.x - drawing.start.x, 2) + Math.pow(drawing.current.y - drawing.start.y, 2));
-                ctx.arc(drawing.start.x, drawing.start.y, radius, 0, Math.PI * 2);
-                // Materialize radius line segment from center to current point
+                drawTraditionalOrCADCircleOrArc(
+                    drawing.start,
+                    radius,
+                    0,
+                    Math.PI * 2,
+                    previewMode,
+                    previewColor,
+                    previewWidth,
+                    previewLineType,
+                    previewDashed
+                );
+                // Subtle radius helper thread
+                ctx.save();
+                ctx.strokeStyle = 'rgba(100, 116, 139, 0.45)';
+                ctx.lineWidth = 1 / view.zoom;
+                ctx.setLineDash([4 / view.zoom, 4 / view.zoom]);
+                ctx.beginPath();
                 ctx.moveTo(drawing.start.x, drawing.start.y);
                 ctx.lineTo(drawing.current.x, drawing.current.y);
+                ctx.stroke();
+                ctx.restore();
             } else if (activeTool === 'Rectangle') {
-                const width = drawing.current.x - drawing.start.x;
-                const height = drawing.current.y - drawing.start.y;
-                ctx.rect(drawing.start.x, drawing.start.y, width, height);
+                const pA = { x: drawing.start.x, y: drawing.start.y };
+                const pB = { x: drawing.current.x, y: drawing.start.y };
+                const pC = { x: drawing.current.x, y: drawing.current.y };
+                const pD = { x: drawing.start.x, y: drawing.current.y };
+                drawTraditionalOrCADLine(pA, pB, previewMode, previewColor, previewWidth, previewLineType, previewDashed);
+                drawTraditionalOrCADLine(pB, pC, previewMode, previewColor, previewWidth, previewLineType, previewDashed);
+                drawTraditionalOrCADLine(pC, pD, previewMode, previewColor, previewWidth, previewLineType, previewDashed);
+                drawTraditionalOrCADLine(pD, pA, previewMode, previewColor, previewWidth, previewLineType, previewDashed);
             } else if (activeTool === 'Camera') {
                 const dx = drawing.current.x - drawing.start.x;
                 const dy = drawing.current.y - drawing.start.y;
@@ -7967,7 +9694,9 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
                 ctx.save();
                 ctx.translate(drawing.start.x, drawing.start.y);
                 ctx.rotate(angle);
-                
+                ctx.strokeStyle = previewColor || '#000000';
+                ctx.lineWidth = 1.5 / view.zoom;
+                ctx.beginPath();
                 // Camera body
                 ctx.rect(-10 / view.zoom, -8 / view.zoom, 20 / view.zoom, 16 / view.zoom);
                 // Camera lens
@@ -7975,16 +9704,32 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
                 ctx.lineTo(18 / view.zoom, -8 / view.zoom);
                 ctx.lineTo(18 / view.zoom, 8 / view.zoom);
                 ctx.lineTo(10 / view.zoom, 4 / view.zoom);
+                ctx.stroke();
                 ctx.restore();
             } else if (activeTool === 'Arc') {
                 if (!drawing.arcStartPoint) {
-                    // Previewing radius line
                     const radius = Math.sqrt(Math.pow(drawing.current.x - drawing.start.x, 2) + Math.pow(drawing.current.y - drawing.start.y, 2));
-                    ctx.arc(drawing.start.x, drawing.start.y, radius, 0, Math.PI * 2);
+                    drawTraditionalOrCADCircleOrArc(
+                        drawing.start,
+                        radius,
+                        0,
+                        Math.PI * 2,
+                        previewMode,
+                        previewColor,
+                        previewWidth,
+                        previewLineType,
+                        true
+                    );
+                    ctx.save();
+                    ctx.strokeStyle = 'rgba(100, 116, 139, 0.45)';
+                    ctx.lineWidth = 1 / view.zoom;
+                    ctx.setLineDash([4 / view.zoom, 4 / view.zoom]);
+                    ctx.beginPath();
                     ctx.moveTo(drawing.start.x, drawing.start.y);
                     ctx.lineTo(drawing.current.x, drawing.current.y);
+                    ctx.stroke();
+                    ctx.restore();
                 } else {
-                    // Previewing arc angle
                     const radius = Math.sqrt(Math.pow(drawing.arcStartPoint.x - drawing.start.x, 2) + Math.pow(drawing.arcStartPoint.y - drawing.start.y, 2));
                     let startAngle = Math.atan2(drawing.arcStartPoint.y - drawing.start.y, drawing.arcStartPoint.x - drawing.start.x) * 180 / Math.PI;
                     let endAngle = Math.atan2(drawing.current.y - drawing.start.y, drawing.current.x - drawing.start.x) * 180 / Math.PI;
@@ -7992,21 +9737,34 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
                     startAngle = (startAngle + 360) % 360;
                     endAngle = (endAngle + 360) % 360;
 
-                    const diff = endAngle - startAngle;
                     if (isShiftPressedRef.current) {
                         const temp = startAngle;
                         startAngle = endAngle;
                         endAngle = temp;
                     }
 
-                    ctx.arc(drawing.start.x, drawing.start.y, radius, startAngle * Math.PI / 180, endAngle * Math.PI / 180);
-                    
-                    // Draw indicator line to cursor
+                    drawTraditionalOrCADCircleOrArc(
+                        drawing.start,
+                        radius,
+                        startAngle * Math.PI / 180,
+                        endAngle * Math.PI / 180,
+                        previewMode,
+                        previewColor,
+                        previewWidth,
+                        previewLineType,
+                        previewDashed
+                    );
+                    ctx.save();
+                    ctx.strokeStyle = 'rgba(100, 116, 139, 0.45)';
+                    ctx.lineWidth = 1 / view.zoom;
+                    ctx.setLineDash([4 / view.zoom, 4 / view.zoom]);
+                    ctx.beginPath();
                     ctx.moveTo(drawing.start.x, drawing.start.y);
                     ctx.lineTo(drawing.current.x, drawing.current.y);
+                    ctx.stroke();
+                    ctx.restore();
                 }
             }
-            ctx.stroke();
 
             if ((activeTool as string) === 'Filo') {
                 ctx.save();
@@ -8096,24 +9854,31 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
 
         if (true) { // Measurement tooltip runs for all
             // Real-time measurement tooltip with emerald color indicator when wheel is tuning
-            const tooltipDx = drawing.current.x - drawing.start.x;
-            const tooltipDy = drawing.current.y - drawing.start.y;
+            const effectiveTooltipEnd = (activeTool === 'Line' && drawing.isTraditionalSegment && drawing.maxPoint)
+                ? drawing.maxPoint
+                : drawing.current;
+            const tooltipDx = effectiveTooltipEnd.x - drawing.start.x;
+            const tooltipDy = effectiveTooltipEnd.y - drawing.start.y;
             const tooltipLength = Math.sqrt(tooltipDx * tooltipDx + tooltipDy * tooltipDy);
             
             ctx.save();
-            ctx.font = `bold ${11 / view.zoom}px sans-serif`;
+            ctx.font = `bold ${17.5 / view.zoom}px monospace`;
             ctx.textAlign = 'left';
-            ctx.textBaseline = 'top';
+            ctx.textBaseline = 'middle';
         
         const formatPrecision = (val: number) => {
-            if (Number.isInteger(val)) return val.toString();
-            const roundedVal = Math.round(val * 100) / 100;
-            return roundedVal.toString().replace('.', ',');
+            const decimals = view.zoom >= 1.2 ? 3 : (view.zoom >= 0.45 ? 2 : (view.zoom >= 0.20 ? 1 : 0));
+            return decimals === 0 ? `${Math.round(val)}` : val.toFixed(decimals).replace('.', ',');
         };
 
         let label = '';
+        const isTypingDrawingLineOverride =
+            liveNumericOverride?.kind === 'drawing_line' &&
+            (Date.now() - liveNumericOverride.timestamp < 8000);
         if (activeTool === 'Line' || (activeTool as string) === 'Filo' || activeTool === 'Dimension') {
-            label = `L = ${formatPrecision(tooltipLength)}`;
+            label = isTypingDrawingLineOverride
+                ? `L = ${liveNumericOverride.text.replace('.', ',')}▌ cm`
+                : `L = ${formatPrecision(tooltipLength)} cm`;
         } else if (activeTool === 'Circle') {
             let currentR = tooltipLength;
             if (circleRadiusInputString) {
@@ -8131,11 +9896,11 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
                 const cm2 = (Math.round(a * 100) / 100).toString().replace('.', ',');
                 return `${cm2} cm²`;
             };
-            const rLabel = circleRadiusInputString ? `R = ${circleRadiusInputString}` : `R = ${formatPrecision(tooltipLength)}`;
+            const rLabel = circleRadiusInputString ? `R = ${circleRadiusInputString}▌ cm` : `R = ${formatPrecision(tooltipLength)} cm`;
             label = `${rLabel}  |  Area = ${formatArea(area)}`;
         } else if (activeTool === 'Arc') {
             if (!drawing.arcStartPoint) {
-                label = `R = ${formatPrecision(tooltipLength)}`;
+                label = `R = ${formatPrecision(tooltipLength)} cm`;
             } else {
                 let currentAngle = Math.atan2(drawing.current.y - drawing.start.y, drawing.current.x - drawing.start.x) * 180 / Math.PI;
                 currentAngle = (currentAngle + 360) % 360;
@@ -8144,40 +9909,33 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
         } else if (activeTool === 'Rectangle') {
             const w = Math.abs(tooltipDx);
             const h = Math.abs(tooltipDy);
-            label = `W: ${formatPrecision(w)}  H: ${formatPrecision(h)}`;
+            label = `W: ${formatPrecision(w)} cm  H: ${formatPrecision(h)} cm`;
         }
 
         if (label) {
-            let offsetX = 12;
-            let offsetY = 12;
-            
-            // Posizioniamo la finestrella dinamica spostata in alto a destra,
-            // per evitare che venga nascosta dalla mano dell'utente, dal tecnigrafo o dal cursore.
-            if ((activeTool as any) !== 'Gomma' && (activeTool as any) !== 'Trim' && (activeTool as any) !== 'Select') {
-                offsetX = 55;
-                offsetY = -55; // Sposta in alto e a destra in modo universale
-            }
+            let offsetX = 24;
+            let offsetY = -38;
 
             const tooltipX = drawing.current.x + offsetX / view.zoom;
             const tooltipY = drawing.current.y + offsetY / view.zoom;
             
             const metrics = ctx.measureText(label);
-            const padW = 6 / view.zoom;
-            const padH = 4 / view.zoom;
+            const padW = 12 / view.zoom;
             const bgW = metrics.width + padW * 2;
-            const bgH = 15 / view.zoom;
+            const bgH = 31 / view.zoom;
             
-            ctx.fillStyle = 'rgba(15, 23, 42, 0.85)';
+            const isManualInputActive = Boolean(isTypingDrawingLineOverride || circleRadiusInputString || drawing.wheelLength !== undefined);
+            ctx.fillStyle = isManualInputActive ? 'rgba(6, 78, 59, 0.96)' : 'rgba(15, 23, 42, 0.94)';
             ctx.beginPath();
-            ctx.roundRect(tooltipX, tooltipY, bgW, bgH, 4 / view.zoom);
+            ctx.roundRect(tooltipX, tooltipY - bgH / 2, bgW, bgH, 7 / view.zoom);
             ctx.fill();
             
-            ctx.strokeStyle = (circleRadiusInputString || drawing.wheelLength !== undefined) ? '#10b981' : '#64748b';
-            ctx.lineWidth = 1 / view.zoom;
+            ctx.strokeStyle = isManualInputActive ? '#34d399' : '#f59e0b';
+            ctx.lineWidth = (isManualInputActive ? 2.4 : 2.0) / view.zoom;
             ctx.stroke();
             
-            ctx.fillStyle = (circleRadiusInputString || drawing.wheelLength !== undefined) ? '#34d399' : '#f8fafc';
-            ctx.fillText(label, tooltipX + padW, tooltipY + 2 / view.zoom);
+            ctx.fillStyle = isManualInputActive ? '#a7f3d0' : '#fef08a';
+            ctx.fillText(label, tooltipX + padW, tooltipY);
         }
         ctx.restore();
         
@@ -8381,7 +10139,7 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
             ctx.stroke();
         }
         // Render Equal Length Smart Snap visual indicator & badge
-        if (snapEnabled) {
+        if (isSnapActive()) {
           const activeEqualSnap = (drawing && drawing.snapSubtype === 'equal_length') ? drawing : (hoverSnap && hoverSnap.subtype === 'equal_length' ? hoverSnap : null);
           if (activeEqualSnap) {
             const refSeg = (activeEqualSnap as any).refSegment || lastSegmentRef.current;
@@ -8541,7 +10299,160 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
         }
       } // closes if (drawing)
 
-      const isFreehandMode = activeTool === 'Line';
+      // Suggerimento visivo della linea parallela ad offset precedente durante il puntamento o il tracciamento (Line / Filo / Muro)
+      // (Compare SOLO se l'utente ha cliccato sul pulsante Offset)
+      if (isOffsetAidActiveRef.current && ['Line', 'Filo', 'Muro', 'BIM_Muro'].includes(activeTool)) {
+          const refD = getEffectiveLastParallelOffset(projectedEntities);
+          if (refD > 0.05) {
+              const probePt = (drawing && drawing.current)
+                  ? ((activeTool === 'Line' && drawing.isTraditionalSegment && drawing.maxPoint) ? drawing.maxPoint : drawing.current)
+                  : (hoverSnap && hoverSnap.snapped ? hoverSnap.point : actualMousePosRef.current);
+              const suggestTol = 38 / view.zoom;
+              const spanMargin = Math.max(80, 120 / view.zoom);
+
+              let bestRefLine: LineEntity | null = null;
+              let bestDiff = Infinity;
+              let bestSignedD = 0;
+              let bestProj = 0;
+              let bestOLen = 0;
+
+              for (const ent of projectedEntities) {
+                  if (ent.type !== 'line' || (ent as any).isSimmetryAxis || (ent as any).hideIn2D) continue;
+                  const oLine = ent as LineEntity;
+                  const odx = oLine.end.x - oLine.start.x;
+                  const ody = oLine.end.y - oLine.start.y;
+                  const oLen = Math.hypot(odx, ody);
+                  if (oLen < 0.5) continue;
+                  const tx = odx / oLen;
+                  const ty = ody / oLen;
+                  const nx = -ty;
+                  const ny = tx;
+
+                  const sD = (probePt.x - oLine.start.x) * nx + (probePt.y - oLine.start.y) * ny;
+                  const pD = Math.abs(sD);
+                  const diff = Math.abs(pD - refD);
+                  if (diff > suggestTol) continue;
+
+                  const proj = (probePt.x - oLine.start.x) * tx + (probePt.y - oLine.start.y) * ty;
+                  if (proj < -spanMargin || proj > oLen + spanMargin) continue;
+
+                  if (drawing && drawing.start) {
+                      const startSD = (drawing.start.x - oLine.start.x) * nx + (drawing.start.y - oLine.start.y) * ny;
+                      const startPD = Math.abs(startSD);
+                      const isStartNearOffset = Math.abs(startPD - refD) < suggestTol && (startSD * sD >= 0);
+                      const isStartOnLine = startPD < 2.0;
+                      if (!isStartNearOffset && !isStartOnLine) continue;
+                  }
+
+                  if (diff < bestDiff) {
+                      bestDiff = diff;
+                      bestRefLine = oLine;
+                      bestSignedD = sD;
+                      bestProj = proj;
+                      bestOLen = oLen;
+                  }
+              }
+
+              if (bestRefLine) {
+                  const odx = bestRefLine.end.x - bestRefLine.start.x;
+                  const ody = bestRefLine.end.y - bestRefLine.start.y;
+                  const tx = odx / bestOLen;
+                  const ty = ody / bestOLen;
+                  const nx = -ty;
+                  const ny = tx;
+                  const sideSign = bestSignedD >= 0 ? 1 : -1;
+                  const currentPerpD = Math.abs(bestSignedD);
+                  const isSnappedToEqualOffset = Math.abs(currentPerpD - refD) < 0.08;
+
+                  const shiftX = nx * sideSign * refD;
+                  const shiftY = ny * sideSign * refD;
+                  const gStart = { x: bestRefLine.start.x + shiftX, y: bestRefLine.start.y + shiftY };
+                  const gEnd = { x: bestRefLine.end.x + shiftX, y: bestRefLine.end.y + shiftY };
+
+                  ctx.save();
+                  // 1. Linee tratteggiate di allineamento degli estremi tra la linea madre e la guida di offset
+                  ctx.strokeStyle = 'rgba(16, 185, 129, 0.38)';
+                  ctx.lineWidth = 1.1 / view.zoom;
+                  ctx.setLineDash([3 / view.zoom, 3 / view.zoom]);
+                  ctx.beginPath();
+                  ctx.moveTo(bestRefLine.start.x, bestRefLine.start.y);
+                  ctx.lineTo(gStart.x, gStart.y);
+                  ctx.moveTo(bestRefLine.end.x, bestRefLine.end.y);
+                  ctx.lineTo(gEnd.x, gEnd.y);
+                  ctx.stroke();
+
+                  // 2. Linea guida parallela all'offset precedente
+                  ctx.strokeStyle = isSnappedToEqualOffset ? '#10b981' : 'rgba(16, 185, 129, 0.85)';
+                  ctx.lineWidth = (isSnappedToEqualOffset ? 2.6 : 1.8) / view.zoom;
+                  ctx.setLineDash([8 / view.zoom, 5 / view.zoom]);
+                  ctx.beginPath();
+                  ctx.moveTo(gStart.x, gStart.y);
+                  ctx.lineTo(gEnd.x, gEnd.y);
+                  ctx.stroke();
+
+                  // Estremi della guida parallela
+                  ctx.setLineDash([]);
+                  ctx.fillStyle = '#10b981';
+                  ctx.beginPath();
+                  ctx.arc(gStart.x, gStart.y, 3.5 / view.zoom, 0, Math.PI * 2);
+                  ctx.arc(gEnd.x, gEnd.y, 3.5 / view.zoom, 0, Math.PI * 2);
+                  ctx.fill();
+
+                  // 3. Connettore di quota perpendicolare tra la linea madre e il puntatore / segmento tracciato
+                  const clampedProj = Math.max(0, Math.min(bestOLen, bestProj));
+                  const pOnRef = {
+                      x: bestRefLine.start.x + tx * clampedProj,
+                      y: bestRefLine.start.y + ty * clampedProj
+                  };
+                  const pOnTarget = {
+                      x: pOnRef.x + nx * sideSign * currentPerpD,
+                      y: pOnRef.y + ny * sideSign * currentPerpD
+                  };
+                  ctx.strokeStyle = isSnappedToEqualOffset ? '#10b981' : '#f59e0b';
+                  ctx.lineWidth = 1.6 / view.zoom;
+                  ctx.setLineDash([4 / view.zoom, 3 / view.zoom]);
+                  ctx.beginPath();
+                  ctx.moveTo(pOnRef.x, pOnRef.y);
+                  ctx.lineTo(pOnTarget.x, pOnTarget.y);
+                  ctx.stroke();
+                  ctx.setLineDash([]);
+
+                  // 4. Etichetta del suggerimento di offset precedente
+                  const zoomDecimals = view.zoom >= 1.2 ? 2 : (view.zoom >= 0.35 ? 1 : 0);
+                  const refFormatted = zoomDecimals === 0
+                      ? `${Math.round(refD)}`
+                      : refD.toFixed(zoomDecimals).replace('.', ',');
+                  const curFormatted = zoomDecimals === 0
+                      ? `${Math.round(currentPerpD)}`
+                      : currentPerpD.toFixed(zoomDecimals).replace('.', ',');
+                  const refTag = isSnappedToEqualOffset
+                      ? `= ${refFormatted} cm (Offset uguale)`
+                      : `Rif. ${refFormatted} cm (d = ${curFormatted} cm)`;
+
+                  const midConnX = (pOnRef.x + pOnTarget.x) / 2;
+                  const midConnY = (pOnRef.y + pOnTarget.y) / 2;
+                  ctx.font = `bold ${13 / view.zoom}px monospace`;
+                  const rW = ctx.measureText(refTag).width + 16 / view.zoom;
+                  const rH = 22 / view.zoom;
+
+                  ctx.fillStyle = isSnappedToEqualOffset ? 'rgba(6, 78, 59, 0.96)' : 'rgba(15, 23, 42, 0.92)';
+                  ctx.strokeStyle = isSnappedToEqualOffset ? '#10b981' : '#f59e0b';
+                  ctx.lineWidth = 1.8 / view.zoom;
+                  ctx.beginPath();
+                  ctx.roundRect(midConnX - rW / 2, midConnY - rH / 2, rW, rH, 5 / view.zoom);
+                  ctx.fill();
+                  ctx.stroke();
+
+                  ctx.fillStyle = isSnappedToEqualOffset ? '#6ee7b7' : '#fef08a';
+                  ctx.textAlign = 'center';
+                  ctx.textBaseline = 'middle';
+                  ctx.fillText(refTag, midConnX, midConnY);
+                  ctx.restore();
+              }
+          }
+      }
+
+      const isFreehandMode = activeTool === 'Line' && (defaultLineStyle.mode === 'pencil' || defaultLineStyle.mode === 'ink');
 
       // Render hover snap indicator
       if (hoverSnap && hoverSnap.snapped && isPointInViewport(hoverSnap.point, 50)) {
@@ -8647,7 +10558,31 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
             ctx.lineTo(hoverSnap.point.x + sz * 1.5, hoverSnap.point.y - sz);
             ctx.stroke();
             ctx.restore();
-        } else if (snapEnabled && hoverSnap.subtype === 'equal_length' && hoverSnap.refSegment && drawing && drawing.start) {
+        } else if (hoverSnap.subtype === 'parallel_offset' || hoverSnap.subtype === 'parallel_offset_end') {
+            ctx.save();
+            ctx.strokeStyle = '#10b981';
+            ctx.fillStyle = 'rgba(16, 185, 129, 0.25)';
+            ctx.lineWidth = 2.8 / view.zoom;
+            const sz = 6.5 / view.zoom;
+            ctx.beginPath();
+            ctx.arc(hoverSnap.point.x, hoverSnap.point.y, sz, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.stroke();
+            ctx.restore();
+        } else if (isSnapActive() && (hoverSnap?.subtype === 'input' || drawing?.snapSubtype === 'input') && drawing && drawing.start) {
+            ctx.save();
+            const activeStart = drawing.start;
+            const activeEnd = (drawing && drawing.snapSubtype === 'input') ? (drawing.current || drawing.start) : (hoverSnap?.point || drawing.start);
+            const rawVal = lastInsertedParameter ? lastInsertedParameter.value : 1;
+            const refLen = (drawing && drawing.snapSubtype === 'input') ? (drawing.refLength || (rawVal < 50 ? rawVal * 100 : rawVal)) : (hoverSnap?.refLength || (rawVal < 50 ? rawVal * 100 : rawVal));
+            ctx.setLineDash([5 / view.zoom, 5 / view.zoom]);
+            ctx.strokeStyle = 'rgba(139, 92, 246, 0.8)';
+            ctx.lineWidth = 1.2 / view.zoom;
+            ctx.beginPath();
+            ctx.arc(activeStart.x, activeStart.y, refLen, 0, Math.PI * 2);
+            ctx.stroke();
+            ctx.restore();
+        } else if (isSnapActive() && hoverSnap.subtype === 'equal_length' && hoverSnap.refSegment && drawing && drawing.start) {
             ctx.save();
             const goldColor = '#f59e0b';
             const goldLight = '#fbbf24';
@@ -8779,7 +10714,8 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
             tangent: 'Tangente',
             perpendicular: 'Perpendicolare',
             smart: 'Allineamento',
-            equal_length: '⚡ Lunghezza Uguale'
+            equal_length: '⚡ Lunghezza Uguale',
+            input: 'Snap input'
         };
         const label = labelMap[hoverSnap.subtype || ''] || hoverSnap.subtype || 'Snap';
         ctx.font = `${14 / view.zoom}px sans-serif`;
@@ -8790,8 +10726,8 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
         const boxX = hoverSnap.point.x - boxWidth / 2;
         const boxY = hoverSnap.point.y - 27 / view.zoom - boxHeight;
 
-        ctx.fillStyle = hoverSnap.subtype === 'equal_length' ? 'rgba(30, 27, 75, 0.95)' : 'rgba(15, 23, 42, 0.92)';
-        ctx.strokeStyle = hoverSnap.subtype === 'equal_length' ? '#f59e0b' : '#10b981';
+        ctx.fillStyle = hoverSnap.subtype === 'equal_length' ? 'rgba(30, 27, 75, 0.95)' : hoverSnap.subtype === 'input' ? 'rgba(76, 29, 149, 0.95)' : 'rgba(15, 23, 42, 0.92)';
+        ctx.strokeStyle = hoverSnap.subtype === 'equal_length' ? '#f59e0b' : hoverSnap.subtype === 'input' ? '#8b5cf6' : '#10b981';
         ctx.lineWidth = 1 / view.zoom;
         ctx.beginPath();
         const r = 3 / view.zoom;
@@ -8929,10 +10865,12 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
           let totalLenLabel = "";
           if (allungaHover.pivotPt) {
               const totalLen = Math.hypot(allungaHover.targetPt.x - allungaHover.pivotPt.x, allungaHover.targetPt.y - allungaHover.pivotPt.y);
-              totalLenLabel = ` [L: ${Math.round(totalLen * 10) / 10}]`;
+              const totalDecimals = view.zoom >= 1.5 ? 2 : (view.zoom >= 0.35 ? 1 : 0);
+              totalLenLabel = ` [L: ${totalLen.toFixed(totalDecimals)}]`;
           }
 
-          const label = `+${Math.round(extLen * 10) / 10}${totalLenLabel} mm`;
+          const extDecimals = view.zoom >= 1.5 ? 2 : (view.zoom >= 0.35 ? 1 : 0);
+          const label = `+${extLen.toFixed(extDecimals)}${totalLenLabel} mm`;
           ctx.font = `bold ${11 / view.zoom}px sans-serif`;
           const metrics = ctx.measureText(label);
           const padX = 6 / view.zoom;
@@ -9613,74 +11551,295 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
 
       // Draw Parallel distance history
       // Draw Parallel preview
-      if (activeTool === 'Parallel' && selectedParallelLine && parallelMouse) {
+      // Draw Parallel preview with Tecnigrafo Perpendicular Ruler
+      if (activeTool === 'Parallel' && selectedParallelLine) {
           ctx.save();
           ctx.translate(view.pan.x, view.pan.y);
           ctx.scale(view.zoom, view.zoom);
-          ctx.setLineDash([5 / view.zoom, 5 / view.zoom]);
-          ctx.strokeStyle = '#3b82f6'; // Blue 500
-          ctx.lineWidth = 1.5 / view.zoom;
           
           const line = selectedParallelLine as LineEntity;
           const dxLine = line.end.x - line.start.x;
           const dyLine = line.end.y - line.start.y;
           const L = Math.sqrt(dxLine * dxLine + dyLine * dyLine);
+          
           if (L > 0) {
-              const normX = -dyLine / L;
-              const normY = dxLine / L;
+              const tangX = dxLine / L;
+              const tangY = dyLine / L;
+              const normX = -tangY;
+              const normY = tangX;
               
-              const vecMouse = { x: parallelMouse.x - line.start.x, y: parallelMouse.y - line.start.y };
-              const distFromMouse = vecMouse.x * normX + vecMouse.y * normY;
-              const sign = isParallelWheelActive ? parallelSign : (distFromMouse >= 0 ? 1 : -1);
-              const offsetFromLine = parallelDistance * sign;
-              
-              ctx.beginPath();
-              ctx.moveTo(line.start.x + normX * offsetFromLine, line.start.y + normY * offsetFromLine);
-              ctx.lineTo(line.end.x + normX * offsetFromLine, line.end.y + normY * offsetFromLine);
-              ctx.stroke();
+              // Anchor point P0 on the selected segment (centers along the line)
+              let t = 0.5;
+              if (parallelMouse) {
+                  const pMouseProj = (parallelMouse.x - line.start.x) * tangX + (parallelMouse.y - line.start.y) * tangY;
+                  t = Math.max(0.12, Math.min(0.88, pMouseProj / L));
+              }
+              const p0 = {
+                  x: line.start.x + tangX * (t * L),
+                  y: line.start.y + tangY * (t * L)
+              };
 
-              // Draw distance indicator lines (perpendicular connectors)
+              const offsetVal = parallelDistance * parallelSign;
+
+              // 1. Highlight the seed base line with amber glow
               ctx.save();
-              ctx.setLineDash([2 / view.zoom, 4 / view.zoom]);
-              ctx.strokeStyle = 'rgba(59, 130, 246, 0.6)'; // Semi-transparent blue
-              
-              // Connector at start
+              ctx.strokeStyle = '#f59e0b'; // Amber-500
+              ctx.lineWidth = 3 / view.zoom;
+              ctx.setLineDash([]);
               ctx.beginPath();
               ctx.moveTo(line.start.x, line.start.y);
-              ctx.lineTo(line.start.x + normX * offsetFromLine, line.start.y + normY * offsetFromLine);
+              ctx.lineTo(line.end.x, line.end.y);
               ctx.stroke();
 
-              // Connector at end
+              // Endpoints of base line
+              ctx.fillStyle = '#f59e0b';
               ctx.beginPath();
-              ctx.moveTo(line.end.x, line.end.y);
-              ctx.lineTo(line.end.x + normX * offsetFromLine, line.end.y + normY * offsetFromLine);
-              ctx.stroke();
-              ctx.restore();
-              
-              // Display current distance
-              const distLabel = `Dist: ${parallelDistance.toFixed(1)}`;
-              ctx.font = `bold ${12/view.zoom}px sans-serif`;
-              const metrics = ctx.measureText(distLabel);
-              const pad = 6 / view.zoom;
-              const bgW = metrics.width + pad * 2;
-              const bgH = 18 / view.zoom;
-              const posX = parallelMouse.x + 12/view.zoom;
-              const posY = parallelMouse.y + 12/view.zoom;
-              
-              ctx.fillStyle = 'rgba(15, 23, 42, 0.9)';
-              ctx.beginPath();
-              ctx.roundRect(posX, posY, bgW, bgH, 4 / view.zoom);
+              ctx.arc(line.start.x, line.start.y, 3.5 / view.zoom, 0, Math.PI * 2);
+              ctx.arc(line.end.x, line.end.y, 3.5 / view.zoom, 0, Math.PI * 2);
               ctx.fill();
-              
-              ctx.strokeStyle = isParallelWheelActive ? '#10b981' : '#3b82f6';
+              ctx.restore();
+
+              // 2. RIGHELLO PERPENDICOLARE DEL TECNIGRAFO
+              // Perpendicular axis extending both directions with Zero at segment and positive graduations on both sides
+              const rulerSpan = Math.max(350, Math.min(1200, 650 / view.zoom));
+              const rulerHalfWidth = 15 / view.zoom;
+              const normAngle = Math.atan2(normY, normX);
+
+              ctx.save();
+              ctx.translate(p0.x, p0.y);
+              ctx.rotate(normAngle);
+
+              // Acrylic smoked ruler body
+              ctx.fillStyle = 'rgba(15, 23, 42, 0.88)';
+              ctx.beginPath();
+              ctx.roundRect(-rulerSpan, -rulerHalfWidth, rulerSpan * 2, rulerHalfWidth * 2, 4 / view.zoom);
+              ctx.fill();
+
+              // Amber edge borders
+              ctx.strokeStyle = 'rgba(245, 158, 11, 0.5)';
               ctx.lineWidth = 1 / view.zoom;
               ctx.stroke();
-              
-              ctx.fillStyle = isParallelWheelActive ? '#34d399' : '#ffffff';
-              ctx.fillText(distLabel, posX + pad, posY + 13 / view.zoom);
+
+              // Central dashed spine
+              ctx.strokeStyle = 'rgba(148, 163, 184, 0.2)';
+              ctx.setLineDash([3 / view.zoom, 3 / view.zoom]);
+              ctx.beginPath();
+              ctx.moveTo(-rulerSpan, 0);
+              ctx.lineTo(rulerSpan, 0);
+              ctx.stroke();
+              ctx.setLineDash([]);
+
+              // ZERO MARKER on the segment (x = 0)
+              ctx.strokeStyle = '#f59e0b';
+              ctx.lineWidth = 2.5 / view.zoom;
+              ctx.beginPath();
+              ctx.moveTo(0, -rulerHalfWidth - 3 / view.zoom);
+              ctx.lineTo(0, rulerHalfWidth + 3 / view.zoom);
+              ctx.stroke();
+
+              // Brass Pivot Rivet at (0, 0)
+              ctx.fillStyle = '#fbbf24';
+              ctx.beginPath();
+              ctx.arc(0, 0, 3.5 / view.zoom, 0, Math.PI * 2);
+              ctx.fill();
+              ctx.strokeStyle = '#78350f';
+              ctx.lineWidth = 1 / view.zoom;
+              ctx.stroke();
+
+              // "0.00" label right on the origin
+              ctx.font = `bold ${8.5 / view.zoom}px monospace`;
+              ctx.textAlign = 'center';
+              ctx.textBaseline = 'bottom';
+              ctx.fillStyle = '#fbbf24';
+              ctx.fillText('0.00', 0, -rulerHalfWidth - 4 / view.zoom);
+
+              // GRADUATIONS ON BOTH SIDES: POSITIVE NUMBERS ON BOTH SIDES (+ and -)
+              const majorTicks = [10, 20, 25, 30, 40, 50, 60, 70, 80, 90, 100, 120, 150, 180, 200, 250, 300, 350, 400, 500];
+
+              [-1, 1].forEach(side => {
+                  for (let cm = 5; cm <= rulerSpan; cm += 5) {
+                      const xPos = cm * side;
+                      const isMajor = majorTicks.includes(cm);
+                      const isTens = (cm % 10 === 0);
+                      
+                      let tickLen = 3.5 / view.zoom;
+                      if (isMajor) tickLen = 8 / view.zoom;
+                      else if (isTens) tickLen = 5.5 / view.zoom;
+
+                      ctx.strokeStyle = isMajor ? 'rgba(251, 191, 36, 0.75)' : 'rgba(203, 213, 225, 0.35)';
+                      ctx.lineWidth = (isMajor ? 1.2 : 0.8) / view.zoom;
+
+                      // Top tick
+                      ctx.beginPath();
+                      ctx.moveTo(xPos, -rulerHalfWidth);
+                      ctx.lineTo(xPos, -rulerHalfWidth + tickLen);
+                      ctx.stroke();
+
+                      // Bottom tick
+                      ctx.beginPath();
+                      ctx.moveTo(xPos, rulerHalfWidth);
+                      ctx.lineTo(xPos, rulerHalfWidth - (tickLen * 0.6));
+                      ctx.stroke();
+
+                      // Major numeric label (positive on both sides!)
+                      if (isMajor && (cm <= 50 || cm % 20 === 0 || cm === 25 || cm % 50 === 0)) {
+                          const pxDist = cm * view.zoom;
+                          if (pxDist > 15 || cm % 50 === 0 || cm <= 30) {
+                              ctx.save();
+                              ctx.translate(xPos, rulerHalfWidth + 3.5 / view.zoom);
+                              ctx.font = `bold ${8 / view.zoom}px sans-serif`;
+                              ctx.textAlign = 'center';
+                              ctx.textBaseline = 'top';
+                              ctx.fillStyle = isTens ? '#fde68a' : '#cbd5e1';
+                              const labelText = cm >= 100 && cm % 100 === 0 ? `${cm / 100}m` : `${cm}`;
+                              ctx.fillText(labelText, 0, 0);
+                              ctx.restore();
+                          }
+                      }
+                  }
+              });
+
+              // 3. CURSORE A SLITTA / DYNAMIC RUNNER INDEX
+              const runnerX = offsetVal;
+              // Runner line
+              ctx.strokeStyle = '#06b6d4'; // Cyan-500
+              ctx.lineWidth = 2.5 / view.zoom;
+              ctx.beginPath();
+              ctx.moveTo(runnerX, -rulerHalfWidth - 4 / view.zoom);
+              ctx.lineTo(runnerX, rulerHalfWidth + 4 / view.zoom);
+              ctx.stroke();
+
+              // Top and bottom pointer chevrons
+              ctx.fillStyle = '#06b6d4';
+              ctx.beginPath();
+              ctx.moveTo(runnerX, -rulerHalfWidth);
+              ctx.lineTo(runnerX - 3.5 / view.zoom, -rulerHalfWidth - 6 / view.zoom);
+              ctx.lineTo(runnerX + 3.5 / view.zoom, -rulerHalfWidth - 6 / view.zoom);
+              ctx.closePath();
+              ctx.fill();
+
+              // Dynamic vernier sliding badge
+              const badgeDecimals = view.zoom >= 1.2 ? 3 : (view.zoom >= 0.45 ? 2 : (view.zoom >= 0.20 ? 1 : 0));
+              const badgeText = `${parallelDistance.toFixed(badgeDecimals).replace('.', ',')} cm`;
+              ctx.font = `bold ${9.5 / view.zoom}px sans-serif`;
+              const badgeWidth = ctx.measureText(badgeText).width + (10 / view.zoom);
+              const badgeHeight = 15 / view.zoom;
+              const badgeY = -rulerHalfWidth - 7 / view.zoom - badgeHeight;
+
+              ctx.fillStyle = 'rgba(8, 51, 68, 0.95)';
+              ctx.beginPath();
+              ctx.roundRect(runnerX - badgeWidth / 2, badgeY, badgeWidth, badgeHeight, 3 / view.zoom);
+              ctx.fill();
+              ctx.strokeStyle = '#22d3ee';
+              ctx.lineWidth = 1 / view.zoom;
+              ctx.stroke();
+
+              ctx.fillStyle = '#a5f3fc';
+              ctx.textAlign = 'center';
+              ctx.textBaseline = 'middle';
+              ctx.fillText(badgeText, runnerX, badgeY + badgeHeight / 2);
+
+              ctx.restore(); // end ruler transform
+
+              // 4. GHOST PARALLEL LINE AT CURRENT OFFSET
+              const p1Offset = {
+                  x: line.start.x + normX * offsetVal,
+                  y: line.start.y + normY * offsetVal
+              };
+              const p2Offset = {
+                  x: line.end.x + normX * offsetVal,
+                  y: line.end.y + normY * offsetVal
+              };
+
+              ctx.save();
+              ctx.strokeStyle = '#06b6d4';
+              ctx.lineWidth = 2 / view.zoom;
+              ctx.setLineDash([6 / view.zoom, 4 / view.zoom]);
+              ctx.beginPath();
+              ctx.moveTo(p1Offset.x, p1Offset.y);
+              ctx.lineTo(p2Offset.x, p2Offset.y);
+              ctx.stroke();
+
+              // Endpoints of parallel line
+              ctx.fillStyle = '#22d3ee';
+              ctx.beginPath();
+              ctx.arc(p1Offset.x, p1Offset.y, 3.5 / view.zoom, 0, Math.PI * 2);
+              ctx.arc(p2Offset.x, p2Offset.y, 3.5 / view.zoom, 0, Math.PI * 2);
+              ctx.fill();
+
+              // Connectors from base line to parallel line
+              ctx.strokeStyle = 'rgba(6, 182, 212, 0.4)';
+              ctx.lineWidth = 1 / view.zoom;
+              ctx.setLineDash([2 / view.zoom, 3 / view.zoom]);
+
+              ctx.beginPath();
+              ctx.moveTo(line.start.x, line.start.y);
+              ctx.lineTo(p1Offset.x, p1Offset.y);
+              ctx.stroke();
+
+              ctx.beginPath();
+              ctx.moveTo(line.end.x, line.end.y);
+              ctx.lineTo(p2Offset.x, p2Offset.y);
+              ctx.stroke();
+
+              // Perpendicular 90-degree square at P0
+              const sqSize = 6 / view.zoom;
+              const signU = parallelSign >= 0 ? 1 : -1;
+              ctx.beginPath();
+              ctx.moveTo(p0.x + tangX * sqSize, p0.y + tangY * sqSize);
+              ctx.lineTo(p0.x + tangX * sqSize + normX * sqSize * signU, p0.y + tangY * sqSize + normY * sqSize * signU);
+              ctx.lineTo(p0.x + normX * sqSize * signU, p0.y + normY * sqSize * signU);
+              ctx.strokeStyle = 'rgba(251, 191, 36, 0.8)';
+              ctx.lineWidth = 1 / view.zoom;
+              ctx.setLineDash([]);
+              ctx.stroke();
+
+              // 5. RIFERIMENTO OFFSET PRECEDENTE NELLO STRUMENTO PARALLELA
+              const refPrevD = getEffectiveLastParallelOffset(projectedEntities);
+              if (refPrevD > 0.05) {
+                  const signRef = parallelSign >= 0 ? 1 : -1;
+                  const g1 = {
+                      x: line.start.x + normX * signRef * refPrevD,
+                      y: line.start.y + normY * signRef * refPrevD
+                  };
+                  const g2 = {
+                      x: line.end.x + normX * signRef * refPrevD,
+                      y: line.end.y + normY * signRef * refPrevD
+                  };
+                  const isAtPrevOffset = Math.abs(parallelDistance - refPrevD) < 0.05;
+                  ctx.strokeStyle = isAtPrevOffset ? '#10b981' : 'rgba(16, 185, 129, 0.78)';
+                  ctx.lineWidth = (isAtPrevOffset ? 2.6 : 1.7) / view.zoom;
+                  ctx.setLineDash([8 / view.zoom, 5 / view.zoom]);
+                  ctx.beginPath();
+                  ctx.moveTo(g1.x, g1.y);
+                  ctx.lineTo(g2.x, g2.y);
+                  ctx.stroke();
+                  ctx.setLineDash([]);
+
+                  const gMidX = (g1.x + g2.x) / 2;
+                  const gMidY = (g1.y + g2.y) / 2;
+                  const refTxt = isAtPrevOffset
+                      ? `= ${refPrevD.toFixed(badgeDecimals).replace('.', ',')} cm (Offset uguale)`
+                      : `Rif. ${refPrevD.toFixed(badgeDecimals).replace('.', ',')} cm`;
+                  ctx.font = `bold ${11.5 / view.zoom}px monospace`;
+                  const rW = ctx.measureText(refTxt).width + 14 / view.zoom;
+                  const rH = 19 / view.zoom;
+                  ctx.fillStyle = isAtPrevOffset ? 'rgba(6, 78, 59, 0.96)' : 'rgba(15, 23, 42, 0.90)';
+                  ctx.strokeStyle = '#10b981';
+                  ctx.lineWidth = 1.5 / view.zoom;
+                  ctx.beginPath();
+                  ctx.roundRect(gMidX - rW / 2, gMidY - rH / 2, rW, rH, 4 / view.zoom);
+                  ctx.fill();
+                  ctx.stroke();
+                  ctx.fillStyle = '#6ee7b7';
+                  ctx.textAlign = 'center';
+                  ctx.textBaseline = 'middle';
+                  ctx.fillText(refTxt, gMidX, gMidY);
+              }
+
+              ctx.restore();
           }
           ctx.restore();
-          ctx.setLineDash([]);
       }
 
       // Draw locked focal point indicator
@@ -10111,8 +12270,9 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
           }
 
           // Draw clean rounded textbox with background
-          const distanceVal = Math.round(connLen * 100) / 100;
-          const label = `${distanceVal} mm`;
+          const refDecimals = view.zoom >= 1.2 ? 3 : (view.zoom >= 0.45 ? 2 : (view.zoom >= 0.20 ? 1 : 0));
+          const distanceVal = connLen.toFixed(refDecimals).replace('.', ',');
+          const label = `${distanceVal} cm`;
           ctx.font = `bold ${12 / view.zoom}px sans-serif`;
           const textMetrics = ctx.measureText(label);
           const paddingX = 6 / view.zoom;
@@ -10137,6 +12297,12 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
 
           ctx.restore();
       }
+
+      // Draw the active drafting instrument nib (CAD reticle, China Rapidograph, or Matita Grafite) at the exact drawing point
+      const activeInstrumentTip = drawing ? drawing.current : (hoverSnap ? hoverSnap.point : (actualMousePosRef.current || lastMouseRef.current));
+      if (activeInstrumentTip) {
+        drawActiveInstrumentNib(activeInstrumentTip);
+      }
     };
 
     renderRef.current = render;
@@ -10144,7 +12310,8 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
   }, [entities, layers, view, flashIds, flashIntensity, selectedParallelLine, blink, selectedEntityId, 
       positioningGroupId, positioningEntityId, selectedRaccordoLineIds, dragEntityIds, highlightedTrimLine, 
       highlightedTrimSegment, allungaHover, activeTool, specchioMode, specchioSelectedIds, copySourceEntityIds, eraserPos, 
-      tecnigrafoOrigin, tecnigrafoLock, manualRoomPoints, drawing, highlightedPoints, selectedLine, referenceLine, hoveredBIMSegments, hoveredLineId]);
+      tecnigrafoOrigin, tecnigrafoLock, manualRoomPoints, drawing, highlightedPoints, selectedLine, referenceLine, hoveredBIMSegments, hoveredLineId, showSquadrette, squadrette,
+      defaultLineStyle, hoverSnap, snapEnabled, isShiftPressed, isContinuousMode]);
 
 
   // BASIC PAN/ZOOM HANDLING
@@ -11991,7 +14158,9 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
             onCommitHistory?.(entitiesRef.current);
             
             setEntities(prev => {
-                return prev.map(item => {
+                let updatedLine: LineEntity | null = null;
+                const remaining: Entity[] = [];
+                for (const item of prev) {
                     if (item.id === line.id) {
                         const totalDistStart = Math.hypot(extPt.x - line.start.x, extPt.y - line.start.y);
                         const totalDistEnd = Math.hypot(extPt.x - line.end.x, extPt.y - line.end.y);
@@ -12018,17 +14187,22 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
                                     alpha: (lastPt as any)?.alpha ?? 1
                                 } as any;
                             }
-                            return { ...line, start: newInkPoints[0], end: newInkPoints[newInkPoints.length - 1], inkPoints: newInkPoints };
+                            updatedLine = { ...line, start: newInkPoints[0], end: newInkPoints[newInkPoints.length - 1], inkPoints: newInkPoints };
                         } else {
                             if (totalEndToUpdate === 'start') {
-                                return { ...line, start: nextPoint };
+                                updatedLine = { ...line, start: nextPoint };
                             } else {
-                                return { ...line, end: nextPoint };
+                                updatedLine = { ...line, end: nextPoint };
                             }
                         }
+                    } else {
+                        remaining.push(item);
                     }
-                    return item;
-                });
+                }
+                if (updatedLine && !updatedLine.isBIM && !(updatedLine as any).isFilo) {
+                    return mergeLineSegments(remaining, updatedLine);
+                }
+                return updatedLine ? [...remaining, updatedLine] : prev;
             });
             setAllungaHover(null);
         }
@@ -12096,7 +14270,12 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
     setActiveTool?.('Select');
   };
 
-  const handleMouseDown = (e: React.PointerEvent) => {
+   const handleMouseDown = (e: React.PointerEvent) => {
+    if (selectedLine || quickEditEntityId || textDialog) {
+        e.preventDefault();
+        e.stopPropagation();
+        return;
+    }
     if (activeTool === 'Copy' && copyPhase !== 'idle') {
         if (e.button === 0) {
             const canvas = canvasRef.current;
@@ -12138,9 +14317,17 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
                     }
                 }
 
-                // Apply final precise shift to match destination snap exactly
-                const finalDeltaX = snapPoint.x - previousMouseRef.current.x;
-                const finalDeltaY = snapPoint.y - previousMouseRef.current.y;
+                // Apply final precise shift to match destination snap (or preserve last-offset snap if already snapped to equal offset)
+                const activePair = activeParallelPairRef.current;
+                const refTargetOffset = getEffectiveLastParallelOffset(entitiesRef.current);
+                const isAlreadyAtLastOffset =
+                    !snapRes.snapped &&
+                    activePair &&
+                    dragEntityIds.includes(activePair.lineId) &&
+                    refTargetOffset > 0.05 &&
+                    Math.abs(activePair.currentDist - refTargetOffset) < 0.08;
+                const finalDeltaX = isAlreadyAtLastOffset ? 0 : (snapPoint.x - previousMouseRef.current.x);
+                const finalDeltaY = isAlreadyAtLastOffset ? 0 : (snapPoint.y - previousMouseRef.current.y);
 
                 setEntities(prev => {
                     const updatedEntities = prev.map(ent => {
@@ -12175,6 +14362,10 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
                         }
                         return ent;
                     });
+                    const committedLine = updatedEntities.find(e => dragEntityIds.includes(e.id) && e.type === 'line') as LineEntity | undefined;
+                    if (committedLine) {
+                        recordParallelOffsetFromNewLine(committedLine, updatedEntities);
+                    }
                     onCommitHistory?.(updatedEntities);
                     return updatedEntities;
                 });
@@ -12369,6 +14560,9 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
     const rect = canvas.getBoundingClientRect();
     const unconstrainedRawPoint = getDampenedCoordinate(screenToCanvas(e.clientX - rect.left, e.clientY - rect.top), e);
     let rawPoint = unconstrainedRawPoint;
+
+    // Reset virtual cursor offset so subsequent hand/mouse movements are real-time
+    virtualCursorOffsetRef.current = null;
     
     // --- STRICT SNAP PRIORITY ---
     const currentSnap = getSnappedPoint(unconstrainedRawPoint, entities, activeTool, drawing);
@@ -12383,46 +14577,10 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
 
     // QUICK EDIT BADGE / ENTITY CLICK CHECK
     if (e.button === 0 && activeTool === 'Select') {
-        for (const ent of entities) {
-            if (ent.type === 'line') {
-                const line = ent as LineEntity;
-                const midX = (line.start.x + line.end.x) / 2;
-                const midY = (line.start.y + line.end.y) / 2;
-                const dist = Math.hypot(rawPoint.x - midX, rawPoint.y - midY);
-                if (dist < 45 / view.zoom) {
-                    const dx = line.end.x - line.start.x;
-                    const dy = line.end.y - line.start.y;
-                    const len = Math.sqrt(dx * dx + dy * dy);
-                    setQuickEditEntityId(line.id);
-                    setQuickEditValue('');
-                    setQuickEditPos(screenPos);
-                    return;
-                }
-            } else if (ent.type === 'circle') {
-                const circ = ent as any;
-                const dist = Math.hypot(rawPoint.x - circ.center.x, rawPoint.y - circ.center.y);
-                if (Math.abs(dist - circ.radius) < 30 / view.zoom) {
-                    setQuickEditEntityId(circ.id);
-                    setQuickEditValue('');
-                    setQuickEditPos(screenPos);
-                    return;
-                }
-            } else if (ent.type === 'rectangle') {
-                const rectEnt = ent as any;
-                const minX = Math.min(rectEnt.p1.x, rectEnt.p2.x);
-                const maxX = Math.max(rectEnt.p1.x, rectEnt.p2.x);
-                const minY = Math.min(rectEnt.p1.y, rectEnt.p2.y);
-                const maxY = Math.max(rectEnt.p1.y, rectEnt.p2.y);
-                const midX = (minX + maxX) / 2;
-                const midY = (minY + maxY) / 2;
-                if (Math.abs(rawPoint.x - midX) < 35 / view.zoom && Math.abs(rawPoint.y - midY) < 35 / view.zoom) {
-                    const w = Math.abs(rectEnt.p2.x - rectEnt.p1.x);
-                    setQuickEditEntityId(rectEnt.id);
-                    setQuickEditValue('');
-                    setQuickEditPos(screenPos);
-                    return;
-                }
-            }
+        const found = getEntityAtPoint(rawPoint, 30);
+        if (found) {
+            onSelect(found.id, found, screenPos);
+            return;
         }
     }
 
@@ -12586,8 +14744,116 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
             
         }
     }
+
+    // Squadrette Interaction
+    if (showSquadrette) {
+        const pt = unconstrainedRawPoint;
+        for (const sq of squadrette) {
+            const verts = getSquadrettaVertices(sq);
+            if (isPointInPolygon(pt, verts)) {
+                setDragSquadrettaId(sq.id);
+                setDragSquadrettaOffset({ x: pt.x - sq.pos.x, y: pt.y - sq.pos.y });
+                setLastSquadrettaInteractionAt(Date.now());
+                return;
+            }
+        }
+    }
+
+    // Tasto Magico Z: Copia gli oggetti e li sposta pure
+    if ((isMagicCopyActive || isMagicCopyActiveRef.current) && !drawing) {
+        if (dragEntityIdRef.current) {
+            // Click drops/commits the copied entity at its new position
+            const activePair = activeParallelPairRef.current;
+            if (activePair && activePair.lineId === dragEntityIdRef.current && activePair.currentDist > 0.05) {
+                lastParallelOffsetInfoRef.current = {
+                    distance: activePair.currentDist,
+                    lineId: activePair.lineId,
+                    refLineId: activePair.refLineId,
+                    nx: activePair.nx,
+                    ny: activePair.ny,
+                    dirSign: activePair.signedDist >= 0 ? -1 : 1,
+                    timestamp: Date.now()
+                };
+                justOffsetLineIdRef.current = activePair.lineId;
+                try {
+                    localStorage.setItem('lastParallelDistance', activePair.currentDist.toString());
+                } catch (err) {}
+            }
+            parallelOverrideLockedLineRef.current = null;
+            setClonedEntityIds(new Set());
+            setDragEntityId(null);
+            dragEntityIdRef.current = null;
+            setDragEntityIds([]);
+            dragEntityIdsRef.current = [];
+            setActiveMoveSnapPoint(null);
+            dragHasMovedRef.current = false;
+            setEntities(prev => {
+                onCommitHistory?.(prev);
+                return [...prev];
+            });
+            return;
+        }
+        const found = getEntityAtPoint(rawPoint, 30);
+        if (found) {
+            onCommitHistory?.(entitiesRef.current);
+            const targetIds = resolveGroups([found.id], entities);
+            initiateCloneAndDrag(targetIds, rawPoint);
+            return;
+        }
+    }
+
+    // Sposta Tutto (Jolly `< >` / `Tab`) or Move tool direct grab/drop (SOLO SPOSTA, NON COPIA)
+    if ((isJollyActive || activeTool === 'Move') && !drawing) {
+        if (dragEntityIdRef.current) {
+            // Second click drops the moved entity and commits history
+            const activePair = activeParallelPairRef.current;
+            if (activePair && activePair.lineId === dragEntityIdRef.current && activePair.currentDist > 0.05) {
+                lastParallelOffsetInfoRef.current = {
+                    distance: activePair.currentDist,
+                    lineId: activePair.lineId,
+                    refLineId: activePair.refLineId,
+                    nx: activePair.nx,
+                    ny: activePair.ny,
+                    dirSign: activePair.signedDist >= 0 ? -1 : 1,
+                    timestamp: Date.now()
+                };
+                justOffsetLineIdRef.current = activePair.lineId;
+                try {
+                    localStorage.setItem('lastParallelDistance', activePair.currentDist.toString());
+                } catch (err) {}
+            }
+            parallelOverrideLockedLineRef.current = null;
+            setDragEntityId(null);
+            dragEntityIdRef.current = null;
+            setDragEntityIds([]);
+            dragEntityIdsRef.current = [];
+            setActiveMoveSnapPoint(null);
+            setMoveBasePoint(null);
+            setMovePhase('idle');
+            setEntities(prev => {
+                onCommitHistory?.(prev);
+                return [...prev];
+            });
+            return;
+        }
+        const found = getEntityAtPoint(rawPoint, 30);
+        if (found) {
+            const targetIds = resolveGroups([found.id], entities);
+            setDragEntityIds(targetIds);
+            dragEntityIdsRef.current = targetIds;
+            setDragEntityId(found.id);
+            dragEntityIdRef.current = found.id;
+            setDragOffset({ x: rawPoint.x, y: rawPoint.y });
+            lastMouseRef.current = rawPoint;
+            previousMouseRef.current = rawPoint;
+            dragHasMovedRef.current = false;
+            return;
+        }
+    }
+
     lastClickTimeRef.current = now;
     lastClickPosRef.current = rawPoint;
+
 
     const clickedText = getEntityAtPoint(rawPoint, 25);
     if (activeTool === 'Testo' && clickedText && clickedText.type === 'text' && !drawing) {
@@ -12747,7 +15013,7 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
     const isTempOrtho = false;
     
     // We enable snapping in freehand mode so drawings can snap to points and become smart!
-    const shouldSkipSnap = (!snapEnabled) || isTempOrtho || (activeTool === 'Template' && !drawing) || (activeTool === 'Dimension' && selectionMode === 'object') || activeTool === 'Gomma';
+    const shouldSkipSnap = (!isSnapActive()) || isTempOrtho || (activeTool === 'Template' && !drawing) || (activeTool === 'Dimension' && selectionMode === 'object') || activeTool === 'Gomma';
     
     let snapped = shouldSkipSnap
         ? { point: rawPoint, snapped: false, type: 'CAD' as const, refPoint: undefined, constraintAxis: undefined, refPoint2: undefined, constraintAxis2: undefined, hasDoubleSmart: false }
@@ -12979,6 +15245,9 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
 
                 setParallelDistance(distToUse);
                 setParallelInputString(distToUse.toString());
+                
+                onLastParameterChange?.({ type: 'offset', value: parseFloat(distToUse.toFixed(2)) });
+                
                 try {
                     localStorage.setItem('lastParallelDistance', distToUse.toString());
                 } catch(e) {}
@@ -13485,6 +15754,7 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
         if (!drawing) {
             setDrawing({ start: snapped.point, current: snapped.point });
         } else {
+            setHasUsedInputSnap(true);
             const isLineLikeTool = (activeTool as string) === 'Line' || (activeTool as string) === 'BIM_Muro' || (activeTool as string) === 'Muro';
             const effectiveOrthoMode = getEffectiveOrtho(e, isLineLikeTool);
             const isOrthoHorizontal = isLineLikeTool && effectiveOrthoMode && 
@@ -13513,6 +15783,8 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
                 const wallLen = Math.hypot(endPoint.x - drawing.start.x, endPoint.y - drawing.start.y);
                 if (wallLen > 0.01) {
                     lastSegmentRef.current = { start: drawing.start, end: endPoint, length: wallLen, id: newElem.id };
+                    onLastParameterChange?.({ type: 'length', value: parseFloat((wallLen / 100).toFixed(2)), isAutoFromDrawing: true });
+                    recordParallelOffsetFromNewLine(newElem as LineEntity, entities);
                 }
                 setEntities(prev => {
                     const next = [...prev, newElem];
@@ -13532,7 +15804,10 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
       const wasLocked = isLocked;
       setIsLocked(false);
       
-      if (drawing && (activeTool === 'Line' || (activeTool as string) === 'Filo' || activeTool === 'Rectangle' || activeTool === 'Arc' || activeTool === 'Camera')) {
+      const isTraditionalLineMode = activeTool === 'Line' && (defaultLineStyle.mode === 'ink' || defaultLineStyle.mode === 'pencil');
+
+      if (drawing && !isTraditionalLineMode && (activeTool === 'Line' || (activeTool as string) === 'Filo' || activeTool === 'Rectangle' || activeTool === 'Arc' || activeTool === 'Camera')) {
+          setHasUsedInputSnap(true);
           let snappedResult;
 
           if (drawing.wheelLength !== undefined) {
@@ -13556,11 +15831,12 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
                   rawSnappedFromRawPoint = getSnappedPoint(rawPoint, entities, activeTool, drawing as any);
               }
 
-              // Snaps always win over ortho constraints to maintain precision under all circumstances!
-              const isBothSnappedException = rawSnappedFromRawPoint.snapped;
-
               const isLineLikeTool = (activeTool as string) === 'Line' || (activeTool as string) === 'Filo' || (activeTool as string) === 'BIM_Porta' || (activeTool as string) === 'BIM_Finestra';
               const effectiveOrthoMode = getEffectiveOrtho(e, isLineLikeTool);
+
+              // Snaps always win over ortho constraints to maintain precision under all circumstances!
+              // BUT if Ortho mode is active, we force strict orthogonal lines as requested by the user.
+              const isBothSnappedException = rawSnappedFromRawPoint.snapped && !effectiveOrthoMode;
 
               const isOrthoHorizontal = isLineLikeTool && effectiveOrthoMode && 
                     Math.abs(rawPoint.x - drawing.start.x) >= Math.abs(rawPoint.y - drawing.start.y);
@@ -13650,39 +15926,7 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
                       }
                   }
 
-                  const initialLength = Math.round(currentLength * 100) / 100;
-
-                  // Jolly Check - only enter precision if Jolly/Fn is held
-                  let hardwareCaps = false;
-                  let scrollLock = false;
-                  let numLock = false;
-                  if (e && (e as any).getModifierState) {
-                      hardwareCaps = !!(e as any).getModifierState('CapsLock');
-                      scrollLock = !!(e as any).getModifierState('ScrollLock');
-                      numLock = !!(e as any).getModifierState('NumLock');
-                  }
-                  const isDecimalActive = hardwareCaps || scrollLock || numLock || (e && (e as any).shiftKey);
-
-                  if (isDecimalActive) {
-                      fnAnchorCanvasPosRef.current = rawPoint;
-                      fnStepValueRef.current = initialLength;
-                      setDrawing(prev => {
-                          if (!prev) return null;
-                          return {
-                              ...prev,
-                              wheelLength: initialLength,
-                              lockedDir: { x: ux, y: uy },
-                              current: {
-                                  x: prev.start.x + ux * initialLength,
-                                  y: prev.start.y + uy * initialLength
-                              }
-                          };
-                      });
-                      setIsJollyActive(true);
-                      return;
-                  }
-
-                  // Fallback for standard placement when not snapped and not entering precision mode
+                  // Standard placement when not snapped
                   snappedResult = {
                       point: {
                           x: drawing.start.x + ux * currentLength,
@@ -13712,34 +15956,8 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
                 end: snappedResult.point,
                 layer: (activeTool as string) === 'Filo' ? 'Fili' : activeLayerId,
                 isFilo: (activeTool as string) === 'Filo',
-                isFreehand: (activeTool as string) !== 'Filo' && (activeTool as string) !== 'Gomma' && (defaultLineStyle.mode === 'pencil' || defaultLineStyle.mode === 'ink'), // Crucial for eraser and consistent drawing
-                inkPoints: (activeTool as string) !== 'Filo' && (defaultLineStyle.mode === 'pencil' || defaultLineStyle.mode === 'ink') ? (() => {
-                   const points: InkPoint[] = [];
-                   const steps = 80; // Higher density for realistic ink
-                   const dx = snappedResult.point.x - drawing.start.x;
-                   const dy = snappedResult.point.y - drawing.start.y;
-                   const len = Math.sqrt(dx * dx + dy * dy);
-                   const nx = len > 0 ? -dy / len : 0;
-                   const ny = len > 0 ? dx / len : 0;
-                   for (let i = 0; i <= steps; i++) {
-                     const t = i / steps;
-                     // More complex wave for "organic" feel
-                     const wave = Math.sin(t * Math.PI * 8) * 0.1 + Math.sin(t * Math.PI * 2) * 0.2;
-                     
-                     // Adding some "ink blobs" (sbavature)
-                     const blobFactor = Math.random() > 0.92 ? 1.5 : 1.0;
-                     const px = drawing.start.x + dx * t + nx * wave * (0.4 / view.zoom) + (Math.random() - 0.5) * (0.1 / view.zoom);
-                     const py = drawing.start.y + dy * t + ny * wave * (0.4 / view.zoom) + (Math.random() - 0.5) * (0.1 / view.zoom);
-                     
-                     points.push({ 
-                        x: px, 
-                        y: py, 
-                        width: (0.5 + Math.random() * 0.5) * blobFactor,
-                        alpha: (0.4 + Math.random() * 0.5) * (blobFactor > 1 ? 0.8 : 1.0)
-                     });
-                   }
-                   return points;
-                 })() : undefined
+                isFreehand: false,
+                inkPoints: undefined
                };
           } else if (activeTool === 'Circle') {
               let radius = Math.sqrt(Math.pow(drawing.current.x - drawing.start.x, 2) + Math.pow(drawing.current.y - drawing.start.y, 2));
@@ -13824,11 +16042,14 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
                   const segLen = Math.hypot(lineEnt.end.x - lineEnt.start.x, lineEnt.end.y - lineEnt.start.y);
                   if (segLen > 0.01) {
                       lastSegmentRef.current = { start: lineEnt.start, end: lineEnt.end, length: segLen, id: lineEnt.id };
+                      onLastParameterChange?.({ type: 'length', value: parseFloat((segLen / 100).toFixed(2)), isAutoFromDrawing: true });
+                      recordParallelOffsetFromNewLine(lineEnt, entities);
                   }
               } else if (newEntity.type === 'circle' || newEntity.type === 'arc') {
                   const r = (newEntity as CircleEntity | ArcEntity).radius;
                   if (r > 0.01) {
                       lastCircleRadiusRef.current = r;
+                      onLastParameterChange?.({ type: 'radius', value: parseFloat((r / 100).toFixed(2)), isAutoFromDrawing: true });
                       try { localStorage.setItem('lastCircleRadius', r.toString()); } catch(e){}
                   }
               }
@@ -13842,7 +16063,7 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
           }
           
           if (activeTool === 'Line' || (activeTool as string) === 'Filo') {
-              const isFreehandMode = (activeTool as string) !== 'Filo';
+              const isFreehandMode = false;
               setDrawing({ 
                 start: snappedResult.point, 
                 current: snappedResult.point, 
@@ -13859,7 +16080,7 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
           return;
       }
 
-      const isFreehandMode = activeTool === 'Line';
+      const isFreehandMode = false;
       const isTempOrthoStart = false;
 
       if (activeTool === 'Circle') {
@@ -13916,9 +16137,27 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
           }
       }
 
+      // Se clicco direttamente su un segmento esistente (senza snap ad un estremo per iniziare una nuova linea),
+      // seleziono il segmento così compare la sua lunghezza L = ... cm
+      const clickedLine = getLineAtPoint(rawPoint);
+      if (clickedLine && (!snapped.snapped || snapped.subtype === 'nearest')) {
+        onSelect(clickedLine.id);
+        if (!isTraditionalLineMode && activeTool === 'Line') {
+          // In modalità CAD, un click sul corpo del segmento ne mostra la lunghezza senza far partire una linea indesiderata
+          return;
+        }
+      } else {
+        onSelect(null);
+      }
+
       setDrawing({ 
         start: snapped.point, 
         current: snapped.point, 
+        maxPoint: snapped.point,
+        maxLength: 0,
+        lockedDir: undefined,
+        retraceMinProj: undefined,
+        isTraditionalSegment: isTraditionalLineMode,
         snapType: snapped.type, 
         startSnapped: snapped.snapped,
         refPoint: snapped.refPoint,
@@ -14000,8 +16239,16 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
                 }
             }
             
-            const finalDeltaX = snapPoint.x - previousMouseRef.current.x;
-            const finalDeltaY = snapPoint.y - previousMouseRef.current.y;
+            const activePair = activeParallelPairRef.current;
+            const refTargetOffset = getEffectiveLastParallelOffset(entitiesRef.current);
+            const isAlreadyAtLastOffset =
+                !snapRes.snapped &&
+                activePair &&
+                dragEntityIds.includes(activePair.lineId) &&
+                refTargetOffset > 0.05 &&
+                Math.abs(activePair.currentDist - refTargetOffset) < 0.08;
+            const finalDeltaX = isAlreadyAtLastOffset ? 0 : (snapPoint.x - previousMouseRef.current.x);
+            const finalDeltaY = isAlreadyAtLastOffset ? 0 : (snapPoint.y - previousMouseRef.current.y);
             
             setEntities(prev => {
                 const updatedEntities = prev.map(ent => {
@@ -14010,6 +16257,10 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
                     }
                     return ent;
                 });
+                const movedLine = updatedEntities.find(e => dragEntityIds.includes(e.id) && e.type === 'line') as LineEntity | undefined;
+                if (movedLine) {
+                    recordParallelOffsetFromNewLine(movedLine, updatedEntities);
+                }
                 onCommitHistory?.(updatedEntities);
                 return updatedEntities;
             });
@@ -14328,6 +16579,7 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
             setSelectionWindow({ start: rawPoint, current: rawPoint });
         }
     }
+
   };
 
   const applyAngleSnapping = (start: Point, current: Point): Point => {
@@ -14337,12 +16589,12 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
     
     if (length < 5) return current; // Don't snap if too close
 
-    let angle = (Math.atan2(dy, dx) * 180 / Math.PI);
-    // Normalize to 0-360
-    angle = (angle + 360) % 360;
-
     const effectiveOrthoMode = getEffectiveOrtho(undefined, true);
     if (effectiveOrthoMode) {
+        let angle = (Math.atan2(dy, dx) * 180 / Math.PI);
+        // Normalize to 0-360
+        angle = (angle + 360) % 360;
+
         // Find nearest orthogonal angle: 0, 90, 180, or 270
         const orthoAngles = [0, 90, 180, 270];
         let nearestAngle = 0;
@@ -14362,18 +16614,7 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
         };
     }
 
-    const snapAngles = [0, 30, 45, 60, 90, 120, 135, 150, 180, 210, 225, 240, 270, 300, 315, 330];
-    const threshold = 5;
-
-    for (const snapAngle of snapAngles) {
-        if (Math.abs(angle - snapAngle) < threshold) {
-            const radians = snapAngle * Math.PI / 180;
-            return {
-                x: start.x + Math.cos(radians) * length,
-                y: start.y + Math.sin(radians) * length
-            };
-        }
-    }
+    // When Ortho/bloc fn is not active, return the current point directly to allow 100% free movement
     return current;
   };
 
@@ -14389,6 +16630,23 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
     const canvas = canvasRef.current;
     if (!canvas) return;
     const rect = canvas.getBoundingClientRect();
+
+    if (selectedLine || quickEditEntityId || textDialog) {
+        // Dialogue or editing is active, cursor is neutral and free
+        setHoverSnap(null);
+        setHoveredEntityId(null);
+        setHoveredLineId(null);
+        setHoveredBIMSegments([]);
+        setHoveredDimensionEntityId(null);
+        setHoverTavolaEdge(false);
+        mouseScreenPosRef.current = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+        const rawCanvasPos = screenToCanvas(e.clientX - rect.left, e.clientY - rect.top);
+        actualMousePosRef.current = rawCanvasPos;
+        lastMouseRef.current = rawCanvasPos;
+        renderRef.current?.();
+        return;
+    }
+
     if (isZoomModeRef.current && isDraggingZoomRef.current) {
         const dx = e.clientX - lastScreenMouseRef.current.x;
         const zoomFactor = 1 + dx * 0.002;
@@ -14418,12 +16676,34 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
     mouseScreenPosRef.current = { x: e.clientX - rect.left, y: e.clientY - rect.top };
     const unconstrainedRawPoint = getDampenedCoordinate(screenToCanvas(e.clientX - rect.left, e.clientY - rect.top), e);
     let rawPoint = unconstrainedRawPoint;
+    actualMousePosRef.current = unconstrainedRawPoint;
+
+    // Detect hardware CapsLock (Bloc Maiusc / Bloc Fn) toggle even if OS/browser did not fire keydown
+    if (e && typeof (e as any).getModifierState === 'function') {
+        const currentCaps = !!(e as any).getModifierState('CapsLock');
+        if (lastCapsLockStateRef.current !== null && currentCaps !== lastCapsLockStateRef.current) {
+            lastCapsLockStateRef.current = currentCaps;
+            if (!isJollyActive && !isMagicCopyActiveRef.current && !dragEntityIdRef.current && activeTool !== 'Line') {
+                setDrawing(null);
+                setSelectedParallelLine(null);
+                setHighlightedTrimLine(null);
+                setHighlightedTrimSegment(null);
+                setMovePhase('idle');
+                setCopyPhase('idle');
+                setActiveTool?.('Line');
+                setStatusMessage("Pennino (Linea) attivo");
+            }
+        } else if (lastCapsLockStateRef.current === null) {
+            lastCapsLockStateRef.current = currentCaps;
+        }
+    }
 
     // --- PRIORITIZE SNAPPING ---
     // Disable snapping for Trim tool as requested
     const currentSnap = activeTool === 'Trim' ? null : getSnappedPoint(unconstrainedRawPoint, entities, activeTool, drawing);
     if (currentSnap && currentSnap.snapped) {
         rawPoint = currentSnap.point;
+        actualMousePosRef.current = rawPoint;
         setHoverSnap(currentSnap);
     } else {
         setHoverSnap(null);
@@ -14436,21 +16716,26 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
 
     const hoveredEnt = getEntityAtPoint(rawPoint, 20);
     if (hoveredEnt) {
-        if (hoveredEntityId !== hoveredEnt.id) {
-            setHoveredEntityId(hoveredEnt.id);
+        if (hoveredEntityIdPending !== hoveredEnt.id) {
+            setHoveredEntityIdPending(hoveredEnt.id);
         }
-        if (hoveredEnt.type === 'line' && hoveredLineId !== hoveredEnt.id) {
-            setHoveredLineId(hoveredEnt.id);
-        } else if (hoveredEnt.type !== 'line' && hoveredLineId !== null) {
-            setHoveredLineId(null);
+        if (hoveredEnt.type === 'line' && hoveredLineIdPending !== hoveredEnt.id) {
+            setHoveredLineIdPending(hoveredEnt.id);
+        } else if (hoveredEnt.type !== 'line' && hoveredLineIdPending !== null) {
+            setHoveredLineIdPending(null);
+        }
+        if (hoveredEnt.type === 'circle' && hoveredCircleId !== hoveredEnt.id) {
+            setHoveredCircleId(hoveredEnt.id);
+        } else if (hoveredEnt.type !== 'circle' && hoveredCircleId !== null) {
+            setHoveredCircleId(null);
         }
     } else {
-        if (hoveredEntityId !== null) setHoveredEntityId(null);
-        if (hoveredLineId !== null) setHoveredLineId(null);
+        if (hoveredEntityIdPending !== null) setHoveredEntityIdPending(null);
+        if (hoveredLineIdPending !== null) setHoveredLineIdPending(null);
     }
 
     // TECNIGRAFO HOVER DETECTION (for symbols)
-    if (tecnigrafoOrigin) {
+    if (tecnigrafoOrigin && !showSquadrette) {
         const rulerLength = 5000 / view.zoom;
         const edgeWidth = 6 / view.zoom;
         const bodyWidth = 32 / view.zoom;
@@ -14473,6 +16758,66 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
                 renderRef.current?.();
             }
         }
+    }
+
+    if (dragSquadrettaId) {
+        const pt = unconstrainedRawPoint;
+        const newPos = { x: pt.x - dragSquadrettaOffset.x, y: pt.y - dragSquadrettaOffset.y };
+        setSquadrette(prev => {
+            const others = prev.filter(s => s.id !== dragSquadrettaId);
+            const current = prev.find(s => s.id === dragSquadrettaId);
+            if (!current) return prev;
+
+            let finalPos = newPos;
+            const updated = { ...current, pos: newPos };
+            const other = others[0];
+            if (other) {
+                // Snapping between squadrette edges and vertices
+                const v1 = getSquadrettaVertices(updated);
+                const v2 = getSquadrettaVertices(other);
+                let snapped = false;
+                
+                // Snap vertices to vertices
+                for (const p1 of v1) {
+                    for (const p2 of v2) {
+                        const d = Math.hypot(p1.x - p2.x, p1.y - p2.y);
+                        if (d < 20 / view.zoom) {
+                            finalPos = { x: newPos.x + (p2.x - p1.x), y: newPos.y + (p2.y - p1.y) };
+                            snapped = true;
+                            break;
+                        }
+                    }
+                    if (snapped) break;
+                }
+
+                // Snap vertices to edges
+                if (!snapped) {
+                    const edges2 = [[v2[0], v2[1]], [v2[1], v2[2]], [v2[2], v2[0]]];
+                    for (const p1 of v1) {
+                        for (const edge of edges2) {
+                            const d = distToSegment(p1, edge[0], edge[1]);
+                            if (d < 10 / view.zoom) {
+                                // Project p1 onto edge
+                                const dx = edge[1].x - edge[0].x;
+                                const dy = edge[1].y - edge[0].y;
+                                const l2 = dx*dx + dy*dy;
+                                let t = ((p1.x - edge[0].x) * dx + (p1.y - edge[0].y) * dy) / l2;
+                                t = Math.max(0, Math.min(1, t));
+                                const proj = { x: edge[0].x + t * dx, y: edge[0].y + t * dy };
+                                finalPos = { x: newPos.x + (proj.x - p1.x), y: newPos.y + (proj.y - p1.y) };
+                                snapped = true;
+                                break;
+                            }
+                        }
+                        if (snapped) break;
+                    }
+                }
+            }
+
+            return prev.map(sq => sq.id === dragSquadrettaId ? { ...sq, pos: finalPos } : sq);
+        });
+        renderRef.current?.();
+        return;
     }
 
     if (isMovingTecnigrafo && movingTecnigrafoStartRef.current) {
@@ -14867,6 +17212,202 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
     if (drawing) {
       if (isLocked) return;
 
+      // Traditional China / Matita physical stroke behavior:
+      // 1) Writes ONLY while the left mouse button is pressed ("se non premo più il tasto e sposto il mouse il pennino non scrive più")
+      // 2) Once the stroke starts, its direction is locked and the drawn segment remains permanently on the paper ("una volta che scrivo un segmento rimane là non devo poter muovere il segmento fatto")
+      // 3) Moving backwards along the segment keeps it drawn and re-traces/darkens it ("se poi torno indietro con il pennino il segmento rimane disegnato come nella realtà al massimo lo ricalco")
+      const isTraditionalStroke = activeTool === 'Line' && (drawing.isTraditionalSegment || defaultLineStyle.mode === 'ink' || defaultLineStyle.mode === 'pencil');
+      if (isTraditionalStroke) {
+          const isButtonHeld = (e.buttons & 1) === 1 || e.pointerType === 'touch' || e.pointerType === 'pen';
+          if (!isButtonHeld) {
+              // Mouse button is not pressed -> immediately lift the pen and finalize any drawn segment
+              const finalEnd = drawing.maxPoint || drawing.current;
+              const segLen = finalEnd ? Math.hypot(finalEnd.x - drawing.start.x, finalEnd.y - drawing.start.y) : 0;
+              if (finalEnd && segLen > 0.05 && !drawing.isVirtual) {
+                  let retraceStartPt: Point | undefined = undefined;
+                  let retraceEndPt: Point | undefined = undefined;
+                  if (drawing.retraceMinProj !== undefined && drawing.lockedDir && segLen - drawing.retraceMinProj > 0.05) {
+                      retraceStartPt = {
+                          x: drawing.start.x + drawing.lockedDir.x * drawing.retraceMinProj,
+                          y: drawing.start.y + drawing.lockedDir.y * drawing.retraceMinProj
+                      };
+                      retraceEndPt = finalEnd;
+                  }
+                  const newEntity: LineEntity = {
+                      id: Date.now().toString(),
+                      type: 'line',
+                      color: defaultLineStyle.color,
+                      lineWidth: defaultLineStyle.lineWidth,
+                      dashed: defaultLineStyle.dashed,
+                      lineType: defaultLineStyle.lineType,
+                      mode: defaultLineStyle.mode,
+                      start: drawing.start,
+                      end: finalEnd,
+                      layer: activeLayerId,
+                      isFreehand: false,
+                      ...(retraceStartPt && retraceEndPt ? { retraceStart: retraceStartPt, retraceEnd: retraceEndPt } : {})
+                  } as any;
+                  lastSegmentRef.current = { start: drawing.start, end: finalEnd, length: segLen, id: newEntity.id };
+                  onLastParameterChange?.({ type: 'length', value: parseFloat((segLen / 100).toFixed(2)), isAutoFromDrawing: true });
+                  recordParallelOffsetFromNewLine(newEntity, entitiesRef.current);
+                  setEntities(prev => {
+                      onCommitHistory?.(prev);
+                      if (!newEntity.isBIM && !(newEntity as any).isFilo) {
+                          return mergeLineSegments(prev, newEntity);
+                      }
+                      return [...prev, newEntity];
+                  });
+              }
+              setDrawing(null);
+              return;
+          }
+
+          // Mouse button IS pressed: compute target point with Snap / Ortho / Angle rules
+          const snapRes = getSnappedPoint(rawPoint, entities, activeTool, drawing as any);
+          const effectiveOrthoMode = getEffectiveOrtho(e, true);
+          const isEssentialFiveSnap = snapRes.snapped && (
+              snapRes.subtype === 'endpoint' ||
+              snapRes.subtype === 'midpoint' ||
+              snapRes.subtype === 'center' ||
+              snapRes.subtype === 'tangent' ||
+              snapRes.subtype === 'quadrant' ||
+              snapRes.subtype === 'intersection' ||
+              snapRes.subtype === 'parallel_offset' ||
+              snapRes.subtype === 'parallel_offset_end'
+          );
+
+          let candidatePt = rawPoint;
+          if (isEssentialFiveSnap || (snapRes.snapped && !effectiveOrthoMode)) {
+              candidatePt = snapRes.point;
+              setHoverSnap(snapRes);
+          } else if (effectiveOrthoMode) {
+              const isHoriz = Math.abs(rawPoint.x - drawing.start.x) >= Math.abs(rawPoint.y - drawing.start.y);
+              const orthoPt = isHoriz ? { x: rawPoint.x, y: drawing.start.y } : { x: drawing.start.x, y: rawPoint.y };
+              const orthoSnap = getSnappedPoint(orthoPt, entities, activeTool, drawing as any);
+              if (orthoSnap.snapped) {
+                  setHoverSnap(orthoSnap);
+              }
+              candidatePt = isHoriz
+                  ? { x: orthoSnap.point.x, y: drawing.start.y }
+                  : { x: drawing.start.x, y: orthoSnap.point.y };
+          } else if (!e.shiftKey) {
+              candidatePt = applyAngleSnapping(drawing.start, snapRes.point);
+          }
+
+          let effectiveDrawingStart = drawing.start;
+          if ((snapRes.subtype === 'parallel_offset' || snapRes.subtype === 'parallel_offset_end') && snapRes.refEntityId) {
+              const refEnt = entities.find(el => el.id === snapRes.refEntityId);
+              if (refEnt && refEnt.type === 'line') {
+                  const rLine = refEnt as LineEntity;
+                  const rdx = rLine.end.x - rLine.start.x;
+                  const rdy = rLine.end.y - rLine.start.y;
+                  const rLen = Math.hypot(rdx, rdy);
+                  const refD = (snapRes as any).refLength || getEffectiveLastParallelOffset(entities);
+                  if (rLen > 0.5 && refD > 0.05) {
+                      const rtx = rdx / rLen;
+                      const rty = rdy / rLen;
+                      const rnx = -rty;
+                      const rny = rtx;
+                      const startSD = (drawing.start.x - rLine.start.x) * rnx + (drawing.start.y - rLine.start.y) * rny;
+                      const startPD = Math.abs(startSD);
+                      if (Math.abs(startPD - refD) < 18 / view.zoom) {
+                          const sideSign = startSD >= 0 ? 1 : -1;
+                          const startProj = (drawing.start.x - rLine.start.x) * rtx + (drawing.start.y - rLine.start.y) * rty;
+                          effectiveDrawingStart = {
+                              x: rLine.start.x + rtx * startProj + rnx * sideSign * refD,
+                              y: rLine.start.y + rty * startProj + rny * sideSign * refD
+                          };
+                      }
+                  }
+              }
+          }
+
+          const dx = candidatePt.x - effectiveDrawingStart.x;
+          const dy = candidatePt.y - effectiveDrawingStart.y;
+          const dist = Math.hypot(dx, dy);
+          const lockThreshold = Math.max(0.35, 3.5 / view.zoom);
+
+          if (!drawing.lockedDir) {
+              // Direction not locked yet: lock it as soon as the nib moves past lockThreshold
+              if (dist >= lockThreshold) {
+                  const lockedDir = { x: dx / dist, y: dy / dist };
+                  setDrawing({
+                      ...drawing,
+                      start: effectiveDrawingStart,
+                      isTraditionalSegment: true,
+                      lockedDir,
+                      current: candidatePt,
+                      maxPoint: candidatePt,
+                      maxLength: dist,
+                      retraceMinProj: undefined,
+                      snapType: snapRes.snapped ? (snapRes.type as any) : undefined,
+                      snapSubtype: (snapRes as any).subtype
+                  });
+              } else {
+                  setDrawing({
+                      ...drawing,
+                      start: effectiveDrawingStart,
+                      isTraditionalSegment: true,
+                      current: candidatePt,
+                      maxPoint: candidatePt,
+                      maxLength: dist,
+                      snapType: snapRes.snapped ? (snapRes.type as any) : undefined,
+                      snapSubtype: (snapRes as any).subtype
+                  });
+              }
+              return;
+          } else {
+              // Direction IS locked: the drawn segment CANNOT be rotated or moved!
+              // Project cursor movement strictly along the locked segment direction.
+              const ux = drawing.lockedDir.x;
+              const uy = drawing.lockedDir.y;
+              let proj = (rawPoint.x - drawing.start.x) * ux + (rawPoint.y - drawing.start.y) * uy;
+
+              // If a valid snap point lies near the locked ray, allow snapping the length to it
+              if (snapRes.snapped) {
+                  const sdx = snapRes.point.x - drawing.start.x;
+                  const sdy = snapRes.point.y - drawing.start.y;
+                  const perpDist = Math.abs(sdx * (-uy) + sdy * ux);
+                  if (perpDist < 14 / view.zoom) {
+                      proj = sdx * ux + sdy * uy;
+                  }
+              }
+
+              // Clamp to the segment ray starting at drawing.start
+              proj = Math.max(0, proj);
+
+              const nibPt = {
+                  x: drawing.start.x + ux * proj,
+                  y: drawing.start.y + uy * proj
+              };
+              const prevMaxLen = drawing.maxLength ?? 0;
+              const newMaxLen = Math.max(prevMaxLen, proj);
+              const newMaxPt = {
+                  x: drawing.start.x + ux * newMaxLen,
+                  y: drawing.start.y + uy * newMaxLen
+              };
+
+              // Detect backtracking ("torno indietro con il pennino -> ricalco")
+              let nextRetraceMinProj = drawing.retraceMinProj;
+              const backtrackTolerance = Math.max(0.15, 1.5 / view.zoom);
+              if (proj < newMaxLen - backtrackTolerance) {
+                  nextRetraceMinProj = Math.min(drawing.retraceMinProj ?? newMaxLen, proj);
+              }
+
+              setDrawing({
+                  ...drawing,
+                  isTraditionalSegment: true,
+                  current: nibPt,
+                  maxPoint: newMaxPt,
+                  maxLength: newMaxLen,
+                  retraceMinProj: nextRetraceMinProj,
+                  snapType: snapRes.snapped ? (snapRes.type as any) : undefined,
+                  snapSubtype: (snapRes as any).subtype
+              });
+              return;
+          }
+      }
+
       if (activeTool === 'Line' && (e.buttons === 1 || e.pointerType === 'touch' || e.pointerType === 'pen') && drawing.isFreehand) {
           const prevPoints = drawing.freehandPoints || [drawing.start];
           const lastPt = prevPoints[prevPoints.length - 1];
@@ -14880,7 +17421,7 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
           let constraintAxis2 = undefined;
           let hasDoubleSmart = false;
           
-          if (snapEnabled) {
+          if (isSnapActive()) {
               const snap = getSnappedPoint(rawPoint, entities, activeTool, drawing as any);
               if (snap.snapped) {
                   newPt = snap.point;
@@ -14928,8 +17469,8 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
 
               const minDistanceInPixels = minDistance * view.zoom;
               // If the closest point is NOT the last point (i.e. it is an earlier point along the path),
-              // and the pointer is close to that point (within 25 pixels), the user is backtracking.
-              const isBacktracking = closestIdx < prevPoints.length - 1 && minDistanceInPixels < 25;
+              // and the pointer is close to that point (within 12 pixels), the user is backtracking.
+              const isBacktracking = closestIdx < prevPoints.length - 1 && minDistanceInPixels < 12;
 
               if (!isBacktracking) {
                   nextPoints = [...prevPoints, newPt];
@@ -14986,11 +17527,11 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
           }
           const isDecimalActive = hardwareCaps || scrollLock || numLock || (e && (e as any).shiftKey);
           
-          // Re-anchor when mode toggles to prevent jumps
-          if (isDecimalActive !== isJollyActive) {
+          // Re-anchor when mode toggles to prevent jumps (do NOT touch isJollyActive!)
+          if (isDecimalActive !== isWheelDecimalRef.current) {
               fnAnchorCanvasPosRef.current = rawPoint;
               fnStepValueRef.current = drawing.wheelLength ?? 1.0;
-              setIsJollyActive(isDecimalActive);
+              isWheelDecimalRef.current = isDecimalActive;
           }
           
           // SENSITIVITY: Extremely dampened for "stepped" wheel feeling
@@ -15029,21 +17570,57 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
           const isOrthoTool = (activeTool as string) === 'Line' || (activeTool as string) === 'Filo' || (activeTool as string) === 'BIM_Porta' || (activeTool as string) === 'BIM_Finestra' || (activeTool as string) === 'BIM_Muro' || (activeTool as string) === 'Muro' || (activeTool as string) === 'Rectangle' || (activeTool as string) === 'Circle' || (activeTool as string) === 'Arc' || (activeTool as string) === 'Parallel' || (activeTool as string) === 'Specchio' || (activeTool as string) === 'Move' || (activeTool as string) === 'Copy';
           const effectiveOrthoMode = getEffectiveOrtho(e, isOrthoTool);
 
-          // 2. Only specific snap types win over Ortho as requested by user
-          const isWhitelistedSnap = snapRes.snapped && (
-              snapRes.subtype === 'endpoint' || 
-              snapRes.subtype === 'midpoint' || 
-              snapRes.subtype === 'perpendicular' || 
-              snapRes.subtype === 'quadrant' || 
+          // 2. Essential CAD snaps (estremi, medio, centro, tangente, 4 punti del cerchio, incroci, offset parallelo) ALWAYS win even when Bloc Fn / Ortho is held!
+          const isEssentialFiveSnap = snapRes.snapped && (
+              snapRes.subtype === 'endpoint' ||
+              snapRes.subtype === 'midpoint' ||
               snapRes.subtype === 'center' ||
+              snapRes.subtype === 'tangent' ||
+              snapRes.subtype === 'quadrant' ||
+              snapRes.subtype === 'intersection' ||
+              snapRes.subtype === 'parallel_offset' ||
+              snapRes.subtype === 'parallel_offset_end'
+          );
+          const isWhitelistedSnap = isEssentialFiveSnap || (!effectiveOrthoMode && snapRes.snapped && (
+              snapRes.subtype === 'perpendicular' || 
               snapRes.subtype === 'intersection' ||
               snapRes.subtype === 'equal_length' ||
-              snapRes.subtype === 'equal_radius'
-          );
+              snapRes.subtype === 'equal_radius' ||
+              snapRes.subtype === 'input'
+          ));
 
           if (isWhitelistedSnap || (snapRes.snapped && !effectiveOrthoMode)) {
+                let effectiveStart = drawing.start;
+                if ((snapRes.subtype === 'parallel_offset' || snapRes.subtype === 'parallel_offset_end') && snapRes.refEntityId) {
+                    const refEnt = entities.find(el => el.id === snapRes.refEntityId);
+                    if (refEnt && refEnt.type === 'line') {
+                        const rLine = refEnt as LineEntity;
+                        const rdx = rLine.end.x - rLine.start.x;
+                        const rdy = rLine.end.y - rLine.start.y;
+                        const rLen = Math.hypot(rdx, rdy);
+                        const refD = (snapRes as any).refLength || getEffectiveLastParallelOffset(entities);
+                        if (rLen > 0.5 && refD > 0.05) {
+                            const rtx = rdx / rLen;
+                            const rty = rdy / rLen;
+                            const rnx = -rty;
+                            const rny = rtx;
+                            const startSD = (drawing.start.x - rLine.start.x) * rnx + (drawing.start.y - rLine.start.y) * rny;
+                            const startPD = Math.abs(startSD);
+                            if (Math.abs(startPD - refD) < 18 / view.zoom) {
+                                const sideSign = startSD >= 0 ? 1 : -1;
+                                const startProj = (drawing.start.x - rLine.start.x) * rtx + (drawing.start.y - rLine.start.y) * rty;
+                                effectiveStart = {
+                                    x: rLine.start.x + rtx * startProj + rnx * sideSign * refD,
+                                    y: rLine.start.y + rty * startProj + rny * sideSign * refD
+                                };
+                            }
+                        }
+                    }
+                }
+                setHoverSnap(snapRes);
                 setDrawing({ 
                     ...drawing, 
+                    start: effectiveStart,
                     current: snapRes.point, 
                     snapType: snapRes.type, 
                     snapSubtype: (snapRes as any).subtype,
@@ -15078,6 +17655,11 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
                     
                     // 4. Try to snap the Ortho point
                     let orthoSnap = getSnappedPoint(orthoPoint, entities, activeTool, drawing as any);
+                    if (orthoSnap.snapped) {
+                        setHoverSnap(orthoSnap);
+                    } else {
+                        setHoverSnap(null);
+                    }
                     let finalPoint = orthoSnap.point;
                     if (activeTool === 'Rectangle' && orthoSnap.snapped) {
                          const side = Math.max(Math.abs(finalPoint.x - drawing.start.x), Math.abs(finalPoint.y - drawing.start.y));
@@ -15136,7 +17718,7 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
                 }
             }
         }
-    } else if ((activeTool === 'Move' || activeTool === 'Copy' || activeTool === 'Testo') && dragEntityIdRef.current) {
+    } else if ((activeTool === 'Move' || activeTool === 'Copy' || activeTool === 'Testo' || isJollyActive || isMagicCopyActive || isMagicCopyActiveRef.current) && dragEntityIdRef.current) {
         lastDragMousePosRef.current = {
             clientX: e.clientX,
             clientY: e.clientY,
@@ -15240,7 +17822,7 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
                     deltaX += bestAdj.x;
                     deltaY += bestAdj.y;
 
-                    const effectiveOrthoMode = getEffectiveOrtho(e, true);
+                    const effectiveOrthoMode = getEffectiveOrtho(e, true) || isShiftPressedRef.current || shiftKey;
                     const isWhitelistedSnap = snapFound && (
                         bestSubtype === 'endpoint' || 
                         bestSubtype === 'midpoint' || 
@@ -15250,17 +17832,141 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
                         bestSubtype === 'intersection'
                     );
 
-                    const isOrthoForMoveCopy = (activeTool === 'Copy' || activeTool === 'Move') && effectiveOrthoMode && !isWhitelistedSnap;
+                    const isOrthoForMoveCopy = (activeTool === 'Copy' || activeTool === 'Move' || isJollyActive || isMagicCopyActive || isMagicCopyActiveRef.current) && effectiveOrthoMode && !isWhitelistedSnap;
                     
                     if (isOrthoForMoveCopy) {
-                      if (Math.abs(deltaX) > Math.abs(deltaY)) {
-                          deltaY = 0;
+                      // If moving a single line or dimension, preserve its initial linearity (move strictly orthogonal/parallel to its orientation)
+                      const primaryMoved = movedEntities.find(ent => ent.id === dragEntityIdRef.current) || movedEntities[0];
+                      if (primaryMoved && (primaryMoved.type === 'line' || primaryMoved.type === 'dimension')) {
+                          const ldx = primaryMoved.end.x - primaryMoved.start.x;
+                          const ldy = primaryMoved.end.y - primaryMoved.start.y;
+                          const lLen = Math.hypot(ldx, ldy);
+                          if (lLen > 0.01) {
+                              const nx = -ldy / lLen;
+                              const ny = ldx / lLen;
+                              // Project delta onto the normal vector so the segment/measure shifts strictly parallel to itself
+                              const projN = deltaX * nx + deltaY * ny;
+                              deltaX = nx * projN;
+                              deltaY = ny * projN;
+                              snapPointUsed = {
+                                  x: previousMouseRef.current.x + deltaX,
+                                  y: previousMouseRef.current.y + deltaY
+                              };
+                          }
                       } else {
-                          deltaX = 0;
+                          if (Math.abs(deltaX) > Math.abs(deltaY)) {
+                              deltaY = 0;
+                          } else {
+                              deltaX = 0;
+                          }
+                          snapPointUsed = {
+                              x: previousMouseRef.current.x + deltaX,
+                              y: previousMouseRef.current.y + deltaY
+                          };
                       }
                     }
                 }
                 setActiveMoveSnapPoint(snapFound);
+
+                // Se la linea è stata appena posizionata con un offset numerico da tastiera:
+                // - Ignora piccoli movimenti accidentali del mouse (< 12 px) così non perde l'offset impostato
+                // - Se siamo in modalità Copia (Z / Copy) o Aiuto Offset e l'utente sposta il mouse per fare il successivo, clona la linea lasciando quella corrente come riferimento!
+                const lockedInfo = parallelOverrideLockedLineRef.current;
+                if (lockedInfo && targetIds.includes(lockedInfo.lineId)) {
+                    const distFromLock = Math.hypot(
+                        currentRawPoint.x - lockedInfo.mousePosAtLock.x,
+                        currentRawPoint.y - lockedInfo.mousePosAtLock.y
+                    );
+                    const elapsedSinceDigit = Date.now() - lockedInfo.timestamp;
+                    if (distFromLock < 12 / view.zoom || elapsedSinceDigit < 450) {
+                        previousMouseRef.current = currentRawPoint;
+                        return;
+                    } else {
+                        parallelOverrideLockedLineRef.current = null;
+                        justOffsetLineIdRef.current = null;
+                        setLiveNumericOverride(null);
+                        if (isMagicCopyActiveRef.current || activeTool === 'Copy' || (isOffsetAidActiveRef.current && !isJollyActiveRef.current && activeTool !== 'Move')) {
+                            const lockedEnt = entitiesRef.current.find(el => el.id === lockedInfo.lineId);
+                            if (lockedEnt) {
+                                const cloned = fastCloneEntity(lockedEnt);
+                                cloned.id = Date.now().toString() + '_offset_' + Math.random().toString(36).substr(2, 5);
+                                setEntities(prev => [...prev, cloned]);
+                                setClonedEntityIds(prev => {
+                                    const next = new Set(prev);
+                                    next.add(cloned.id);
+                                    return next;
+                                });
+                                setDragEntityIds([cloned.id]);
+                                dragEntityIdsRef.current = [cloned.id];
+                                setDragEntityId(cloned.id);
+                                dragEntityIdRef.current = cloned.id;
+                                previousMouseRef.current = currentRawPoint;
+                                return;
+                            }
+                        }
+                    }
+                }
+
+                // Aggancio magnetico automatico alla linea di riferimento dell'ultimo offset usato
+                // (Attivo quando si usa Offset, Sposta o Copia)
+                const targetOffset = isMoveCopyOrOffsetAidActive() ? getEffectiveLastParallelOffset(entitiesRef.current) : 0;
+                if (targetOffset > 0.05 && !snapFound) {
+                    const currentEntitiesList = entitiesRef.current;
+                    const primaryMoved = currentEntitiesList.find(ent => ent.id === dragEntityIdRef.current || targetIds.includes(ent.id));
+                    if (primaryMoved && primaryMoved.type === 'line') {
+                        const mLine = primaryMoved as LineEntity;
+                        const mdx = mLine.end.x - mLine.start.x;
+                        const mdy = mLine.end.y - mLine.start.y;
+                        const mLen = Math.hypot(mdx, mdy);
+                        if (mLen > 0.1) {
+                            const mnx = -mdy / mLen;
+                            const mny = mdx / mLen;
+                            const nextStartX = mLine.start.x + deltaX;
+                            const nextStartY = mLine.start.y + deltaY;
+
+                            let nearestParallelRef: LineEntity | null = null;
+                            let minPDist = Infinity;
+                            let bestSignedD = 0;
+
+                            for (const other of currentEntitiesList) {
+                                if (other.id !== mLine.id && !targetIds.includes(other.id) && other.type === 'line') {
+                                    const oLine = other as LineEntity;
+                                    const odx = oLine.end.x - oLine.start.x;
+                                    const ody = oLine.end.y - oLine.start.y;
+                                    const oLen = Math.hypot(odx, ody);
+                                    if (oLen > 0.1) {
+                                        const onx = -ody / oLen;
+                                        const ony = odx / oLen;
+                                        if (Math.abs(mnx * onx + mny * ony) > 0.992) {
+                                            const sD = (oLine.start.x - nextStartX) * mnx + (oLine.start.y - nextStartY) * mny;
+                                            const d = Math.abs(sD);
+                                            if (d > 0.05 && d < minPDist) {
+                                                minPDist = d;
+                                                bestSignedD = sD;
+                                                nearestParallelRef = oLine;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            if (nearestParallelRef) {
+                                const diffToEqualOffset = Math.abs(minPDist - targetOffset);
+                                const offsetSnapThresh = 14 / view.zoom;
+                                if (diffToEqualOffset < offsetSnapThresh) {
+                                    const sideSign = bestSignedD >= 0 ? 1 : -1;
+                                    const correctionAlongNormal = bestSignedD - sideSign * targetOffset;
+                                    deltaX += mnx * correctionAlongNormal;
+                                    deltaY += mny * correctionAlongNormal;
+                                    snapPointUsed = {
+                                        x: previousMouseRef.current.x + deltaX,
+                                        y: previousMouseRef.current.y + deltaY
+                                    };
+                                }
+                            }
+                        }
+                    }
+                }
 
                 if (Math.abs(deltaX) > 1e-6 || Math.abs(deltaY) > 1e-6) {
                     const updater = (prev: Entity[]) => prev.map(ent => {
@@ -15290,39 +17996,47 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
             const ny = dx / L;
             const vec1 = { x: rawPoint.x - p1.x, y: rawPoint.y - p1.y };
             
-            const actualDist = Math.abs(vec1.x * nx + vec1.y * ny);
             const distVal = vec1.x * nx + vec1.y * ny;
             const sign = distVal >= 0 ? 1 : -1;
             setParallelSign(sign);
 
-            // Determine if the user is holding Shift to tweak the distance
-            const isTweakActive = isShiftPressedRef.current || (e && e.shiftKey);
-            
-            if (isParallelWheelActive && isTweakActive && !isContinuousMode) {
-                // Interactive distance adjustment
-                const ux = -dy / L;
-                const uy = dx / L;
-                const dX = rawPoint.x - (fnAnchorCanvasPosRef.current?.x ?? rawPoint.x);
-                const dY = rawPoint.y - (fnAnchorCanvasPosRef.current?.y ?? rawPoint.y);
-                const deltaProj = (dX * ux + dY * uy) * parallelSign;
+            const rawDist = Math.abs(distVal);
+            let dist = rawDist;
 
-                const sens = 0.04;
-                const baseValue = fnStepValueRef.current ?? parallelDistance ?? 1.0;
-                let dist = baseValue + deltaProj * sens;
-                dist = Math.round(dist * 100) / 100;
-                if (dist < 0) dist = 0;
-                setParallelDistance(dist);
-                setParallelInputString(dist.toString());
-            } else if (isParallelWheelActive) {
-                // Locked distance mode - update anchor in case they decide to tweak
-                fnAnchorCanvasPosRef.current = rawPoint;
-                fnStepValueRef.current = parallelDistance;
+            // Smart magnetic snapping to previous offset distance first, then perpendicular ruler graduations
+            if (!e.altKey) {
+                const refPrevD = getEffectiveLastParallelOffset(entitiesRef.current);
+                const prevOffsetSnapThresh = 16 / view.zoom;
+                if (refPrevD > 0.05 && Math.abs(rawDist - refPrevD) < prevOffsetSnapThresh) {
+                    dist = refPrevD;
+                } else {
+                    const rulerTicks = [
+                        1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 15, 20, 25, 30, 35, 40, 45, 50,
+                        60, 70, 80, 90, 100, 110, 120, 130, 140, 150, 160, 180, 200, 220, 250, 300, 350, 400, 500
+                    ];
+                    const snapThresh = 11 / view.zoom;
+                    let closestTick: number | null = null;
+                    let minDiff = Infinity;
+                    for (const tick of rulerTicks) {
+                        const diff = Math.abs(rawDist - tick);
+                        if (diff < snapThresh && diff < minDiff) {
+                            minDiff = diff;
+                            closestTick = tick;
+                        }
+                    }
+                    if (closestTick !== null) {
+                        dist = closestTick;
+                    } else {
+                        dist = Math.round(rawDist * 10) / 10;
+                    }
+                }
             } else {
-                let dist = actualDist;
-                dist = Math.round(dist * 100) / 100;
-                setParallelDistance(dist);
-                setParallelInputString(dist.toString());
+                dist = Math.round(rawDist * 100) / 100;
             }
+
+            dist = Math.max(0.1, dist);
+            setParallelDistance(dist);
+            setParallelInputString(dist.toString());
         }
     } else if (activeTool === 'Gomma') {
         const rawPoint = getDampenedCoordinate(screenToCanvas(e.clientX - rect.left, e.clientY - rect.top), e);
@@ -15490,14 +18204,63 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
         }
     }
 
+    actualMousePosRef.current = rawPoint;
     lastMouseRef.current = rawPoint;
     setTooltipMousePos({ x: e.clientX - rect.left, y: e.clientY - rect.top });
-    if (isSKeyPressedRef.current) {
-        renderRef.current?.();
-    }
+    renderRef.current?.();
   };
 
-  const handleMouseUp = (e: React.PointerEvent) => {
+   const handleMouseUp = (e: React.PointerEvent) => {
+    if (selectedLine || quickEditEntityId || textDialog) {
+        e.preventDefault();
+        e.stopPropagation();
+        return;
+    }
+    if (dragSquadrettaId) {
+        const now = Date.now();
+        if (now - lastSquadrettaInteractionAt < 250) {
+            // Click to rotate 90 deg clockwise
+            setSquadrette(prev => prev.map(sq => 
+                sq.id === dragSquadrettaId ? { ...sq, rotation: (sq.rotation + 90) % 360 } : sq
+            ));
+        }
+        setDragSquadrettaId(null);
+        renderRef.current?.();
+        return;
+    }
+
+    if (dragEntityId && (isJollyActive || isMagicCopyActive || isMagicCopyActiveRef.current || activeTool === 'Move' || activeTool === 'Testo') && dragHasMovedRef.current) {
+        const activePair = activeParallelPairRef.current;
+        if (activePair && activePair.lineId === dragEntityId && activePair.currentDist > 0.05) {
+            lastParallelOffsetInfoRef.current = {
+                distance: activePair.currentDist,
+                lineId: activePair.lineId,
+                refLineId: activePair.refLineId,
+                nx: activePair.nx,
+                ny: activePair.ny,
+                dirSign: activePair.signedDist >= 0 ? -1 : 1,
+                timestamp: Date.now()
+            };
+            justOffsetLineIdRef.current = activePair.lineId;
+        }
+        parallelOverrideLockedLineRef.current = null;
+        setClonedEntityIds(new Set());
+        setDragEntityId(null);
+        dragEntityIdRef.current = null;
+        setDragEntityIds([]);
+        dragEntityIdsRef.current = [];
+        setActiveMoveSnapPoint(null);
+        setMoveBasePoint(null);
+        setMovePhase('idle');
+        dragHasMovedRef.current = false;
+        setEntities(prev => {
+            onCommitHistory?.(prev);
+            return [...prev];
+        });
+        renderRef.current?.();
+        return;
+    }
+
     isDraggingZoomRef.current = false;
     isDraggingPanRef.current = false;
     if (canvasRef.current) canvasRef.current.style.cursor = '';
@@ -15532,6 +18295,7 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
             };
             
             lastCircleRadiusRef.current = radius;
+            onLastParameterChange?.({ type: 'radius', value: parseFloat((radius / 100).toFixed(2)), isAutoFromDrawing: true });
             try { localStorage.setItem('lastCircleRadius', radius.toString()); } catch(err){}
             setEntities(prev => {
                 onCommitHistory?.(prev);
@@ -15544,10 +18308,55 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
         }
     }
     
+    // Traditional China / Matita segment: releasing the mouse button lifts the pen off the paper and commits the permanent segment
+    if (activeTool === 'Line' && drawing && (drawing.isTraditionalSegment || defaultLineStyle.mode === 'ink' || defaultLineStyle.mode === 'pencil')) {
+        const finalEnd = drawing.maxPoint || drawing.current;
+        const segLen = finalEnd ? Math.hypot(finalEnd.x - drawing.start.x, finalEnd.y - drawing.start.y) : 0;
+        if (finalEnd && segLen > 0.5 && !drawing.isVirtual) {
+            onSelect(null);
+            let retraceStartPt: Point | undefined = undefined;
+            let retraceEndPt: Point | undefined = undefined;
+            if (drawing.retraceMinProj !== undefined && drawing.lockedDir && segLen - drawing.retraceMinProj > 0.05) {
+                retraceStartPt = {
+                    x: drawing.start.x + drawing.lockedDir.x * drawing.retraceMinProj,
+                    y: drawing.start.y + drawing.lockedDir.y * drawing.retraceMinProj
+                };
+                retraceEndPt = finalEnd;
+            }
+            const newEntity: LineEntity = {
+                id: Date.now().toString(),
+                type: 'line',
+                color: defaultLineStyle.color,
+                lineWidth: defaultLineStyle.lineWidth,
+                dashed: defaultLineStyle.dashed,
+                lineType: defaultLineStyle.lineType,
+                mode: defaultLineStyle.mode,
+                start: drawing.start,
+                end: finalEnd,
+                layer: activeLayerId,
+                isFreehand: false,
+                ...(retraceStartPt && retraceEndPt ? { retraceStart: retraceStartPt, retraceEnd: retraceEndPt } : {})
+            } as any;
+            lastSegmentRef.current = { start: drawing.start, end: finalEnd, length: segLen, id: newEntity.id };
+            onLastParameterChange?.({ type: 'length', value: parseFloat((segLen / 100).toFixed(2)), isAutoFromDrawing: true });
+            recordParallelOffsetFromNewLine(newEntity, entitiesRef.current);
+            setEntities(prev => {
+                onCommitHistory?.(prev);
+                if (!newEntity.isBIM && !(newEntity as any).isFilo) {
+                    return mergeLineSegments(prev, newEntity);
+                }
+                return [...prev, newEntity];
+            });
+        }
+        setLiveNumericOverride(null);
+        setDrawing(null);
+        return;
+    }
+
     // If we're freehand drawing, commit the stroke on mouseup
     if (activeTool === 'Line' && drawing && drawing.isFreehand && drawing.freehandPoints && drawing.freehandPoints.length > 1) {
         let pts = [...drawing.freehandPoints];
-        if (snapEnabled && pts.length > 0) {
+        if (isSnapActive() && pts.length > 0) {
             const lastRaw = pts[pts.length - 1];
             const snap = getSnappedPoint(lastRaw, entities, activeTool, drawing as any);
             if (snap.snapped) {
@@ -16022,6 +18831,7 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
 
   const handleContextMenu = (e: React.MouseEvent) => {
     e.preventDefault();
+    virtualCursorOffsetRef.current = null;
 
     // Se siamo in modalità Trim, il tasto destro alterna tra Trim normale e Smart Trim
     if (activeTool === 'Trim') {
@@ -16109,8 +18919,6 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
     isStickyCopyRef.current = false;
     
     // Propaga anche l'evento per listener globali
-    const ev = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true });
-    window.dispatchEvent(ev);
   };
 
   useEffect(() => {
@@ -16123,14 +18931,16 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
         setDragTavolaId(null);
         dragTavolaIdRef.current = null;
       }
-      if (dragEntityId && (activeTool === 'Move' || activeTool === 'Copy')) {
-        if (activeTool === 'Copy' || activeTool === 'Move') {
-          // In Copy/Move mode, dropping is handled entirely by clicking (mousedown) or confirmations.
-          // We must never clear or stop dragging on mouseup.
-          return;
-        }
+      if (dragEntityIdRef.current && (isJollyActive || isMagicCopyActive || isMagicCopyActiveRef.current || activeTool === 'Move') && dragHasMovedRef.current) {
+        setClonedEntityIds(new Set());
         setDragEntityId(null);
+        dragEntityIdRef.current = null;
+        setDragEntityIds([]);
+        dragEntityIdsRef.current = [];
         setActiveMoveSnapPoint(null);
+        setMoveBasePoint(null);
+        setMovePhase('idle');
+        dragHasMovedRef.current = false;
         setEntities(prev => { 
           onCommitHistory?.(prev); 
           return [...prev]; 
@@ -16143,41 +18953,140 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
       window.removeEventListener('mouseup', handleGlobalMouseUp);
       window.removeEventListener('pointerup', handleGlobalMouseUp);
     };
-  }, [dragEntityId, activeTool, onCommitHistory, dragTavolaId]);
+  }, [dragEntityId, activeTool, isJollyActive, isMagicCopyActive, onCommitHistory, dragTavolaId]);
 
   useEffect(() => {
-    const updateJolly = (e: KeyboardEvent) => {
-        let hardwareCaps = false;
-        let scrollLock = false;
-        let numLock = false;
-        if (e.getModifierState) {
-            hardwareCaps = !!e.getModifierState('CapsLock');
-            scrollLock = !!e.getModifierState('ScrollLock');
-            numLock = !!e.getModifierState('NumLock');
-        }
-        
-        if (e.key.toLowerCase() === 's') {
-            isSKeyPressedRef.current = e.type === 'keydown';
-        }
-        
-        // Se Shift o F sono premuti aggiorniamo anche il ref dedicato per coerenza
-        if (e.key === 'Shift' || e.key.toLowerCase() === 'f') {
-            isShiftPressedRef.current = e.type === 'keydown';
-        }
-
-        const isActive = hardwareCaps || scrollLock || numLock || e.shiftKey || e.altKey;
-        setIsJollyActive(isActive);
-        return isActive;
+    const isSpostaTuttoKey = (e: KeyboardEvent) => {
+        return e.key === '<' || e.key === '>' || e.code === 'IntlBackslash' || e.key === 'Tab';
     };
 
     const handleKeyDown = (e: KeyboardEvent) => {
-        if (e.repeat) return;
         if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
-        
+
+        // 1. SPOSTA TUTTO: Tasto < > (a destra di Bloc Fn / Shift) o Tab — SOLO SPOSTA L'OGGETTO
+        if (isSpostaTuttoKey(e)) {
+            e.preventDefault();
+            if (!isJollyActiveRef.current) {
+                setDrawing(null);
+                setIsJollyActive(true);
+                isJollyActiveRef.current = true;
+                // Se il mouse è già sopra un oggetto (o c'è un oggetto selezionato), inizia subito a spostarlo col movimento del mouse!
+                if (!dragEntityIdRef.current) {
+                    const hovered = getEntityAtPoint(actualMousePosRef.current, 30);
+                    const targetIds = hovered
+                        ? resolveGroups([hovered.id], entitiesRef.current)
+                        : (selectedEntityIds.length > 0
+                            ? resolveGroups(selectedEntityIds, entitiesRef.current)
+                            : (selectedEntityId ? resolveGroups([selectedEntityId], entitiesRef.current) : []));
+                    if (targetIds.length > 0) {
+                        const primaryId = hovered ? hovered.id : targetIds[0];
+                        setDragEntityIds(targetIds);
+                        dragEntityIdsRef.current = targetIds;
+                        setDragEntityId(primaryId);
+                        dragEntityIdRef.current = primaryId;
+                        setDragOffset({ x: actualMousePosRef.current.x, y: actualMousePosRef.current.y });
+                        lastMouseRef.current = actualMousePosRef.current;
+                        previousMouseRef.current = actualMousePosRef.current;
+                        dragHasMovedRef.current = false;
+                    }
+                }
+                renderRef.current?.();
+            }
+            return;
+        }
+
+        // 1b. TASTO MAGICO Z: Copia gli oggetti e li sposta pure!
+        if (e.key.toLowerCase() === 'z' && !e.ctrlKey && !e.metaKey && !e.altKey) {
+            e.preventDefault();
+            if (!isMagicCopyActiveRef.current) {
+                setDrawing(null);
+                setIsMagicCopyActive(true);
+                isMagicCopyActiveRef.current = true;
+                // Se il mouse è già sopra un oggetto (o c'è un oggetto selezionato), lo clona subito e inizia a spostare la copia col movimento del mouse!
+                if (!dragEntityIdRef.current) {
+                    const hovered = getEntityAtPoint(actualMousePosRef.current, 30);
+                    const targetIds = hovered
+                        ? resolveGroups([hovered.id], entitiesRef.current)
+                        : (selectedEntityIds.length > 0
+                            ? resolveGroups(selectedEntityIds, entitiesRef.current)
+                            : (selectedEntityId ? resolveGroups([selectedEntityId], entitiesRef.current) : []));
+                    if (targetIds.length > 0) {
+                        onCommitHistory?.(entitiesRef.current);
+                        initiateCloneAndDrag(targetIds, actualMousePosRef.current);
+                    }
+                }
+                renderRef.current?.();
+            }
+            return;
+        }
+
+        // 2. FORBICE (Trim): Tasto Ctrl - immediato, certo e stabile
+        if (e.key === 'Control' && !e.repeat) {
+            setDrawing(null);
+            setIsJollyActive(false);
+            setIsMagicCopyActive(false);
+            isMagicCopyActiveRef.current = false;
+            setDragEntityId(null);
+            dragEntityIdRef.current = null;
+            setDragEntityIds([]);
+            dragEntityIdsRef.current = [];
+            if (activeTool !== 'Trim') {
+                setActiveTool?.('Trim');
+                setStatusMessage("Forbice (Taglia) attiva");
+                renderRef.current?.();
+            }
+            return;
+        }
+
+        // 3. BLOC FN (Shift / CapsLock / Bloc Maiusc / Fn / F):
+        // - Se premuto insieme a Sposta Tutto (< >) o Copia Magica (Z) o mentre si trascina un oggetto, attiva il vincolo ORTOGONALE / PARALLELO
+        // - Se premuto da solo (anche in modalità Forbice / Trim!), va SEMPRE immediatamente in modalità Pennino (Line) oltre ad attivare Orto e Snap essenziali!
+        const keyLower = (e.key || '').toLowerCase();
+        const isBlocFnKey =
+            e.key === 'Shift' ||
+            e.code === 'ShiftLeft' ||
+            e.code === 'ShiftRight' ||
+            e.key === 'CapsLock' ||
+            e.code === 'CapsLock' ||
+            e.keyCode === 20 ||
+            (e as any).which === 20 ||
+            e.key === 'Fn' ||
+            e.code === 'Fn' ||
+            e.key === 'FnLock' ||
+            e.code === 'FnLock' ||
+            e.key === 'ShiftLock' ||
+            keyLower === 'f';
+        if (isBlocFnKey) {
+            setIsShiftPressed(true);
+            isShiftPressedRef.current = true;
+            if (!isJollyActive && !isMagicCopyActiveRef.current && !dragEntityIdRef.current) {
+                if (activeTool !== 'Line') {
+                    setDrawing(null);
+                    setSelectedParallelLine(null);
+                    setHighlightedTrimLine(null);
+                    setHighlightedTrimSegment(null);
+                    setMovePhase('idle');
+                    setCopyPhase('idle');
+                    setActiveTool?.('Line');
+                    setStatusMessage("Pennino (Linea) attivo");
+                }
+                // Immediately compute essential snaps (inclusi incroci!) at current mouse position when Bloc Fn is pressed
+                if (actualMousePosRef.current) {
+                    const immediateSnap = getSnappedPoint(actualMousePosRef.current, entitiesRef.current, 'Line', drawing);
+                    setHoverSnap(immediateSnap && immediateSnap.snapped ? immediateSnap : null);
+                }
+                renderRef.current?.();
+                return;
+            }
+        }
+
+        if (e.repeat) return;
+
         // Lettera C per attivare il Cerchio
-        if (e.key.toLowerCase() === 'c') {
+        if (e.key.toLowerCase() === 'c' && !e.ctrlKey && !e.metaKey) {
+            setDrawing(null);
             setActiveTool?.('Circle');
-            setStatusMessage("Strumento Cerchio attivato tramite la scorciatoia 'C'");
+            setStatusMessage("Strumento Cerchio attivato");
             return;
         }
 
@@ -16191,15 +19100,12 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
                 return;
             }
         }
-
-        const isJollyNow = updateJolly(e);
         
         // Frecce per muovere il punto
         if ((activeTool === 'Line' || activeTool === 'Filo') && drawing) {
             const keys = ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'];
             if (keys.includes(e.key)) {
-                // Avanzamento: 0.1 se Jolly (decimali), 1 se normale (unità intere)
-                const step = isJollyNow ? 0.1 : 1;
+                const step = isJollyActive ? 0.1 : 1;
                 let change = { x: 0, y: 0 };
                 if (e.key === 'ArrowRight') change = { x: step, y: 0 };
                 else if (e.key === 'ArrowLeft') change = { x: -step, y: 0 };
@@ -16211,34 +19117,28 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
                     setDrawing(prev => {
                         if (!prev) return null;
                         
-                        // Determina se siamo in modalità orto effettiva
                         const effectiveOrtho = getEffectiveOrtho(e, true);
                         
                         let nextX = prev.current.x + change.x;
                         let nextY = prev.current.y + change.y;
                         
                         if (effectiveOrtho) {
-                            // Se orto è attivo, implementiamo il mantenimento della distanza quando si cambia asse
                             const dxPrevious = prev.current.x - prev.start.x;
                             const dyPrevious = prev.current.y - prev.start.y;
                             const dist = Math.sqrt(dxPrevious * dxPrevious + dyPrevious * dyPrevious);
 
                             if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
-                                // Se eravamo prevalentemente verticali, saltiamo sulla linea orizzontale mantenendo la distanza
                                 if (Math.abs(dyPrevious) > Math.abs(dxPrevious) && dist > 0) {
                                     nextX = prev.start.x + (e.key === 'ArrowRight' ? dist : -dist);
                                 }
                                 nextY = prev.start.y;
                             } else if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
-                                // Se eravamo prevalentemente orizzontali, saltiamo sulla linea verticale mantenendo la distanza
                                 if (Math.abs(dxPrevious) > Math.abs(dyPrevious) && dist > 0) {
                                     nextY = prev.start.y + (e.key === 'ArrowDown' ? dist : -dist);
                                 }
                                 nextX = prev.start.x;
                             }
                         }
-                        
-                        // NOTA: Abbiamo rimosso Math.round per mantenere la parte decimale esistente come richiesto
                         
                         return { ...prev, current: { x: nextX, y: nextY } };
                     });
@@ -16248,7 +19148,9 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
         }
 
         if (e.key === 'Escape') {
+            virtualCursorOffsetRef.current = null;
             setDrawing(null);
+            setLiveNumericOverride(null);
             setManualRoomPoints([]);
             setIsLocked(false);
             setLockedFocalPoint(null);
@@ -16258,6 +19160,10 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
             setSelectedParallelLine(null);
             setActiveMoveSnapPoint(null);
             setDragEntityIds([]);
+            dragEntityIdsRef.current = [];
+            setDragEntityId(null);
+            dragEntityIdRef.current = null;
+            setIsJollyActive(false);
 
             setIsParallelWheelActive(false);
             if (activeTool === 'Copy') {
@@ -16267,17 +19173,11 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
                 }
                 setCopyPhase('idle');
                 setCopySourceEntityIds([]);
-                setDragEntityId(null);
-                dragEntityIdRef.current = null;
-                dragEntityIdsRef.current = [];
             }
             if (activeTool === 'Move') {
                 setMovePhase('idle');
                 setMoveSourceEntityIds([]);
                 setMoveBasePoint(null);
-                setDragEntityId(null);
-                dragEntityIdRef.current = null;
-                dragEntityIdsRef.current = [];
                 setStatusMessage(null);
             }
             if (activeTool === 'Specchio') {
@@ -16296,17 +19196,36 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
                 setTecnigrafoOrigin({ ...origin });
                 setLockedFocalPoint({ ...origin });
                 setTecnigrafoLock(null); 
+                
+                // Show Squadrette and hide L-rulers
+                setShowSquadrette(true);
+                setSquadrette([
+                    { id: 'sq1', type: '45', pos: { x: origin.x - 150, y: origin.y - 150 }, rotation: 0 },
+                    { id: 'sq2', type: '3060', pos: { x: origin.x + 50, y: origin.y - 150 }, rotation: 0 }
+                ]);
 
                 // Automatic setup: Line tool with NO Ortho
                 setActiveTool?.('Line');
                 setOrthoMode?.(false);
+            }
+        } else if (e.key === 'Enter' && (liveNumericOverrideRef.current?.kind === 'parallel_dist' || liveNumericOverrideRef.current?.kind === 'line_length')) {
+            e.preventDefault();
+            onCommitHistory?.(entitiesRef.current);
+            setLiveNumericOverride(null);
+            if (dragEntityIdRef.current) {
+                setDragEntityId(null);
+                dragEntityIdRef.current = null;
+                setDragEntityIds([]);
+                dragEntityIdsRef.current = [];
             }
         } else if (e.key === 'Enter') {
             if (activeTool === 'Join') {
                 confirmJoin();
             } else if ((activeTool === 'Line' || activeTool === 'Filo') && drawing) {
                 e.preventDefault();
-                const finalPoint = drawing.current;
+                setLiveNumericOverride(null);
+                const isTrad = activeTool === 'Line' && (drawing.isTraditionalSegment || defaultLineStyle.mode === 'ink' || defaultLineStyle.mode === 'pencil');
+                const finalPoint = isTrad ? (drawing.maxPoint || drawing.current) : drawing.current;
                 const newEntity: Entity = {
                     id: Date.now().toString(),
                     type: 'line',
@@ -16319,37 +19238,42 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
                     end: finalPoint,
                     layer: activeTool === 'Filo' ? 'Fili' : activeLayerId,
                     isFilo: activeTool === 'Filo',
+                    isFreehand: false,
                 } as any;
                 
                 const segLen = Math.hypot(finalPoint.x - drawing.start.x, finalPoint.y - drawing.start.y);
                 if (segLen > 0.01) {
                     lastSegmentRef.current = { start: drawing.start, end: finalPoint, length: segLen, id: newEntity.id };
+                    onLastParameterChange?.({ type: 'length', value: parseFloat((segLen / 100).toFixed(2)), isAutoFromDrawing: true });
                 }
                 
                 setEntities(prev => {
                     onCommitHistory?.(prev);
-                    if (newEntity.type === 'line' && !newEntity.isBIM && !newEntity.isFilo) {
+                    if (newEntity.type === 'line' && !newEntity.isBIM && !(newEntity as any).isFilo) {
                         return mergeLineSegments(prev, newEntity as LineEntity);
                     }
                     return [...prev, newEntity];
                 });
                 
-                // Start next segment
-                const isFreehandMode = activeTool !== 'Filo';
-                setDrawing({ 
-                    start: finalPoint, 
-                    current: finalPoint, 
-                    snapType: undefined, 
-                    startSnapped: true,
-                    isVirtual: false,
-                    isFreehand: isFreehandMode,
-                    freehandPoints: isFreehandMode ? [finalPoint] : undefined
-                });
+                if (isTrad) {
+                    // In China / Matita mode, confirming lifts the pen off the paper
+                    setDrawing(null);
+                } else {
+                    // In CAD mode, start next chained segment
+                    setDrawing({ 
+                        start: finalPoint, 
+                        current: finalPoint, 
+                        snapType: undefined, 
+                        startSnapped: true,
+                        isVirtual: false,
+                        isFreehand: false
+                    });
+                }
 
             }
         } else {
             let typedChar: string | null = null;
-            if (/^[0-9\.\-,]$/.test(e.key)) {
+            if (/^[0-9\.,]$/.test(e.key)) {
                 typedChar = e.key === ',' ? '.' : e.key;
             } else if (e.code.startsWith('Digit')) {
                 typedChar = e.code.replace('Digit', '');
@@ -16357,51 +19281,229 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
                 typedChar = e.code.replace('Numpad', '');
             } else if (e.code === 'Period' || e.code === 'Comma' || e.code === 'NumpadDecimal' || e.code === 'NumpadComma') {
                 typedChar = '.';
-            } else if (e.code === 'Minus' || e.code === 'NumpadSubtract') {
-                typedChar = '-';
-            } else if (e.key === 'Enter') {
-                typedChar = '';
             }
 
-            if (!quickEditEntityId && hoveredLineId && !drawing && typedChar !== null) {
+            const isBackspace = e.key === 'Backspace';
+            const now = Date.now();
+
+            // 1. DIRECT KEYBOARD NUMERIC OVERRIDE FOR PARALLEL DISTANCE BADGE
+            const activePair = activeParallelPairRef.current;
+            const existingParallelOverride =
+                liveNumericOverrideRef.current?.kind === 'parallel_dist' &&
+                (now - liveNumericOverrideRef.current.timestamp < 4000)
+                    ? liveNumericOverrideRef.current
+                    : null;
+
+            if ((typedChar !== null || isBackspace) && !drawing && (activePair || existingParallelOverride)) {
                 e.preventDefault();
-                const line = entities.find(el => el.id === hoveredLineId) as LineEntity;
-                if (line) {
-                    const dx = line.end.x - line.start.x;
-                    const dy = line.end.y - line.start.y;
-                    const len = Math.sqrt(dx * dx + dy * dy);
-                    setQuickEditEntityId(line.id);
-                    setQuickEditValue(typedChar !== '' ? typedChar : '');
-                    setQuickEditPos(canvasToScreen((line.start.x + line.end.x) / 2, (line.start.y + line.end.y) / 2));
+                const targetLineId = activePair?.lineId || existingParallelOverride!.lineId!;
+                const refLineId = activePair?.refLineId || existingParallelOverride!.refLineId!;
+                const nx = activePair ? activePair.nx : existingParallelOverride!.nx!;
+                const ny = activePair ? activePair.ny : existingParallelOverride!.ny!;
+                const dirFromRefToLine = existingParallelOverride?.dirFromRefToLine !== undefined
+                    ? existingParallelOverride.dirFromRefToLine
+                    : (activePair && activePair.signedDist >= 0 ? -1 : 1);
+
+                const prevText = (existingParallelOverride && existingParallelOverride.lineId === targetLineId && (now - existingParallelOverride.timestamp < 2500))
+                    ? existingParallelOverride.text
+                    : '';
+                const nextText = isBackspace ? prevText.slice(0, -1) : (prevText + (typedChar || ''));
+
+                setLiveNumericOverride({
+                    kind: 'parallel_dist',
+                    text: nextText,
+                    lineId: targetLineId,
+                    refLineId,
+                    nx,
+                    ny,
+                    dirFromRefToLine,
+                    timestamp: now
+                });
+
+                const parsedDist = parseFloat(nextText.replace(',', '.'));
+                if (!isNaN(parsedDist) && parsedDist >= 0) {
+                    if (parsedDist > 0) {
+                        dragHasMovedRef.current = true;
+                        lastParallelOffsetInfoRef.current = {
+                            distance: parsedDist,
+                            lineId: targetLineId,
+                            refLineId,
+                            nx,
+                            ny,
+                            dirSign: dirFromRefToLine,
+                            timestamp: now
+                        };
+                        justOffsetLineIdRef.current = targetLineId;
+                        parallelOverrideLockedLineRef.current = {
+                            lineId: targetLineId,
+                            mousePosAtLock: { ...actualMousePosRef.current },
+                            timestamp: now
+                        };
+                        try {
+                            localStorage.setItem('lastParallelDistance', parsedDist.toString());
+                        } catch (err) {}
+                    }
+                    setEntities(prev => {
+                        const movingLine = prev.find(el => el.id === targetLineId && el.type === 'line') as LineEntity | undefined;
+                        const refLine = prev.find(el => el.id === refLineId && el.type === 'line') as LineEntity | undefined;
+                        if (!movingLine || !refLine) return prev;
+
+                        // Signed distance along (nx, ny) from movingLine to refLine:
+                        const currentSignedD = (refLine.start.x - movingLine.start.x) * nx + (refLine.start.y - movingLine.start.y) * ny;
+                        const currentDist = Math.abs(currentSignedD);
+                        // Move movingLine along normal so distance to refLine becomes parsedDist on the same side
+                        const sideSign = currentSignedD >= 0 ? 1 : -1;
+                        const deltaAlongNormal = currentSignedD - sideSign * parsedDist;
+                        const shiftX = nx * deltaAlongNormal;
+                        const shiftY = ny * deltaAlongNormal;
+
+                        if (Math.abs(currentDist - parsedDist) < 1e-6) return prev;
+
+                        const idsToMove = dragEntityIdsRef.current.includes(targetLineId) && dragEntityIdsRef.current.length > 0
+                            ? dragEntityIdsRef.current
+                            : [targetLineId];
+
+                        return prev.map(ent => {
+                            if (!idsToMove.includes(ent.id)) return ent;
+                            if (ent.type === 'line') {
+                                return {
+                                    ...ent,
+                                    start: { x: ent.start.x + shiftX, y: ent.start.y + shiftY },
+                                    end: { x: ent.end.x + shiftX, y: ent.end.y + shiftY },
+                                    inkPoints: ent.inkPoints?.map(pt => ({ ...pt, x: pt.x + shiftX, y: pt.y + shiftY }))
+                                };
+                            }
+                            return ent;
+                        });
+                    });
                 }
-            } else if (typedChar !== null && (drawing || (activeTool === 'Parallel' && selectedParallelLine))) {
+                return;
+            }
+
+            // 2. DIRECT KEYBOARD NUMERIC OVERRIDE WHILE DRAWING A LINE (L = ...)
+            if ((typedChar !== null || isBackspace) && drawing && (activeTool === 'Line' || (activeTool as string) === 'Filo' || activeTool === 'Dimension')) {
                 e.preventDefault();
-                if (activeTool === 'Parallel' && selectedParallelLine) {
-                    if (e.key === 'Enter') {
-                        commitParallel();
-                    } else if (e.key === 'Escape') {
-                        setSelectedParallelLine(null);
-                        setParallelMouse(null);
-                    } else if (e.key === 'Backspace') {
-                        setParallelInputString(prev => {
-                            const next = prev.slice(0, -1);
-                            const parsed = parseFloat(next);
-                            if (!isNaN(parsed) && parsed > 0) {
-                                setParallelDistance(parsed);
-                            }
-                            return next;
-                        });
-                        setIsParallelWheelActive(true);
-                    } else if (typedChar !== '') {
-                        setParallelInputString(prev => {
-                            const next = (prev === '0' || prev === '') ? typedChar : prev + typedChar;
-                            const parsed = parseFloat(next);
-                            if (!isNaN(parsed) && parsed > 0) {
-                                setParallelDistance(parsed);
-                            }
-                            return next;
-                        });
-                        setIsParallelWheelActive(true);
+                const existingLineOverride =
+                    liveNumericOverrideRef.current?.kind === 'drawing_line' &&
+                    (now - liveNumericOverrideRef.current.timestamp < 3500)
+                        ? liveNumericOverrideRef.current
+                        : null;
+                const prevText = existingLineOverride ? existingLineOverride.text : '';
+                const nextText = isBackspace ? prevText.slice(0, -1) : (prevText + (typedChar || ''));
+
+                if (!nextText) {
+                    setLiveNumericOverride(null);
+                    setDrawing(prev => prev ? { ...prev, wheelLength: undefined } : null);
+                    return;
+                }
+
+                setLiveNumericOverride({
+                    kind: 'drawing_line',
+                    text: nextText,
+                    timestamp: now
+                });
+
+                const parsedLen = parseFloat(nextText.replace(',', '.'));
+                if (!isNaN(parsedLen) && parsedLen > 0) {
+                    setDrawing(prev => {
+                        if (!prev) return null;
+                        const refPt = prev.maxPoint || prev.current;
+                        const dx = refPt.x - prev.start.x;
+                        const dy = refPt.y - prev.start.y;
+                        const curLen = Math.hypot(dx, dy);
+                        const ux = prev.lockedDir ? prev.lockedDir.x : (curLen > 0.0001 ? dx / curLen : 1);
+                        const uy = prev.lockedDir ? prev.lockedDir.y : (curLen > 0.0001 ? dy / curLen : 0);
+                        const targetPt = {
+                            x: prev.start.x + ux * parsedLen,
+                            y: prev.start.y + uy * parsedLen
+                        };
+                        return {
+                            ...prev,
+                            wheelLength: parsedLen,
+                            current: targetPt,
+                            maxPoint: prev.isTraditionalSegment ? targetPt : prev.maxPoint,
+                            maxLength: prev.isTraditionalSegment ? parsedLen : prev.maxLength
+                        };
+                    });
+                }
+                return;
+            }
+
+            // 3. PARALLEL TOOL DIRECT NUMERIC INPUT
+            if ((typedChar !== null || isBackspace) && activeTool === 'Parallel') {
+                e.preventDefault();
+                if (!selectedParallelLine && hoveredLineId) {
+                    const hLine = entities.find(el => el.id === hoveredLineId && el.type === 'line') as LineEntity | undefined;
+                    if (hLine) setSelectedParallelLine(hLine);
+                }
+                if (isBackspace) {
+                    setParallelInputString(prev => {
+                        const next = prev.slice(0, -1);
+                        const parsed = parseFloat(next);
+                        if (!isNaN(parsed) && parsed > 0) {
+                            setParallelDistance(parsed);
+                        }
+                        return next;
+                    });
+                    setIsParallelWheelActive(true);
+                } else if (typedChar) {
+                    setParallelInputString(prev => {
+                        const next = (prev === '0' || prev === '') ? typedChar : prev + typedChar;
+                        const parsed = parseFloat(next);
+                        if (!isNaN(parsed) && parsed > 0) {
+                            setParallelDistance(parsed);
+                        }
+                        return next;
+                    });
+                    setIsParallelWheelActive(true);
+                }
+                return;
+            }
+
+            // 4. DIRECT MANUAL CORRECTION OF SELECTED SEGMENT LENGTH (L = ...)
+            const targetLenLineId = selectedEntityId;
+            const existingLenOverride =
+                liveNumericOverrideRef.current?.kind === 'line_length' &&
+                (now - liveNumericOverrideRef.current.timestamp < 4000)
+                    ? liveNumericOverrideRef.current
+                    : null;
+
+            if (!quickEditEntityId && (targetLenLineId || existingLenOverride) && !drawing && (typedChar !== null || isBackspace)) {
+                const lineIdToEdit = targetLenLineId || existingLenOverride!.lineId!;
+                const line = entities.find(el => el.id === lineIdToEdit && el.type === 'line') as LineEntity | undefined;
+                if (line) {
+                    e.preventDefault();
+                    const prevText = (existingLenOverride && existingLenOverride.lineId === lineIdToEdit && (now - existingLenOverride.timestamp < 2500))
+                        ? existingLenOverride.text
+                        : '';
+                    const nextText = isBackspace ? prevText.slice(0, -1) : (prevText + (typedChar || ''));
+
+                    setLiveNumericOverride({
+                        kind: 'line_length',
+                        text: nextText,
+                        lineId: lineIdToEdit,
+                        timestamp: now
+                    });
+
+                    const parsedLen = parseFloat(nextText.replace(',', '.'));
+                    if (!isNaN(parsedLen) && parsedLen > 0) {
+                        setEntities(prev => prev.map(ent => {
+                            if (ent.id !== lineIdToEdit || ent.type !== 'line') return ent;
+                            const l = ent as LineEntity;
+                            const dx = l.end.x - l.start.x;
+                            const dy = l.end.y - l.start.y;
+                            const curL = Math.hypot(dx, dy);
+                            if (curL < 0.0001) return ent;
+                            const ux = dx / curL;
+                            const uy = dy / curL;
+                            return {
+                                ...l,
+                                end: {
+                                    x: l.start.x + ux * parsedLen,
+                                    y: l.start.y + uy * parsedLen
+                                }
+                            };
+                        }));
                     }
                 }
             }
@@ -16409,14 +19511,137 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
     };
     
     const handleKeyUp = (e: KeyboardEvent) => {
-        updateJolly(e);
-        if (e.key === 'Shift' || e.key.toLowerCase() === 'f') isShiftPressedRef.current = false;
+        if (isSpostaTuttoKey(e)) {
+            setIsJollyActive(false);
+            isJollyActiveRef.current = false;
+            if (dragEntityIdRef.current) {
+                const moved = dragHasMovedRef.current;
+                const activePair = activeParallelPairRef.current;
+                if (moved && activePair && activePair.lineId === dragEntityIdRef.current && activePair.currentDist > 0.05) {
+                    lastParallelOffsetInfoRef.current = {
+                        distance: activePair.currentDist,
+                        lineId: activePair.lineId,
+                        refLineId: activePair.refLineId,
+                        nx: activePair.nx,
+                        ny: activePair.ny,
+                        dirSign: activePair.signedDist >= 0 ? -1 : 1,
+                        timestamp: Date.now()
+                    };
+                    justOffsetLineIdRef.current = activePair.lineId;
+                    try {
+                        localStorage.setItem('lastParallelDistance', activePair.currentDist.toString());
+                    } catch (err) {}
+                }
+                parallelOverrideLockedLineRef.current = null;
+                setDragEntityId(null);
+                dragEntityIdRef.current = null;
+                setDragEntityIds([]);
+                dragEntityIdsRef.current = [];
+                setActiveMoveSnapPoint(null);
+                setMoveBasePoint(null);
+                setMovePhase('idle');
+                dragHasMovedRef.current = false;
+                if (moved) {
+                    setEntities(prev => {
+                        onCommitHistory?.(prev);
+                        return [...prev];
+                    });
+                }
+            }
+            renderRef.current?.();
+        }
+
+        if (e.key.toLowerCase() === 'z') {
+            setIsMagicCopyActive(false);
+            isMagicCopyActiveRef.current = false;
+            if (dragEntityIdRef.current) {
+                const moved = dragHasMovedRef.current;
+                const activePair = activeParallelPairRef.current;
+                if (moved && activePair && activePair.lineId === dragEntityIdRef.current && activePair.currentDist > 0.05) {
+                    lastParallelOffsetInfoRef.current = {
+                        distance: activePair.currentDist,
+                        lineId: activePair.lineId,
+                        refLineId: activePair.refLineId,
+                        nx: activePair.nx,
+                        ny: activePair.ny,
+                        dirSign: activePair.signedDist >= 0 ? -1 : 1,
+                        timestamp: Date.now()
+                    };
+                    justOffsetLineIdRef.current = activePair.lineId;
+                    try {
+                        localStorage.setItem('lastParallelDistance', activePair.currentDist.toString());
+                    } catch (err) {}
+                }
+                parallelOverrideLockedLineRef.current = null;
+                setDragEntityId(null);
+                dragEntityIdRef.current = null;
+                setDragEntityIds([]);
+                dragEntityIdsRef.current = [];
+                setActiveMoveSnapPoint(null);
+                dragHasMovedRef.current = false;
+                if (moved) {
+                    setClonedEntityIds(new Set());
+                    setEntities(prev => {
+                        onCommitHistory?.(prev);
+                        return [...prev];
+                    });
+                } else {
+                    // Se il tasto Z è stato rilasciato senza muovere la copia, rimuoviamo il clone rimasto sovrapposto
+                    setEntities(prev => prev.filter(ent => !clonedEntityIds.has(ent.id)));
+                    setClonedEntityIds(new Set());
+                }
+            }
+            renderRef.current?.();
+        }
+
+        const keyUpLower = (e.key || '').toLowerCase();
+        const isBlocFnKey =
+            e.key === 'Shift' ||
+            e.code === 'ShiftLeft' ||
+            e.code === 'ShiftRight' ||
+            e.key === 'CapsLock' ||
+            e.code === 'CapsLock' ||
+            e.keyCode === 20 ||
+            (e as any).which === 20 ||
+            e.key === 'Fn' ||
+            e.code === 'Fn' ||
+            e.key === 'FnLock' ||
+            e.code === 'FnLock' ||
+            e.key === 'ShiftLock' ||
+            keyUpLower === 'f';
+        if (isBlocFnKey) {
+            setIsShiftPressed(false);
+            isShiftPressedRef.current = false;
+            if (
+                !isJollyActive &&
+                !isMagicCopyActiveRef.current &&
+                !dragEntityIdRef.current &&
+                activeTool !== 'Line'
+            ) {
+                setDrawing(null);
+                setSelectedParallelLine(null);
+                setHighlightedTrimLine(null);
+                setHighlightedTrimSegment(null);
+                setMovePhase('idle');
+                setCopyPhase('idle');
+                setActiveTool?.('Line');
+                setStatusMessage("Pennino (Linea) attivo");
+            }
+            if (!snapEnabled) {
+                setHoverSnap(null);
+            } else if (actualMousePosRef.current) {
+                const updatedSnap = getSnappedPoint(actualMousePosRef.current, entitiesRef.current, 'Line', drawing);
+                setHoverSnap(updatedSnap && updatedSnap.snapped ? updatedSnap : null);
+            }
+            renderRef.current?.();
+        }
 
         if (e.key.toLowerCase() === 'q') {
             setTecnigrafoLock(null);
             setTecnigrafoOrigin(null);
             setLockedFocalPoint(null);
-            // Tool settings (Tool, Mode, Ortho) are NOT restored, they persist as requested.
+            setShowSquadrette(false);
+            setSquadrette([]);
         }
     };
 
@@ -16426,7 +19651,7 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
         window.removeEventListener('keydown', handleKeyDown);
         window.removeEventListener('keyup', handleKeyUp);
     };
-  }, [activeTool, dragEntityIds, entities, selectedParallelLine, orthoMode, setOrthoMode, tecnigrafoOrigin, lockedFocalPoint, activeMoveSnapPoint, hoverSnap, tecnigrafoLock, specchioMode, specchioSelectedIds, defaultLineStyle, setDefaultLineStyle, setActiveTool, copyPhase, copySourceEntityIds, selectedEntityIds, selectedEntityId, quickEditEntityId, copyBasePoint, movePhase, moveSourceEntityIds, moveBasePoint]);
+  }, [activeTool, isJollyActive, isMagicCopyActive, clonedEntityIds, dragEntityIds, entities, selectedParallelLine, orthoMode, setOrthoMode, tecnigrafoOrigin, lockedFocalPoint, activeMoveSnapPoint, hoverSnap, tecnigrafoLock, specchioMode, specchioSelectedIds, defaultLineStyle, setDefaultLineStyle, setActiveTool, copyPhase, copySourceEntityIds, selectedEntityIds, selectedEntityId, quickEditEntityId, copyBasePoint, movePhase, moveSourceEntityIds, moveBasePoint]);
 
     const moveLineParallel = (line: LineEntity, length: number, rawPoint: Point) => {
         const dxLine = line.end.x - line.start.x;
@@ -16633,31 +19858,34 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
   const smartScissorsSvg = `data:image/svg+xml;utf8,` + encodeURIComponent(`<svg width="32" height="32" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="5" cy="7.5" r="3" stroke="#10b981" stroke-width="2"/><circle cx="5" cy="16.5" r="3" stroke="#10b981" stroke-width="2"/><path d="M7.5 9L12 12L22 9" stroke="#10b981" stroke-width="2" stroke-linecap="round"/><path d="M7.5 15L12 12L22 15" stroke="#10b981" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="12" r="1.5" fill="#10b981"/></svg>`);
   
   const getPencilCursor = (label: string) => {
+    const leadColor = label === '2B' ? '#1e2229' : label === '2H' ? '#64748b' : '#334155';
     const svg = `<svg width="64" height="64" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
       <g transform="translate(4, 60) rotate(-45)">
-        <polygon points="0,0 8,-2 8,2" fill="#333333" />
-        <polygon points="8,-2 20,-6 20,6 8,2" fill="#fcd34d" />
-        <polygon points="20,-6 56,-6 56,6 20,6" fill="#fbbf24" stroke="#d97706" stroke-width="0.5"/>
-        <line x1="20" y1="-2" x2="56" y2="-2" stroke="#f59e0b" stroke-width="1" />
-        <line x1="20" y1="2" x2="56" y2="2" stroke="#f59e0b" stroke-width="1" />
-        <text x="38" y="3" font-family="sans-serif" font-size="10" font-weight="900" fill="#451a03" text-anchor="middle" transform="rotate(0)">${label}</text>
+        <polygon points="0,0 10,-2.6 10,2.6" fill="${leadColor}" stroke="#0f172a" stroke-width="0.6" />
+        <polygon points="10,-2.6 22,-5.8 22,5.8 10,2.6" fill="#fde68a" stroke="#92400e" stroke-width="0.9" />
+        <rect x="22" y="-5.8" width="36" height="11.6" rx="1.5" fill="#1d4ed8" stroke="#1e3a8a" stroke-width="1" />
+        <rect x="22" y="-2.2" width="36" height="4.4" fill="#3b82f6" />
+        <rect x="52" y="-5.8" width="3.5" height="11.6" fill="#f8fafc" />
       </g>
     </svg>`;
-    return `url("data:image/svg+xml;base64,${btoa(svg)}") 4 60, crosshair`;
+    return `url("data:image/svg+xml;utf8,${encodeURIComponent(svg)}") 4 60, crosshair`;
   };
 
-  const getKinaCursor = (label: string) => {
+  const getKinaCursor = (_label: string) => {
     const svg = `<svg width="64" height="64" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
       <g transform="translate(4, 60) rotate(-45)">
-        <rect x="0" y="-1" width="12" height="2" fill="#94a3b8" />
-        <polygon points="12,-1 20,-5 20,5 12,1" fill="#475569" />
-        <rect x="20" y="-5" width="4" height="10" fill="#64748b" />
-        <rect x="24" y="-5" width="36" height="10" fill="#0f172a" />
-        <line x1="24" y1="-2" x2="60" y2="-2" stroke="#334155" stroke-width="1" />
-        <text x="42" y="3.5" font-family="monospace" font-size="10" font-weight="900" fill="white" text-anchor="middle">${label}</text>
+        <circle cx="0" cy="0" r="2.1" fill="#030508" />
+        <line x1="0" y1="0" x2="9" y2="0" stroke="#ffffff" stroke-width="2.4" />
+        <line x1="0" y1="0" x2="9" y2="0" stroke="#334155" stroke-width="1.4" />
+        <rect x="9" y="-2.4" width="7" height="4.8" fill="#f1f5f9" stroke="#1e293b" stroke-width="0.9" />
+        <polygon points="16,-2.4 24,-5.4 24,5.4 16,2.4" fill="#94a3b8" stroke="#1e293b" stroke-width="0.9" />
+        <rect x="24" y="-5.6" width="5.5" height="11.2" fill="#dc2626" stroke="#7f1d1d" stroke-width="0.9" />
+        <rect x="29.5" y="-5.6" width="30" height="11.2" rx="2" fill="#0f172a" stroke="#1e293b" stroke-width="1" />
+        <line x1="32.5" y1="-5" x2="32.5" y2="5" stroke="#475569" stroke-width="0.9" />
+        <line x1="35" y1="-5" x2="35" y2="5" stroke="#475569" stroke-width="0.9" />
       </g>
     </svg>`;
-    return `url("data:image/svg+xml;base64,${btoa(svg)}") 4 60, crosshair`;
+    return `url("data:image/svg+xml;utf8,${encodeURIComponent(svg)}") 4 60, crosshair`;
   };
 
   const pencilSvg = `data:image/svg+xml;utf8,` + encodeURIComponent(`<svg width="32" height="32" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg"><path d="M0,0 L3,1 L1,3 Z" fill="#1e293b"/><path d="M3,1 L7,3 L3,7 L1,3 Z" fill="#fed7aa"/><path d="M7,3 L21,17 L17,21 L3,7 Z" fill="#4f46e5"/><path d="M7,3 L21,17 L19,19 L5,5 Z" fill="#6366f1"/><path d="M21,17 L24,20 L20,24 L17,21 Z" fill="#94a3b8"/><path d="M24,20 L28,24 L24,28 L20,24 Z" fill="#fda4af"/></svg>`);
@@ -16811,21 +20039,64 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
         const dx = line.end.x - line.start.x;
         const dy = line.end.y - line.start.y;
         const len = Math.sqrt(dx * dx + dy * dy);
+
+        let minParallelDist = Infinity;
+        if (len > 0.1) {
+            const nx = -dy / len;
+            const ny = dx / len;
+            entities.forEach(other => {
+                if (other.id !== line.id && other.type === 'line') {
+                    const oLine = other as LineEntity;
+                    const odx = oLine.end.x - oLine.start.x;
+                    const ody = oLine.end.y - oLine.start.y;
+                    const olen = Math.sqrt(odx * odx + ody * ody);
+                    if (olen > 0.1) {
+                        const onx = -ody / olen;
+                        const ony = odx / olen;
+                        const dot = Math.abs(nx * onx + ny * ony);
+                        if (dot > 0.99) {
+                            const dist = Math.abs((oLine.start.x - line.start.x) * nx + (oLine.start.y - line.start.y) * ny);
+                            if (dist > 0.5 && dist < minParallelDist) {
+                                minParallelDist = dist;
+                            }
+                        }
+                    }
+                }
+            });
+        }
+        const detectedOffset = minParallelDist !== Infinity ? minParallelDist.toFixed(1) : '0';
+
+        const zoomDec = view.zoom >= 1.2 ? 3 : (view.zoom >= 0.45 ? 2 : (view.zoom >= 0.20 ? 1 : 0));
         setQuickEditEntityId(line.id);
-        setQuickEditValue('');
+        setQuickEditValue(zoomDec === 0 ? `${Math.round(len)}` : len.toFixed(zoomDec));
+        setQuickEditOffset(detectedOffset);
+        setQuickEditReferenceId(minParallelDist !== Infinity ? (entities.find(other => {
+            if (other.id === line.id || other.type !== 'line') return false;
+            const oLine = other as LineEntity;
+            const dx = line.end.x - line.start.x;
+            const dy = line.end.y - line.start.y;
+            const len = Math.sqrt(dx * dx + dy * dy);
+            if (len < 0.1) return false;
+            const nx = -dy / len;
+            const ny = dx / len;
+            const dist = Math.abs((oLine.start.x - line.start.x) * nx + (oLine.start.y - line.start.y) * ny);
+            return Math.abs(dist - minParallelDist) < 0.1;
+        })?.id || null) : null);
         setQuickEditPos({ x: e.clientX - rect.left, y: e.clientY - rect.top });
         return;
       } else if (clickedEntity.type === 'circle') {
         const circ = clickedEntity as any;
         setQuickEditEntityId(circ.id);
-        setQuickEditValue('');
+        setQuickEditValue(circ.radius.toFixed(1));
+        setQuickEditOffset('0');
         setQuickEditPos({ x: e.clientX - rect.left, y: e.clientY - rect.top });
         return;
       } else if (clickedEntity.type === 'rectangle') {
         const rectEnt = clickedEntity as any;
         const w = Math.abs(rectEnt.p2.x - rectEnt.p1.x);
         setQuickEditEntityId(rectEnt.id);
-        setQuickEditValue('');
+        setQuickEditValue(w.toFixed(1));
+        setQuickEditOffset('0');
         setQuickEditPos({ x: e.clientX - rect.left, y: e.clientY - rect.top });
         return;
       } else if (clickedEntity.isBIM) {
@@ -16836,13 +20107,42 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
         return;
       }
     }
+
+    // Tecnigrafo head double click to toggle Squadrette
+    if (tecnigrafoOrigin) {
+        const dist = Math.hypot(pt.x - tecnigrafoOrigin.x, pt.y - tecnigrafoOrigin.y);
+        if (dist < 25 / view.zoom) {
+            if (showSquadrette) {
+                setShowSquadrette(false);
+                setSquadrette([]);
+            } else {
+                setShowSquadrette(true);
+                setSquadrette([
+                    { id: 'sq1', type: '45', pos: { x: pt.x - 150, y: pt.y - 150 }, rotation: 0 },
+                    { id: 'sq2', type: '3060', pos: { x: pt.x + 50, y: pt.y - 150 }, rotation: 0 }
+                ]);
+            }
+            renderRef.current?.();
+            return;
+        }
+    } else if (rulerStyle === 'tecnigrafo') {
+        // If tecnigrafo is not yet placed, a double-click on background places it and activates squadrette
+        setTecnigrafoOrigin(pt);
+        setShowSquadrette(true);
+        setSquadrette([
+            { id: 'sq1', type: '45', pos: { x: pt.x - 150, y: pt.y - 150 }, rotation: 0 },
+            { id: 'sq2', type: '3060', pos: { x: pt.x + 50, y: pt.y - 150 }, rotation: 0 }
+        ]);
+        renderRef.current?.();
+        return;
+    }
   };
 
   return (
     <div 
       ref={containerRef} 
       className="w-full h-full relative overflow-hidden" 
-      style={{ touchAction: 'none', cursor: isSKeyPressedRef.current ? 'none' : hoveredTavolaPart ? 'pointer' : (actualMousePosRef.current && getEntityAtPoint(actualMousePosRef.current, 25)?.type === 'text') ? 'grab' : isMovingTecnigrafo ? 'grabbing' : hoverMoveTecnigrafo ? 'grab' : dragTavolaId ? 'grabbing' : hoverTavolaEdge ? 'grab' : activeTool === 'Testo' ? 'text' : activeTool === 'Gomma' ? 'none' : activeTool === 'Select' ? `url("${crosshairSvg}") 48 48, crosshair` : activeTool === 'Trim' ? (trimMode === 'smart' ? `url("${smartScissorsSvg}") 16 16, crosshair` : `url("${scissorsSvg}") 16 16, crosshair`) : defaultLineStyle.mode === 'CAD' ? 'crosshair' : defaultLineStyle.mode === 'ink' ? getKinaCursor(kinaLabel) : defaultLineStyle.mode === 'pencil' ? getPencilCursor(pencilLabel) : rulerStyle === 'crosshair' ? `url("${crosshairSvg}") 48 48, crosshair` : `url("${tecnigrafoSvg}") 20 108, crosshair` }}
+      style={{ touchAction: 'none', cursor: isSKeyPressedRef.current ? 'none' : hoveredTavolaPart ? 'pointer' : (actualMousePosRef.current && getEntityAtPoint(actualMousePosRef.current, 25)?.type === 'text') ? 'grab' : activeTool === 'Testo' ? 'text' : activeTool === 'Gomma' ? 'none' : activeTool === 'Trim' ? (trimMode === 'smart' ? `url("${smartScissorsSvg}") 16 16, crosshair` : `url("${scissorsSvg}") 16 16, crosshair`) : isMagicCopyActive ? (dragEntityId ? 'copy' : 'grab') : isJollyActive ? (dragEntityId ? 'grabbing' : 'grab') : isMovingTecnigrafo ? 'grabbing' : hoverMoveTecnigrafo ? 'grab' : dragTavolaId ? 'grabbing' : hoverTavolaEdge ? 'grab' : activeTool === 'Select' ? `url("${crosshairSvg}") 48 48, crosshair` : (activeTool === 'Line' || activeTool === 'Circle' || activeTool === 'Arc' || activeTool === 'Rectangle' || activeTool === 'Parallel') ? 'none' : 'crosshair' }}
       onMouseDown={(e) => { if (e.button === 1) e.preventDefault(); }}
       onWheel={handleWheel} 
       onPointerDown={handleMouseDown} 
@@ -17127,34 +20427,7 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
 
 
 
-      {!(drawing && activeTool === 'Circle') && hoveredEntityId && tooltipMousePos && (
-          <div 
-              className="absolute bg-[#fef08a] text-[#713f12] border border-[#a16207] font-mono text-[11px] font-black px-2 py-1 rounded shadow-md pointer-events-none z-[99999] select-none animate-in fade-in duration-75 flex items-center gap-1.5"
-              style={{
-                  left: `${tooltipMousePos.x + 24}px`,
-                  top: `${tooltipMousePos.y - 24}px`,
-              }}
-          >
-              {(() => {
-                  const ent = entities.find(el => el.id === hoveredEntityId);
-                  if (!ent) return null;
-                  if (ent.type === 'line') {
-                      const dx = ent.end.x - ent.start.x;
-                      const dy = ent.end.y - ent.start.y;
-                      return `Segmento L: ${Math.sqrt(dx * dx + dy * dy).toFixed(1)} cm`;
-                  } else if (ent.type === 'circle') {
-                      return `Raggio Cerchio R: ${ent.radius.toFixed(1)} cm`;
-                  } else if (ent.type === 'rectangle') {
-                      const w = Math.abs(ent.p2.x - ent.p1.x);
-                      const h = Math.abs(ent.p2.y - ent.p1.y);
-                      return `Rettangolo W: ${w.toFixed(1)} cm | H: ${h.toFixed(1)} cm`;
-                  } else if (ent.type === 'arc') {
-                      return `Raggio Arco R: ${ent.radius.toFixed(1)} cm`;
-                  }
-                  return null;
-              })()}
-          </div>
-      )}
+      {/* Rimosso il popup HTML sovrapposto al passaggio del mouse per lasciare il disegno completamente libero */}
 
       {drawing && activeTool === 'Circle' && tooltipMousePos && (
           <div 
@@ -17167,12 +20440,12 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
               <div className="flex items-center gap-1.5">
                   <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse flex-shrink-0" />
                   <span>
-                      Raggio R: <strong className="text-white font-extrabold">{circleRadiusInputString || Math.hypot(drawing.current.x - drawing.start.x, drawing.current.y - drawing.start.y).toFixed(1)} cm</strong>
+                      Raggio R: <strong className="text-white font-extrabold">{circleRadiusInputString || Math.hypot(drawing.current.x - drawing.start.x, drawing.current.y - drawing.start.y).toFixed(view.zoom >= 0.45 ? 2 : (view.zoom >= 0.20 ? 1 : 0)).replace('.', ',')} cm</strong>
                   </span>
               </div>
               <div className="flex items-center gap-1.5 text-emerald-300">
                   <span>
-                      Area: <strong className="text-white font-extrabold">{(Math.PI * Math.pow(parseFloat(circleRadiusInputString || String(Math.hypot(drawing.current.x - drawing.start.x, drawing.current.y - drawing.start.y))) || 0, 2)).toFixed(1)} cm²</strong>
+                      Area: <strong className="text-white font-extrabold">{(Math.PI * Math.pow(parseFloat(circleRadiusInputString || String(Math.hypot(drawing.current.x - drawing.start.x, drawing.current.y - drawing.start.y))) || 0, 2)).toFixed(view.zoom >= 0.45 ? 2 : (view.zoom >= 0.20 ? 1 : 0)).replace('.', ',')} cm²</strong>
                   </span>
               </div>
               <div className="text-[10px] text-emerald-300/80 font-sans tracking-wide mt-0.5">
@@ -17181,182 +20454,143 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
           </div>
       )}
 
-       {activeTool === 'Parallel' && isParallelBarHidden && (
+       {activeTool === 'Parallel' && (
           <motion.div
               drag
               dragMomentum={false}
               dragElastic={0}
-              className="fixed top-16 left-1/2 -translate-x-1/2 bg-slate-900/90 text-white border border-amber-500/70 shadow-xl px-3.5 py-1.5 rounded-full z-[99999] flex items-center gap-2.5 backdrop-blur-md text-xs select-none cursor-grab active:cursor-grabbing"
+              className="fixed bottom-8 left-1/2 -translate-x-1/2 bg-slate-950/95 text-white border-2 border-cyan-500/80 shadow-2xl p-3.5 px-4 rounded-2xl z-[99999] flex flex-col gap-2.5 backdrop-blur-xl select-none min-w-[420px] max-w-[95vw] cursor-grab active:cursor-grabbing ring-1 ring-cyan-500/30"
           >
-              <GripHorizontal size={14} className="text-slate-400 shrink-0" />
-              <ParallelIcon size={14} className="text-amber-400" />
-              <span className="font-mono font-bold text-amber-300">{parallelDistance} cm</span>
-              <button
-                  type="button"
-                  onPointerDown={(e) => e.stopPropagation()}
-                  onClick={() => setIsParallelBarHidden(false)}
-                  className="bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 text-[11px] px-2.5 py-0.5 rounded-full border border-amber-500/40 flex items-center gap-1 transition-colors font-medium"
-                  title="Apri pannello per modificare la distanza"
-              >
-                  ✏️ Opzioni
-              </button>
-              <button
-                  type="button"
-                  onPointerDown={(e) => e.stopPropagation()}
-                  onClick={() => setParallelSign(s => -s)}
-                  className="bg-slate-800 hover:bg-slate-700 text-slate-200 text-[11px] px-2 py-0.5 rounded-full border border-slate-700 flex items-center gap-1 transition-colors"
-                  title="Inverti lato"
-              >
-                  <RefreshCw size={11} /> Flip
-              </button>
-              {selectedParallelLine && (
-                  <button
-                      type="button"
-                      onPointerDown={(e) => e.stopPropagation()}
-                      onClick={() => {
-                          setSelectedParallelLine(null);
-                          setParallelMouse(null);
-                      }}
-                      className="text-slate-400 hover:text-white text-xs pl-1"
-                      title="Resetta linea selezionata"
-                  >
-                      ✕
-                  </button>
-              )}
-          </motion.div>
-       )}
-
-       {activeTool === 'Parallel' && !isParallelBarHidden && (
-          <motion.div
-              drag
-              dragMomentum={false}
-              dragElastic={0}
-              className="fixed top-16 left-1/2 -translate-x-1/2 bg-slate-900/95 text-white border-2 border-amber-500/80 shadow-2xl p-3 rounded-xl z-[99999] flex flex-col gap-2 backdrop-blur-md select-none min-w-[350px] cursor-grab active:cursor-grabbing"
-          >
-              <div className="flex items-center justify-between border-b border-slate-700/80 pb-2">
-                  <div className="flex items-center gap-2 text-amber-400 font-bold text-xs uppercase tracking-wider">
-                      <GripHorizontal size={16} className="text-slate-400" />
-                      <ParallelIcon size={18} />
-                      <span>Strumento Parallela (Spostabile)</span>
+              <div className="flex items-center justify-between border-b border-slate-800 pb-2">
+                  <div className="flex items-center gap-2 text-cyan-400 font-bold text-xs uppercase tracking-wider">
+                      <GripHorizontal size={15} className="text-slate-500" />
+                      <ParallelIcon size={16} className="text-cyan-400" />
+                      <span>Offset Tecnigrafo • Righello Perpendicolare</span>
                   </div>
-                  <button
-                      type="button"
-                      onPointerDown={(e) => e.stopPropagation()}
-                      onClick={() => setIsParallelBarHidden(true)}
-                      className="text-slate-400 hover:text-white text-xs p-1 rounded-lg transition-colors hover:bg-slate-800"
-                      title="Chiudi finestra per vedere il disegno (continua a tracciare)"
-                  >
-                      ✕
-                  </button>
-              </div>
-
-              <div className="flex items-center gap-2.5 flex-wrap" onPointerDown={(e) => e.stopPropagation()}>
-                  <div className="flex items-center gap-1.5 bg-slate-950 px-3 py-1.5 rounded-lg border border-amber-500/60">
-                      <span className="text-xs font-bold text-slate-300">Distanza:</span>
-                      <input
-                          type="text"
-                          value={parallelInputString}
-                          onChange={(e) => {
-                              const val = e.target.value;
-                              setParallelInputString(val);
-                              const parsed = parseFloat(val);
-                              if (!isNaN(parsed) && parsed > 0) {
-                                  setParallelDistance(parsed);
-                                  try {
-                                      localStorage.setItem('lastParallelDistance', parsed.toString());
-                                  } catch(err) {}
-                                  setIsParallelWheelActive(true);
-                              }
-                          }}
-                          onKeyDown={(e) => {
-                              if (e.key === 'Enter') {
-                                  e.preventDefault();
-                                  setIsParallelBarHidden(true);
-                              }
-                          }}
-                          placeholder="10"
-                          className="w-16 bg-transparent text-right font-mono text-sm font-black text-amber-300 outline-none"
-                      />
-                      <span className="text-xs text-slate-400 font-mono font-bold">cm</span>
-                  </div>
-
-                  {/* Preset buttons */}
-                  <div className="flex items-center gap-1">
-                      {[5, 10, 15, 20, 25, 50].map(pVal => (
+                  <div className="flex items-center gap-1.5" onPointerDown={(e) => e.stopPropagation()}>
+                      <button
+                          type="button"
+                          onClick={() => setParallelSign(s => -s)}
+                          className="bg-slate-800/90 hover:bg-slate-700 text-cyan-300 text-[11px] px-2.5 py-1 rounded-lg border border-slate-700 flex items-center gap-1 font-semibold transition-colors shadow-sm"
+                          title="Inverti lato della parallela (Tasto F)"
+                      >
+                          <RefreshCw size={11} /> Flip {parallelSign > 0 ? '+ (Destra)' : '- (Sinistra)'}
+                      </button>
+                      {selectedParallelLine && (
                           <button
-                              key={pVal}
                               type="button"
                               onClick={() => {
-                                  setParallelDistance(pVal);
-                                  setParallelInputString(pVal.toString());
-                                  try {
-                                      localStorage.setItem('lastParallelDistance', pVal.toString());
-                                  } catch(err) {}
-                                  setIsParallelWheelActive(true);
+                                  setSelectedParallelLine(null);
+                                  setParallelMouse(null);
                               }}
-                              className={`text-xs font-mono font-bold px-2 py-1 rounded transition-colors ${
-                                  parallelDistance === pVal
-                                      ? 'bg-amber-500 text-slate-950 font-extrabold shadow'
-                                      : 'bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700'
-                              }`}
+                              className="bg-slate-800/80 hover:bg-rose-900/40 text-slate-400 hover:text-rose-300 text-[11px] px-2 py-1 rounded-lg border border-slate-700/80 transition-colors"
+                              title="Deseleziona per scegliere un'altra linea (Esc)"
                           >
-                              {pVal}
+                              Altra Linea
                           </button>
-                      ))}
-                  </div>
-
-                  <button
-                      type="button"
-                      onClick={() => setParallelSign(s => -s)}
-                      className="bg-slate-800 hover:bg-slate-700 text-amber-300 text-xs px-2.5 py-1.5 rounded border border-slate-700 flex items-center gap-1 shrink-0 font-medium ml-auto"
-                      title="Inverti lato della parallela"
-                  >
-                      <RefreshCw size={12} /> Flip
-                  </button>
-              </div>
-
-              <div className="flex items-center justify-between text-[11px] text-slate-300 font-medium pt-1.5 border-t border-slate-800/80" onPointerDown={(e) => e.stopPropagation()}>
-                  <div className="flex items-center gap-1.5">
-                      {!selectedParallelLine ? (
-                          <>
-                              <MousePointer2 size={14} className="text-amber-400 animate-pulse shrink-0" />
-                              <span>1. Clicca su una linea nel disegno.</span>
-                          </>
-                      ) : (
-                          <>
-                              <Check size={14} className="text-emerald-400 shrink-0" />
-                              <span>2. Clicca a lato per inserire. Continua per parallele multiple!</span>
-                          </>
                       )}
                   </div>
-                  <button
-                      type="button"
-                      onClick={() => setIsParallelBarHidden(true)}
-                      className="bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-xs px-2.5 py-1 rounded-lg flex items-center gap-1 shadow cursor-pointer transition-colors shrink-0 ml-2"
-                  >
-                      ✓ Chiudi e Disegna
-                  </button>
               </div>
+
+              {!selectedParallelLine ? (
+                  <div className="flex items-center gap-2 py-1 text-xs text-amber-300 font-medium">
+                      <MousePointer2 size={16} className="text-amber-400 animate-pulse shrink-0" />
+                      <span>Clicca su qualsiasi linea nel disegno per agganciare il righello perpendicolare.</span>
+                  </div>
+              ) : (
+                  <>
+                      <div className="flex items-center gap-2.5 flex-wrap" onPointerDown={(e) => e.stopPropagation()}>
+                          <div className="flex items-center gap-1.5 bg-slate-900 px-3 py-1.5 rounded-xl border-2 border-cyan-500/80 shadow-inner">
+                              <span className="text-xs font-bold text-slate-400">Offset:</span>
+                              <input
+                                  type="text"
+                                  value={parallelInputString}
+                                  onChange={(e) => {
+                                      const val = e.target.value;
+                                      setParallelInputString(val);
+                                      const parsed = parseFloat(val.replace(',', '.'));
+                                      if (!isNaN(parsed) && parsed > 0) {
+                                          setParallelDistance(parsed);
+                                          try {
+                                              localStorage.setItem('lastParallelDistance', parsed.toString());
+                                          } catch(err) {}
+                                      }
+                                  }}
+                                  onKeyDown={(e) => {
+                                      if (e.key === 'Enter') {
+                                          e.preventDefault();
+                                          commitParallel();
+                                      }
+                                  }}
+                                  placeholder="10"
+                                  className="w-20 bg-transparent text-right font-mono text-base font-black text-cyan-300 outline-none"
+                              />
+                              <span className="text-xs text-cyan-500 font-mono font-bold">cm</span>
+                          </div>
+
+                          {/* Preset Quick Chips */}
+                          <div className="flex items-center gap-1 flex-wrap">
+                              {[5, 10, 15, 20, 25, 30, 40, 50, 100, 200].map(pVal => (
+                                  <button
+                                      key={pVal}
+                                      type="button"
+                                      onClick={() => {
+                                          setParallelDistance(pVal);
+                                          setParallelInputString(pVal.toString());
+                                          try {
+                                              localStorage.setItem('lastParallelDistance', pVal.toString());
+                                          } catch(err) {}
+                                      }}
+                                      className={`text-xs font-mono font-bold px-2 py-1 rounded-lg transition-all ${
+                                          Math.abs(parallelDistance - pVal) < 0.1
+                                              ? 'bg-cyan-500 text-slate-950 font-black shadow-md scale-105'
+                                              : 'bg-slate-800/80 hover:bg-slate-700 text-slate-300 border border-slate-700/80 hover:text-white'
+                                      }`}
+                                  >
+                                      {pVal}
+                                  </button>
+                              ))}
+                          </div>
+
+                          <button
+                              type="button"
+                              onClick={() => commitParallel()}
+                              className="bg-gradient-to-r from-cyan-500 to-emerald-500 hover:from-cyan-400 hover:to-emerald-400 text-slate-950 font-black text-xs px-3.5 py-2 rounded-xl flex items-center gap-1.5 shadow-lg shadow-cyan-500/20 cursor-pointer transition-all ml-auto shrink-0"
+                          >
+                              <Check size={14} /> Fissa Linea
+                          </button>
+                      </div>
+
+                      <div className="flex items-center justify-between text-[11px] text-slate-400 font-medium pt-1 border-t border-slate-800/80" onPointerDown={(e) => e.stopPropagation()}>
+                          <div className="flex items-center gap-1.5 text-cyan-300/90">
+                              <Sparkles size={13} className="text-amber-400 shrink-0" />
+                              <span>Muovi il mouse lungo il righello: scatta sui cm. Clicca sul foglio per fissare!</span>
+                          </div>
+                          <span className="text-[10px] text-slate-500 font-mono">[Invio = Fissa • F = Inverti • Esc = Annulla]</span>
+                      </div>
+                  </>
+              )}
           </motion.div>
        )}
 
       {quickEditEntityId && (
           <div 
-              className="absolute bg-slate-900 text-white border-2 border-amber-400 shadow-2xl p-4 rounded-xl z-[99999] flex flex-col gap-3 min-w-[240px] animate-in fade-in zoom-in-95 duration-150"
+              onPointerDown={e => e.stopPropagation()}
+              className="absolute bg-slate-900 text-white border-2 border-amber-400 shadow-2xl p-5 rounded-2xl z-[99999] flex flex-col gap-3.5 min-w-[300px] animate-in fade-in zoom-in-95 duration-150"
               style={quickEditPos ? {
                   left: `${quickEditPos.x + 12}px`,
                   top: `${quickEditPos.y - 40}px`,
               } : { left: '50%', top: '50%', transform: 'translate(-50%, -50%)' }}
           >
-              <div className="flex items-center justify-between border-b border-slate-700 pb-2">
-                  <div className="text-[10px] uppercase font-black tracking-wider text-amber-400 flex items-center gap-1.5">
-                      <Sparkles size={14} className="animate-spin-slow" />
-                      Modifica Rapida Quota Elemento
+              <div className="flex items-center justify-between border-b border-slate-700 pb-2.5">
+                  <div className="text-xs uppercase font-black tracking-wider text-amber-400 flex items-center gap-1.5">
+                      <Sparkles size={15} className="animate-spin-slow" />
+                      Correzione Manuale Misura
                   </div>
                   <button 
                       type="button" 
                       onClick={() => setQuickEditEntityId(null)}
-                      className="text-slate-400 hover:text-white"
+                      className="text-slate-400 hover:text-white text-sm font-bold px-1.5"
                   >
                       ✕
                   </button>
@@ -17371,7 +20605,7 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
                       const dx = ent.end.x - ent.start.x;
                       const dy = ent.end.y - ent.start.y;
                       val = Math.sqrt(dx * dx + dy * dy);
-                      label = "Lunghezza attuale";
+                      label = "Lunghezza Segmento";
                   } else if (ent.type === 'circle') {
                       val = ent.radius;
                       label = "Raggio attuale";
@@ -17380,8 +20614,8 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
                       label = "Larghezza attuale";
                   }
                   return (
-                      <div className="bg-slate-800/80 border border-slate-700/50 rounded-lg px-2.5 py-1.5 text-center text-xs text-slate-300 font-mono">
-                          {label}: <span className="text-yellow-400 font-bold">{val.toFixed(1)} cm</span>
+                      <div className="bg-slate-800/90 border border-slate-700 rounded-xl px-3 py-2 text-center text-sm text-slate-200 font-mono">
+                          {label}: <span className="text-amber-300 font-black text-lg">{val.toFixed(2).replace('.', ',')} cm</span>
                       </div>
                   );
               })()}
@@ -17389,22 +20623,24 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
               <form 
                   onSubmit={(e) => {
                       e.preventDefault();
-                      handleQuickEditCommit(quickEditValue);
+                      handleQuickEditCommit(quickEditValue, quickEditOffset);
                   }}
-                  className="flex flex-col gap-3"
+                  className="flex flex-col gap-3.5"
               >
-                  <div className="flex items-center gap-2">
-                      <span className="w-12 text-slate-400 font-mono text-xs">
-                          {entities.find(el => el.id === quickEditEntityId)?.type === 'circle' ? 'Raggio:' : entities.find(el => el.id === quickEditEntityId)?.type === 'rectangle' ? 'Larg:' : 'Lung:'}
+                  <div className="flex items-center gap-2.5">
+                      <span className="w-20 text-slate-300 font-mono text-sm font-bold">
+                          {entities.find(el => el.id === quickEditEntityId)?.type === 'circle' ? 'Raggio:' : entities.find(el => el.id === quickEditEntityId)?.type === 'rectangle' ? 'Larg:' : 'Lunghezza:'}
                       </span>
                       <input 
                           type="text"
                           autoFocus
-                          placeholder="Nuovo valore (cm)..."
+                          onFocus={e => e.target.select()}
+                          placeholder="Nuova misura (cm)..."
                           value={quickEditValue}
                           onChange={e => setQuickEditValue(e.target.value)}
-                          className="flex-1 bg-slate-800 border border-slate-600 px-2.5 py-1.5 rounded text-right font-mono text-sm text-white outline-none focus:border-amber-400"
+                          className="flex-1 bg-slate-950 border-2 border-amber-400/80 px-3 py-2 rounded-xl text-right font-mono text-xl font-black text-white outline-none focus:border-emerald-400"
                       />
+                      <span className="text-sm font-mono font-bold text-amber-400">cm</span>
                       <button
                           type="button"
                           title="Apri pannello Penne (stile, colore, spessore)"
@@ -17414,32 +20650,42 @@ export const CADCanvas = React.forwardRef<CADCanvasAPI, CADCanvasProps>(({ entit
                                   onOpenPenneSidebar?.();
                               }
                           }}
-                          className="p-2 rounded transition-colors flex items-center justify-center border bg-slate-800 border-slate-600 text-slate-300 hover:bg-slate-700 hover:text-white"
+                          className="p-2.5 rounded-xl transition-colors flex items-center justify-center border bg-slate-800 border-slate-600 text-slate-300 hover:bg-slate-700 hover:text-white"
                       >
-                          <Pen size={14} />
+                          <Pen size={15} />
                       </button>
                   </div>
-                  {/* style editing is handled in the Penne sidebar tab */}
-
-
-                  <div className="flex gap-2 pt-1">
+                  <div className="flex items-center gap-2.5">
+                      <span className="w-20 text-slate-300 font-mono text-sm font-bold">Parallela:</span>
+                      <input 
+                          type="text"
+                          onFocus={e => e.target.select()}
+                          placeholder="Distanza (cm)..."
+                          value={quickEditOffset}
+                          onChange={e => setQuickEditOffset(e.target.value)}
+                          className="flex-1 bg-slate-950 border border-slate-600 px-3 py-2 rounded-xl text-right font-mono text-lg font-bold text-cyan-300 outline-none focus:border-cyan-400"
+                      />
+                      <span className="text-sm font-mono font-bold text-cyan-400">cm</span>
+                  </div>
+                  <div className="flex gap-2.5 pt-1">
                       <button 
                           type="submit" 
-                          className="flex-1 bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold py-1.5 rounded text-xs transition-colors shadow"
+                          className="flex-1 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-black py-2.5 rounded-xl text-sm transition-colors shadow-lg"
                       >
-                          Applica Modifica
+                          ✓ Applica Misura (Invio)
                       </button>
                       <button 
                           type="button" 
                           onClick={() => setQuickEditEntityId(null)}
-                          className="bg-slate-800 hover:bg-slate-700 text-slate-300 px-3 py-1.5 rounded text-xs transition-colors"
+                          className="bg-slate-800 hover:bg-slate-700 text-slate-300 px-4 py-2.5 rounded-xl text-sm font-bold transition-colors"
                       >
                           Annulla
                       </button>
                   </div>
               </form>
-          </div>
-      )}
+              </div>
+          )}
+
       {statusMessage && showFloatingManual && (
         <div 
           className="absolute bg-white/95 text-slate-800 border-2 border-emerald-400/80 shadow-[0_12px_32px_rgba(0,0,0,0.12),_0_8px_20px_rgba(16,185,129,0.08)] px-4 py-3 rounded-xl text-xs font-semibold tracking-wide font-sans z-50 pointer-events-none flex flex-col items-center text-center gap-2 max-w-[280px] backdrop-blur-sm transition-all duration-75 border-solid"

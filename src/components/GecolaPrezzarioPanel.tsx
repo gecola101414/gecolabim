@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from "react";
+import React, { useState, useMemo, useEffect } from "react";
 import { PREZZARIO_GECOLA } from "../data/prezzario";
 import { DimensionEntity, Entity, Floor, PrezzarioItem } from "../types";
 import { computeMetrics } from "../utils/bimMetrics";
@@ -19,7 +19,9 @@ import {
   FileSpreadsheet,
   AlertCircle,
   FileJson,
-  Save
+  Save,
+  Maximize2,
+  Minimize2
 } from "lucide-react";
 
 // Converts numbers to Italian word format (e.g. 4533.28 -> Quattromilacinquecentotrentatre/28)
@@ -140,6 +142,7 @@ interface GecolaPrezzarioPanelProps {
   floors?: Floor[];
   prezzarioItems?: PrezzarioItem[];
   onOpenImporter?: () => void;
+  isWorkspaceMode?: boolean;
 }
 
 export const GecolaPrezzarioPanel: React.FC<GecolaPrezzarioPanelProps> = ({
@@ -153,13 +156,22 @@ export const GecolaPrezzarioPanel: React.FC<GecolaPrezzarioPanelProps> = ({
   setShortcutToast,
   floors = [],
   prezzarioItems = PREZZARIO_GECOLA,
-  onOpenImporter
+  onOpenImporter,
+  isWorkspaceMode = false
 }) => {
-  const [activeTab, setActiveTab] = useState<"prezzario" | "computo">("prezzario");
+  const [activeTab, setActiveTab] = useState<"prezzario" | "computo">(isWorkspaceMode ? "computo" : "prezzario");
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedCategory, setSelectedCategory] = useState("Tutte");
   const [isMinimized, setIsMinimized] = useState(false);
+  const [isMaximized, setIsMaximized] = useState(isWorkspaceMode);
   const [isDraggingOverComputo, setIsDraggingOverComputo] = useState(false);
+
+  useEffect(() => {
+    if (isWorkspaceMode) {
+      setIsMaximized(true);
+      setActiveTab("computo");
+    }
+  }, [isWorkspaceMode]);
 
   // Primus Document configuration states
   const [showPrimusModal, setShowPrimusModal] = useState(false);
@@ -1107,19 +1119,21 @@ export const GecolaPrezzarioPanel: React.FC<GecolaPrezzarioPanelProps> = ({
   return (
     <div
       style={{
-        position: "absolute",
-        left: `${Math.max(10, Math.min(window.innerWidth - 350, position.x))}px`,
-        top: `${Math.max(60, Math.min(window.innerHeight - 300, position.y))}px`,
+        position: isMaximized ? "fixed" : "absolute",
+        left: isMaximized ? "max(12px, calc(50% - 550px))" : `${Math.max(10, Math.min(window.innerWidth - 350, position.x))}px`,
+        top: isMaximized ? "65px" : `${Math.max(60, Math.min(window.innerHeight - 300, position.y))}px`,
+        width: isMaximized ? "min(1100px, calc(100vw - 24px))" : undefined,
+        height: isMaximized ? "calc(100vh - 85px)" : undefined,
         zIndex: 1000,
       }}
-      className="w-96 bg-neutral-900 border border-neutral-700 rounded-xl shadow-[0_10px_30px_rgba(0,0,0,0.5)] overflow-hidden flex flex-col transition-all text-neutral-200"
+      className={`${isMaximized ? "w-full max-w-6xl shadow-2xl" : "w-96"} bg-neutral-900 border border-neutral-700 rounded-xl shadow-[0_10px_30px_rgba(0,0,0,0.5)] overflow-hidden flex flex-col transition-all text-neutral-200`}
       onMouseMove={handleMouseMove}
       onMouseUp={handleMouseUp}
     >
       {/* HEADER DRAGGABLE */}
       <div 
-        onMouseDown={handleMouseDown}
-        className="window-header-drag h-10 bg-neutral-950 px-3 flex items-center justify-between cursor-move select-none border-b border-neutral-800"
+        onMouseDown={isMaximized ? undefined : handleMouseDown}
+        className={`window-header-drag h-10 bg-neutral-950 px-3 flex items-center justify-between ${isMaximized ? '' : 'cursor-move'} select-none border-b border-neutral-800`}
       >
         <div className="flex items-center gap-2">
           <Clipboard size={14} className="text-amber-400" />
@@ -1131,18 +1145,32 @@ export const GecolaPrezzarioPanel: React.FC<GecolaPrezzarioPanelProps> = ({
               {computableItems.length} elementi
             </span>
           )}
+          {isWorkspaceMode && (
+            <span className="bg-emerald-950 text-emerald-400 border border-emerald-700/60 text-[9px] font-bold uppercase px-1.5 py-0.5 rounded">
+              Ambiente Computo
+            </span>
+          )}
         </div>
         
         <div className="flex items-center gap-1.5">
           <button 
+            onClick={() => setIsMaximized(!isMaximized)}
+            className="p-1 hover:bg-neutral-800 rounded text-neutral-400 hover:text-white transition-colors"
+            title={isMaximized ? "Riduci a pannello fluttuante" : "Ingrandisci a schermo intero"}
+          >
+            {isMaximized ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
+          </button>
+          <button 
             onClick={() => setIsMinimized(!isMinimized)}
             className="p-1 hover:bg-neutral-800 rounded text-neutral-400 hover:text-white transition-colors"
+            title={isMinimized ? "Espandi" : "Comprimi"}
           >
             {isMinimized ? <ChevronDown size={14} /> : <ChevronUp size={14} />}
           </button>
           <button 
             onClick={onClose}
             className="p-1 hover:bg-red-950/50 rounded text-neutral-400 hover:text-red-400 transition-colors"
+            title="Chiudi"
           >
             <X size={14} />
           </button>
@@ -1150,7 +1178,7 @@ export const GecolaPrezzarioPanel: React.FC<GecolaPrezzarioPanelProps> = ({
       </div>
 
       {!isMinimized && (
-        <div className="flex flex-col h-[380px] text-xs">
+        <div className={`flex flex-col ${isMaximized ? "flex-1 overflow-hidden" : "h-[380px]"} text-xs`}>
           {/* TABS SELECTOR */}
           <div className="flex bg-neutral-950 border-b border-neutral-800 p-1">
             <button

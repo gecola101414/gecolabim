@@ -8,6 +8,7 @@ import { motion, AnimatePresence } from "motion/react";
 import { Document, Page, pdfjs } from 'react-pdf';
 import { CADCanvas, getPaperSizeMm } from "./components/CADCanvas";
 import { CanvasPDFPreview } from "./components/CanvasPDFPreview";
+import { GecoAssistant } from "./components/GecoAssistant";
 
 pdfjs.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.mjs`;
 
@@ -21,8 +22,12 @@ import { PriceListImporter } from "./components/PriceListImporter";
 import { BIMDataAnalyzerDialog } from "./components/BIMDataAnalyzerDialog";
 import { BIMTopBarControls } from "./components/BIMTopBarControls";
 import { BIM3DViewer } from "./components/BIM3DViewer";
+import { ParameterInputOverlay } from "./components/ParameterInputOverlay";
 import { GecolaPrezzarioPanel } from "./components/GecolaPrezzarioPanel";
 import { BIMWorkspacePanel } from "./components/BIMWorkspacePanel";
+import { WorkspaceModeModal, WorkspaceMode } from "./components/WorkspaceModeModal";
+import { TecnigrafoContextMenu } from "./components/TecnigrafoContextMenu";
+import { TecnigrafoToolbar } from "./components/TecnigrafoToolbar";
 import { TEMPLATES } from './data/templates';
 import { GUIDE_DATABASE, GuideItem } from './data/guides';
 import { PREZZARIO_GECOLA } from './data/prezzario';
@@ -34,6 +39,7 @@ import { contours } from "d3-contour";
 import { simplifyPoints } from "./utils/simplify";
 import polygonClipping from "polygon-clipping";
 import {
+  Bot,
   Minus,
   Circle,
   Square,
@@ -73,6 +79,8 @@ import {
   Grid,
   ExternalLink,
   X,
+  Upload,
+  FileSearch,
   Building,
   Lock,
   Home,
@@ -87,7 +95,8 @@ import {
   Maximize,
   RefreshCw,
   Sliders,
-  Monitor
+  Monitor,
+  Compass
 } from "lucide-react";
 
 const RotateScaleIcon = ({ size = 16 }: { size?: number }) => (
@@ -671,18 +680,175 @@ const MASONRY_TYPES = [
   const [isContinuousMode, setIsContinuousMode] = useState(false);
   const [isShiftOrFDown, setIsShiftOrFDown] = useState(false);
   const [isSnapOverrideDown, setIsSnapOverrideDown] = useState(false);
+  const isJollyOrMagicKeyHeldRef = useRef(false);
   // SE TENGO PREMUTO BLOC FN RIMANE ATTIVO ORTO: ensure it stays active if either the button or the key is active
   const effectiveOrthoMode = orthoMode || isShiftOrFDown;
   const effectiveSnapActive = isSnapActive && !isSnapOverrideDown;
   
+  // 3 Ambienti di Lavoro Principali: 'tecnigrafo' | 'bim' | 'computo'
+  const [workspaceMode, setWorkspaceMode] = useState<WorkspaceMode>(() => {
+    return (localStorage.getItem('gecola_workspace_mode') as WorkspaceMode) || 'tecnigrafo';
+  });
+  const [isWorkspaceModalOpen, setIsWorkspaceModalOpen] = useState(() => {
+    return localStorage.getItem('gecola_hide_workspace_modal') !== 'true';
+  });
+  const [contextMenuPos, setContextMenuPos] = useState<{ x: number; y: number } | null>(null);
+
+  const handleSelectWorkspaceMode = (mode: WorkspaceMode) => {
+    setWorkspaceMode(mode);
+    localStorage.setItem('gecola_workspace_mode', mode);
+    if (mode === 'tecnigrafo') {
+      setSelectedCategory('Disegno');
+      setSelectedTool('Line');
+      setIsPrezzarioOpen(false);
+      setShowProperties(false);
+      setIs3DViewOpen(false);
+      setShortcutToast("📐 Modalità TECNIGRAFO attiva: solo 4 funzioni essenziali, massima velocità");
+    } else if (mode === 'bim') {
+      setSelectedCategory('BIM');
+      setSelectedTool('Muro');
+      setActiveSidebarTab('bim');
+      setShowProperties(true);
+      setShortcutToast("🏢 Modalità BIM ARCHITETTURA & 3D attiva");
+    } else if (mode === 'computo') {
+      setIsPrezzarioOpen(true);
+      setShortcutToast("📊 Modalità COMPUTO METRICO ESTIMATIVO attiva");
+    }
+    setTimeout(() => setShortcutToast(null), 2500);
+  };
+
   const [cancelTrigger, setCancelTrigger] = useState(0);
   const [parallelTrigger, setParallelTrigger] = useState(0);
+  const [isOffsetAidActive, setIsOffsetAidActive] = useState(false);
   const [showProperties, setShowProperties] = useState(() => localStorage.getItem('showProperties') === 'true');
-  const [selectedCategory, setSelectedCategory] = useState(() => localStorage.getItem('selectedCategory') || "Disegno");
-  const [isPrezzarioOpen, setIsPrezzarioOpen] = useState(true);
+  const [selectedCategory, setSelectedCategory] = useState(() => {
+    const saved = localStorage.getItem('selectedCategory');
+    const mode = localStorage.getItem('gecola_workspace_mode') || 'tecnigrafo';
+    if (mode === 'tecnigrafo') return 'Disegno';
+    if (mode === 'bim') return 'BIM';
+    return saved || 'Disegno';
+  });
+  const [isGecoOpen, setIsGecoOpen] = useState(false);
+  const [isPrezzarioOpen, setIsPrezzarioOpen] = useState(() => {
+    return localStorage.getItem('gecola_workspace_mode') === 'computo';
+  });
   const [priceListImporterTargetFamily, setPriceListImporterTargetFamily] = useState<string | null>(null);
   const [justImportedItem, setJustImportedItem] = useState<PrezzarioItem | null>(null);
   const [isAnalyzerOpen, setIsAnalyzerOpen] = useState(false);
+  const [lastInsertedParameter, setLastInsertedParameter] = useState<{ type: 'radius' | 'length' | 'thickness' | 'offset'; value: number; isLocked?: boolean; userSetAt?: number } | null>(() => {
+    try {
+      const saved = localStorage.getItem('lastInsertedParameter');
+      if (saved) return JSON.parse(saved);
+    } catch(e) {}
+    return { type: 'length', value: 1.0, isLocked: false };
+  });
+
+  const [insertedParameterHistory, setInsertedParameterHistory] = useState<number[]>(() => {
+    try {
+      const saved = localStorage.getItem('insertedParameterHistory');
+      if (saved) return JSON.parse(saved);
+    } catch(e) {}
+    return [1.0, 2.0, 3.0, 5.0, 10.0];
+  });
+
+  const [showHistoryDropdown, setShowHistoryDropdown] = useState(false);
+
+  const addToParameterHistory = (val: number) => {
+    if (isNaN(val) || val <= 0) return;
+    setInsertedParameterHistory(prev => {
+      const filtered = prev.filter(v => Math.abs(v - val) > 0.001);
+      const next = [val, ...filtered].slice(0, 25);
+      try { localStorage.setItem('insertedParameterHistory', JSON.stringify(next)); } catch(e) {}
+      return next;
+    });
+  };
+
+  const handleSetLastInsertedParameter = (
+    param: { type: 'radius' | 'length' | 'thickness' | 'offset'; value: number; isLocked?: boolean; userSetAt?: number; isAutoFromDrawing?: boolean } | null | ((prev: any) => any),
+    isExplicitUserAction: boolean = true
+  ) => {
+    setLastInsertedParameter(prev => {
+      const rawNext = typeof param === 'function' ? param(prev) : param;
+      if (rawNext && rawNext.isAutoFromDrawing) {
+          isExplicitUserAction = false;
+      }
+      if (rawNext) {
+        if (prev?.isLocked && rawNext.isLocked === undefined) {
+          return prev;
+        }
+        addToParameterHistory(rawNext.value);
+        const userSetAt = (isExplicitUserAction && !rawNext.isAutoFromDrawing)
+          ? Date.now() + Math.random()
+          : (prev?.userSetAt || Date.now());
+        const next = { ...rawNext, userSetAt };
+        try { localStorage.setItem('lastInsertedParameter', JSON.stringify(next)); } catch(e) {}
+        return next;
+      }
+      return rawNext;
+    });
+  };
+  const [isParameterInputOpen, setIsParameterInputOpen] = useState(false);
+  const [parameterInputPos, setParameterInputPos] = useState<{x: number, y: number}>(() => ({
+    x: typeof window !== 'undefined' ? window.innerWidth / 2 - 80 : 200,
+    y: 140
+  }));
+
+  const updateEntityParameter = (id: string, type: 'length' | 'radius' | 'offset', value: number) => {
+    setEntities(prev => prev.map(ent => {
+        if (ent.id === id) {
+            if (ent.type === 'line' && type === 'length') {
+                const line = ent as any;
+                const dx = line.end.x - line.start.x;
+                const dy = line.end.y - line.start.y;
+                const currentLen = Math.sqrt(dx*dx + dy*dy);
+                if (currentLen === 0) return ent;
+                const nx = dx / currentLen;
+                const ny = dy / currentLen;
+                return {
+                    ...line,
+                    end: {
+                        x: line.start.x + nx * value * 100, // * 100 because user inputs meters, canvas is cm
+                        y: line.start.y + ny * value * 100
+                    }
+                };
+            } else if (ent.type === 'circle' && type === 'radius') {
+                return {
+                    ...ent,
+                    radius: value * 100
+                };
+            } else if (ent.type === 'line' && type === 'offset' && referenceLine) {
+                const line = ent as any;
+                const refStart = referenceLine.start;
+                const refEnd = referenceLine.end;
+                const refDx = refEnd.x - refStart.x;
+                const refDy = refEnd.y - refStart.y;
+                const refLen = Math.sqrt(refDx * refDx + refDy * refDy);
+                if (refLen === 0) return ent;
+                
+                // Normal vector to the reference line
+                const nx = -refDy / refLen;
+                const ny = refDx / refLen;
+                
+                // Distance of current line from reference line
+                // Project (line.start - refStart) onto normal vector
+                const v = { x: line.start.x - refStart.x, y: line.start.y - refStart.y };
+                const currentDist = v.x * nx + v.y * ny;
+                
+                // Translation vector to reach desired distance
+                const targetDist = value * 100; // * 100 for cm
+                const distDiff = targetDist - currentDist;
+                
+                return {
+                    ...line,
+                    start: { x: line.start.x + nx * distDiff, y: line.start.y + ny * distDiff },
+                    end: { x: line.end.x + nx * distDiff, y: line.end.y + ny * distDiff }
+                };
+            }
+        }
+        return ent;
+    }));
+  }
+
   const [dynamicPrezzario, setDynamicPrezzario] = useState<PrezzarioItem[]>(() => {
     const saved = localStorage.getItem('bim_custom_prezzario');
     const custom = saved ? JSON.parse(saved) : [];
@@ -1873,30 +2039,14 @@ const MASONRY_TYPES = [
   const handleRightClickShortcut = (e: React.MouseEvent) => {
     // Se c'è il dialogo del raccordo aperto, il tasto destro applica
     if (isRaccordoDialogOpen) {
-        // Simuliamo un invio al form del dialogo
         const ev = new KeyboardEvent('keydown', { key: 'Enter', bubbles: true });
         window.dispatchEvent(ev);
         e.preventDefault();
         return;
     }
 
-    if (selectedTool === 'Eraser') {
-      const nextType = eraserType === 'pencil' ? 'all' : (eraserType === 'all' ? 'lametta' : 'pencil');
-      setEraserType(nextType);
-      setShortcutToast(
-        nextType === 'pencil' 
-          ? "Gomma: Matita (Bianca)" 
-          : nextType === 'all' 
-            ? "Gomma: China/Tutto (Gialla)" 
-            : "Gomma: Lametta Gillette"
-      );
-      setTimeout(() => setShortcutToast(null), 2000);
-      e.preventDefault();
-      return;
-    }
-
-    // If in Template tool, try rotating first
-    if (selectedTool === 'Template' || selectedTool === 'Select') {
+    // Se si sta usando la maschera/template, ruota al tasto destro
+    if (selectedTool === 'Template') {
         const rotated = cadCanvasRef.current?.rotateMaskAtPoint(e);
         if (rotated) {
             e.preventDefault();
@@ -1904,22 +2054,9 @@ const MASONRY_TYPES = [
         }
     }
 
-    // If in Template tool and didn't rotate, cancel it and switch to Select
-    if (selectedTool === 'Template') {
-      setSelectedTool('Select');
-      setSelectedTemplateId(null);
-      setShortcutToast("Strumento: Selezione (Magneti)");
-      setTimeout(() => setShortcutToast(null), 1500);
-      return;
-    }
-
-    // If not in a drawing tool, switch to Line
-    if (!["Line", "Muro", "Circle", "Arc", "Hatch", "Dimension"].includes(selectedTool || '')) {
-      setSelectedCategory("Disegno");
-      handleToolClick("Line");
-      setShortcutToast("Strumento: Linea");
-      setTimeout(() => setShortcutToast(null), 1500);
-    }
+    // Mostra SEMPRE il menu rapido contestuale del Tecnigrafo al puntatore del mouse
+    e.preventDefault();
+    setContextMenuPos({ x: e.clientX, y: e.clientY });
   };
 
   const handleToolClick = (tool: string) => {
@@ -1936,6 +2073,7 @@ const MASONRY_TYPES = [
     }
 
            if (tool === "Raccordo") {
+             setIsOffsetAidActive(false);
              setSelectedTool("Raccordo");
              // Non forzare l'apertura del dialog se è già aperto o se l'utente vuole solo usare il tool
              // Lo apriamo solo la prima volta o se cliccano di nuovo
@@ -1944,9 +2082,20 @@ const MASONRY_TYPES = [
              }
              setShowProperties(false);
            } else if (tool === "Parallel") {
-      setSelectedTool("Parallel");
-      setCancelTrigger(prev => prev + 1);
-      setParallelTrigger(prev => prev + 1);
+      if (isOffsetAidActive && selectedTool === "Parallel") {
+        setIsOffsetAidActive(false);
+        setSelectedTool("Line");
+        setCancelTrigger(prev => prev + 1);
+        setShortcutToast("Aiuto Offset: Disattivato");
+        setTimeout(() => setShortcutToast(null), 1500);
+      } else {
+        setIsOffsetAidActive(true);
+        setSelectedTool("Parallel");
+        setCancelTrigger(prev => prev + 1);
+        setParallelTrigger(prev => prev + 1);
+        setShortcutToast("Offset & Aiuto Offset: Attivo 📐");
+        setTimeout(() => setShortcutToast(null), 1500);
+      }
       setShowProperties(false);
       setIsRaccordoDialogOpen(false);
     } else if (tool === "Penne") {
@@ -1956,6 +2105,7 @@ const MASONRY_TYPES = [
         setSelectedTool('Select');
       }
     } else if (tool === "Maschere") {
+      setIsOffsetAidActive(false);
       setActiveSidebarTab('maschere');
       setShowProperties(true);
       if (selectedTool === 'Template') {
@@ -1987,7 +2137,13 @@ const MASONRY_TYPES = [
       }
       setCancelTrigger(prev => prev + 1);
     } else {
+      setIsOffsetAidActive(tool === "Move" || tool === "Copy");
       setSelectedTool(tool);
+      if (['Line', 'Muro', 'Filo', 'Rectangle'].includes(tool)) {
+        handleSetLastInsertedParameter(prev => prev ? { ...prev, type: 'length' } : { type: 'length', value: 1.0 });
+      } else if (tool === 'Circle') {
+        handleSetLastInsertedParameter(prev => prev ? { ...prev, type: 'radius' } : { type: 'radius', value: 0.5 });
+      }
       // Ensure the correct sidebar tab opens for specific tools as requested
       if (tool === 'Hatch' || tool === 'Line' || tool === 'Circle' || tool === 'Muro' || tool === 'Gomma') {
         setActiveSidebarTab('penne');
@@ -2326,81 +2482,166 @@ const MASONRY_TYPES = [
       if ((e.ctrlKey || e.metaKey) && key === 'z') {
         e.preventDefault();
         undo();
+        return;
       } else if ((e.ctrlKey || e.metaKey) && key === 'y') {
         e.preventDefault();
         redo();
+        return;
       }
 
       // Escape to reset
       if (e.key === 'Escape') {
+        setIsOffsetAidActive(false);
         setSelectedTool('Select');
         setSelectedId(null);
         setCancelTrigger(prev => prev + 1);
+        return;
       }
 
       // F8 to toggle ortho Mode
       if (e.key === 'F8') {
         e.preventDefault();
         setOrthoMode(prev => !prev);
+        return;
       }
 
-      // Key < > (IntlBackslash / Comma) to temporarily deactivate Snap Mode while held down
-      if ((e.code === 'IntlBackslash' || e.code === 'Comma' || e.key === '<' || e.key === '>') && !e.repeat) {
-        setIsSnapOverrideDown(true);
-      }
-
-      // Backslash or Pipe to activate Line tool (key under ESC on many layouts)
-      if (e.key === '\\' || e.key === '|') {
-        e.preventDefault();
-        setSelectedCategory("Disegno");
-        handleToolClick("Line");
-        setSelectedTool("Line");
-        setShortcutToast("Strumento: Linea 📏");
-        setTimeout(() => setShortcutToast(null), 1500);
-      }
-
-      // Shift or F for temporarily toggling ortho Mode + Auto Line activation
-      if (e.key === 'Shift' || key === 'f') {
-        setIsShiftOrFDown(true);
-        if (selectedTool !== "Line") {
-          setSelectedCategory("Disegno");
-          // Always activate Line tool when BLOC FN key is pressed
-          handleToolClick("Line");
+      // Tecnigrafo Core Tool Shortcuts
+      if (!e.ctrlKey && !e.metaKey && !e.altKey) {
+        if (key === 'l') {
+          e.preventDefault();
+          setIsOffsetAidActive(false);
           setSelectedTool("Line");
-          setShortcutToast("Strumento: Linea (Ortho) 📏");
-          setTimeout(() => setShortcutToast(null), 1500);
+          setShortcutToast("Strumento: Linea (Pennino) 📏");
+          setTimeout(() => setShortcutToast(null), 1200);
+        } else if (key === 'c') {
+          e.preventDefault();
+          setIsOffsetAidActive(false);
+          setSelectedTool("Circle");
+          setShortcutToast("Strumento: Cerchio ⭕ (C)");
+          setTimeout(() => setShortcutToast(null), 1200);
+        } else if (key === 'o') {
+          e.preventDefault();
+          setIsOffsetAidActive(true);
+          setSelectedTool("Parallel");
+          setParallelTrigger(prev => prev + 1);
+          setShortcutToast("Strumento: Offset / Parallela 📐 (O)");
+          setTimeout(() => setShortcutToast(null), 1200);
+        } else if (key === 'd') {
+          e.preventDefault();
+          setIsOffsetAidActive(false);
+          setSelectedTool("Dimension");
+          setShortcutToast("Strumento: Misure / Quota 📏 (D)");
+          setTimeout(() => setShortcutToast(null), 1200);
+        } else if (key === 'r' || key === 'h') {
+          e.preventDefault();
+          setIsOffsetAidActive(false);
+          setSelectedTool("Hatch");
+          setShortcutToast("Strumento: Retini / Riempimento ▦ (R)");
+          setTimeout(() => setShortcutToast(null), 1200);
+        } else if (key === 'm') {
+          e.preventDefault();
+          setIsOffsetAidActive(true);
+          setSelectedTool("Move");
+          setShortcutToast("Strumento: Sposta Tutto ✋ (M)");
+          setTimeout(() => setShortcutToast(null), 1200);
+        } else if (key === 't') {
+          e.preventDefault();
+          setIsOffsetAidActive(false);
+          setSelectedTool("Trim");
+          setShortcutToast("Strumento: Forbice / Taglia ✂️ (T)");
+          setTimeout(() => setShortcutToast(null), 1200);
+        } else if (key === 'g') {
+          e.preventDefault();
+          setIsOffsetAidActive(false);
+          setSelectedTool("Gomma");
+          setShortcutToast("Strumento: Gomma / Cancella ✨ (G)");
+          setTimeout(() => setShortcutToast(null), 1200);
         }
       }
 
-      // Control to temporarily activate Trim (Scissors)
+      // Backslash or Pipe to activate Line tool
+      if (e.key === '\\' || e.key === '|') {
+        e.preventDefault();
+        setIsOffsetAidActive(false);
+        setSelectedCategory("Disegno");
+        handleToolClick("Line");
+        setSelectedTool("Line");
+        setShortcutToast("Strumento: Linea (Pennino) 📏");
+        setTimeout(() => setShortcutToast(null), 1200);
+      }
+
+      // BLOC FN (Shift / CapsLock / Bloc Maiusc / Fn / F):
+      // - Se premuto mentre si tiene premuto Sposta Tutto (< >) o Copia Magica (Z), attiva il vincolo Orto
+      // - Se premuto da solo (es. anche dalla modalità Forbice / Trim), va SEMPRE in modalità Linea oltre ad attivare Orto e Snap essenziali!
+      const isBlocFnKey =
+        e.key === 'Shift' ||
+        e.code === 'ShiftLeft' ||
+        e.code === 'ShiftRight' ||
+        e.key === 'CapsLock' ||
+        e.code === 'CapsLock' ||
+        e.keyCode === 20 ||
+        (e as any).which === 20 ||
+        e.key === 'Fn' ||
+        e.code === 'Fn' ||
+        e.key === 'FnLock' ||
+        e.code === 'FnLock' ||
+        e.key === 'ShiftLock' ||
+        key === 'f';
+
+      if (e.key === '<' || e.key === '>' || e.code === 'IntlBackslash' || e.key === 'Tab' || (key === 'z' && !e.ctrlKey && !e.metaKey && !e.altKey)) {
+        isJollyOrMagicKeyHeldRef.current = true;
+        setIsOffsetAidActive(true);
+      }
+
+      if (isBlocFnKey) {
+        setIsShiftOrFDown(true);
+        if (!isJollyOrMagicKeyHeldRef.current && selectedTool !== "Line") {
+          setSelectedCategory("Disegno");
+          setSelectedTool("Line");
+          setIsRaccordoDialogOpen(false);
+          setShortcutToast("Strumento: Pennino (Linea) 📏");
+          setTimeout(() => setShortcutToast(null), 1200);
+        }
+      }
+
+      // Control to immediately activate Trim (Forbice) and stay active
       if (e.key === 'Control' && !e.repeat) {
-        setSelectedTool(current => {
-          if (current !== 'Trim') {
-            setPreviousTool(current);
-            return 'Trim';
-          }
-          return current;
-        });
+        setIsOffsetAidActive(false);
+        setSelectedTool('Trim');
+        setShortcutToast("Strumento: Forbice (Taglia) ✂️");
+        setTimeout(() => setShortcutToast(null), 1200);
       }
     };
 
     const handleKeyUp = (e: KeyboardEvent) => {
-      const key = e.key.toLowerCase();
-      if (e.key === 'Shift' || key === 'f') {
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+      const key = (e.key || '').toLowerCase();
+      if (e.key === '<' || e.key === '>' || e.code === 'IntlBackslash' || e.key === 'Tab' || key === 'z') {
+        isJollyOrMagicKeyHeldRef.current = false;
+      }
+      const isBlocFnKey =
+        e.key === 'Shift' ||
+        e.code === 'ShiftLeft' ||
+        e.code === 'ShiftRight' ||
+        e.key === 'CapsLock' ||
+        e.code === 'CapsLock' ||
+        e.keyCode === 20 ||
+        (e as any).which === 20 ||
+        e.key === 'Fn' ||
+        e.code === 'Fn' ||
+        e.key === 'FnLock' ||
+        e.code === 'FnLock' ||
+        e.key === 'ShiftLock' ||
+        key === 'f';
+      if (isBlocFnKey) {
         setIsShiftOrFDown(false);
-      }
-
-      if (e.code === 'IntlBackslash' || e.code === 'Comma' || e.key === '<' || e.key === '>') {
-        setIsSnapOverrideDown(false);
-      }
-
-      if (e.key === 'Control') {
-        setPreviousTool(prev => {
-          if (prev) {
-            setSelectedTool(prev);
-          }
-          return null;
-        });
+        if (!isJollyOrMagicKeyHeldRef.current && selectedTool !== "Line") {
+          setSelectedCategory("Disegno");
+          setSelectedTool("Line");
+          setIsRaccordoDialogOpen(false);
+          setShortcutToast("Strumento: Pennino (Linea) 📏");
+          setTimeout(() => setShortcutToast(null), 1200);
+        }
       }
     };
 
@@ -2410,244 +2651,317 @@ const MASONRY_TYPES = [
       window.removeEventListener('keydown', handleKeyDown);
       window.removeEventListener('keyup', handleKeyUp);
     };
-  }, [historyIndex, history, entities, previousTool]); // Dependencies for shortcuts
+  }, [historyIndex, history, entities, selectedTool]); // Dependencies for shortcuts
 
   return (
     <div className="flex flex-col h-screen bg-neutral-100 text-neutral-900">
       {/* Ribbon */}
-      <header className="h-14 border-b border-neutral-300 bg-white flex">
-        <div className="flex items-center px-4 border-r border-neutral-300 bg-neutral-900 text-white select-none mr-2 relative">
-          <div className="flex flex-col">
-            <span className="font-sans font-black tracking-wider text-sm whitespace-nowrap">GECOLA <span className="text-amber-400">BIM</span></span>
-            <span className="text-[9px] text-neutral-400 font-mono -mt-1 opacity-60">VER. 11.29</span>
-          </div>
-          {fileHandle && (
-            <div className="absolute top-1 right-2 flex items-center justify-center pointer-events-none">
-              <div className={`w-2 h-2 rounded-full ${isSaving ? 'bg-amber-400' : 'bg-emerald-500'} transition-colors duration-300 drop-shadow-md`} title={isSaving ? "Salvataggio in corso..." : "Auto-save attivo"}></div>
+      <header className="h-14 border-b border-neutral-300 bg-white flex items-center justify-between px-2 select-none">
+        
+        {/* Brand & Mode Hub Opener */}
+        <div className="flex items-center">
+          <div 
+            onClick={() => setIsWorkspaceModalOpen(true)}
+            className="flex items-center px-3 py-1.5 rounded-lg bg-neutral-900 text-white cursor-pointer hover:bg-neutral-800 transition mr-2 shadow-xs group"
+            title="Clicca per cambiare ambiente di lavoro"
+          >
+            <div className="flex items-center gap-2">
+              {workspaceMode === 'tecnigrafo' ? (
+                <div className="w-8 h-8 rounded-lg bg-amber-500/20 border border-amber-500/40 flex items-center justify-center text-amber-400 group-hover:scale-105 transition-transform">
+                  <Compass size={18} />
+                </div>
+              ) : workspaceMode === 'bim' ? (
+                <div className="w-8 h-8 rounded-lg bg-cyan-500/20 border border-cyan-500/40 flex items-center justify-center text-cyan-400 group-hover:scale-105 transition-transform">
+                  <Building size={18} />
+                </div>
+              ) : (
+                <div className="w-8 h-8 rounded-lg bg-emerald-500/20 border border-emerald-500/40 flex items-center justify-center text-emerald-400 group-hover:scale-105 transition-transform">
+                  <Clipboard size={18} />
+                </div>
+              )}
+              <div className="flex flex-col">
+                <span className="font-sans font-black tracking-wider text-xs whitespace-nowrap">
+                  GECOLA <span className={workspaceMode === 'tecnigrafo' ? "text-amber-400" : workspaceMode === 'bim' ? "text-cyan-400" : "text-emerald-400"}>
+                    {workspaceMode === 'tecnigrafo' ? "TECNIGRAFO" : workspaceMode === 'bim' ? "BIM 3D" : "COMPUTO"}
+                  </span>
+                </span>
+                <span className="text-[9px] text-neutral-400 font-mono -mt-0.5">
+                  {workspaceMode === 'tecnigrafo' ? "CAD Leggero & Essenziale" : workspaceMode === 'bim' ? "Modellazione Edile" : "Prezzario & Quadro Economico"}
+                </span>
+              </div>
             </div>
+            {fileHandle && (
+              <div className="ml-2 w-2 h-2 rounded-full bg-emerald-500" title="Auto-save attivo" />
+            )}
+          </div>
+
+          {/* I 3 PULSANTI PRINCIPALI RICHIESTI: TECNIGRAFO, BIM & 3D, COMPUTO METRICO */}
+          <div className="flex items-center bg-neutral-900 p-1 rounded-xl border border-neutral-700/80 shadow-inner">
+            <button
+              onClick={() => handleSelectWorkspaceMode('tecnigrafo')}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${
+                workspaceMode === 'tecnigrafo'
+                  ? "bg-amber-500 text-neutral-950 shadow-md shadow-amber-500/20 ring-1 ring-amber-400"
+                  : "text-neutral-300 hover:text-white hover:bg-neutral-800"
+              }`}
+              title="1. Tecnigrafo: Disegno leggero, 4 funzioni essenziali, menu rapido tasto destro"
+            >
+              <Compass size={14} className={workspaceMode === 'tecnigrafo' ? "text-neutral-950" : "text-amber-400"} />
+              <span>1. Tecnigrafo</span>
+            </button>
+
+            <button
+              onClick={() => handleSelectWorkspaceMode('bim')}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${
+                workspaceMode === 'bim'
+                  ? "bg-cyan-500 text-neutral-950 shadow-md shadow-cyan-500/20 ring-1 ring-cyan-400"
+                  : "text-neutral-300 hover:text-white hover:bg-neutral-800"
+              }`}
+              title="2. BIM Completa: Muri parametrici, finestre, porte, solai e 3D Viewer"
+            >
+              <Building size={14} className={workspaceMode === 'bim' ? "text-neutral-950" : "text-cyan-400"} />
+              <span>2. BIM & 3D</span>
+            </button>
+
+            <button
+              onClick={() => handleSelectWorkspaceMode('computo')}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${
+                workspaceMode === 'computo'
+                  ? "bg-emerald-500 text-neutral-950 shadow-md shadow-emerald-500/20 ring-1 ring-emerald-400"
+                  : "text-neutral-300 hover:text-white hover:bg-neutral-800"
+              }`}
+              title="3. Computo Metrico: Prezzario Gecola, estrazione quantità e quadro economico"
+            >
+              <Clipboard size={14} className={workspaceMode === 'computo' ? "text-neutral-950" : "text-emerald-400"} />
+              <span>3. Computo Metrico</span>
+            </button>
+
+            <button
+              onClick={() => setIsWorkspaceModalOpen(true)}
+              className="p-1.5 ml-1 text-neutral-400 hover:text-amber-300 hover:bg-neutral-800 rounded-lg transition"
+              title="Apri Hub Ambienti (Selettore Completo)"
+            >
+              <Settings2 size={13} />
+            </button>
+          </div>
+        </div>
+
+        {/* Center / Mode-Specific Toolbar Elements */}
+        <div className="flex items-center gap-1">
+          {workspaceMode === 'bim' && (
+            <>
+              <button
+                onClick={() => setIsFloorManagerOpen(true)}
+                className="flex items-center gap-1.5 px-2.5 py-1.5 hover:bg-neutral-100 rounded text-neutral-700 text-xs font-semibold border border-neutral-200 transition"
+                title="Gestione dei piani/livelli di progetto"
+              >
+                <Building size={15} className="text-indigo-600" />
+                <span>Gestione Piani</span>
+              </button>
+
+              <button
+                onClick={() => setIs3DViewOpen(true)}
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-cyan-600 hover:bg-cyan-500 text-white rounded text-xs font-bold shadow-xs transition"
+                title="Apri Visualizzatore 3D (Three.js & IFC)"
+              >
+                <Maximize2 size={14} />
+                <span>Visualizzatore 3D</span>
+              </button>
+            </>
+          )}
+
+          {workspaceMode === 'computo' && (
+            <button
+              onClick={() => setIsPrezzarioOpen(!isPrezzarioOpen)}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-bold transition ${
+                isPrezzarioOpen 
+                  ? "bg-emerald-600 text-white shadow-xs" 
+                  : "bg-emerald-50 text-emerald-800 hover:bg-emerald-100 border border-emerald-300"
+              }`}
+            >
+              <Clipboard size={14} />
+              <span>{isPrezzarioOpen ? "Computo Aperto" : "Apri Computo & Prezzario"}</span>
+            </button>
+          )}
+
+          {/* Undo / Redo */}
+          <div className="flex items-center px-1 gap-1 border-l border-neutral-300 ml-1">
+            <button
+              onClick={() => { handleGuideClick('Annulla'); undo(); }}
+              onMouseEnter={() => handleGuideHover('Annulla')}
+              title="Annulla (Ctrl+Z)"
+              className="p-1.5 hover:bg-neutral-100 rounded text-neutral-600 hover:text-indigo-600 transition"
+            >
+              <Undo size={15} />
+            </button>
+            <button
+              onClick={() => { handleGuideClick('Ripristina'); redo(); }}
+              onMouseEnter={() => handleGuideHover('Ripristina')}
+              title="Ripristina (Ctrl+Y)"
+              className="p-1.5 hover:bg-neutral-100 rounded text-neutral-600 hover:text-indigo-600 transition"
+            >
+              <Redo size={15} />
+            </button>
+          </div>
+
+          {/* Penne and Layers */}
+          <button
+            onClick={() => {
+              handleGuideClick('Penne');
+              if (activeSidebarTab === 'penne' && showProperties) {
+                setShowProperties(false);
+              } else {
+                setActiveSidebarTab('penne');
+                setShowProperties(true);
+              }
+            }}
+            title="Impostazioni Penne & Spessori"
+            className={`flex items-center gap-1 px-2.5 py-1.5 rounded text-xs transition ${
+              showProperties && activeSidebarTab === 'penne' ? "bg-indigo-50 text-indigo-700 font-bold" : "hover:bg-neutral-100 text-neutral-700"
+            }`}
+          >
+            <Pen size={14} />
+            <span>Penne</span>
+          </button>
+
+          {workspaceMode !== 'tecnigrafo' && (
+            <button
+              onClick={() => {
+                handleGuideClick('Layers');
+                if (activeSidebarTab === 'layers' && showProperties) {
+                  setShowProperties(false);
+                } else {
+                  setActiveSidebarTab('layers');
+                  setShowProperties(true);
+                }
+              }}
+              title="Gestione Layer"
+              className={`flex items-center gap-1 px-2.5 py-1.5 rounded text-xs transition ${
+                showProperties && activeSidebarTab === 'layers' ? "bg-indigo-50 text-indigo-700 font-bold" : "hover:bg-neutral-100 text-neutral-700"
+              }`}
+            >
+              <Layers size={14} />
+              <span>Layer</span>
+            </button>
+          )}
+
+          {workspaceMode !== 'tecnigrafo' && (
+            <button
+              onClick={() => {
+                handleGuideClick('Tavole CAD');
+                if (activeSidebarTab === 'tavole' && showProperties) {
+                  setShowProperties(false);
+                } else {
+                  setActiveSidebarTab('tavole');
+                  setShowProperties(true);
+                }
+              }}
+              title="Tavole da stampa (A0-A4)"
+              className={`flex items-center gap-1 px-2.5 py-1.5 rounded text-xs transition ${
+                showProperties && activeSidebarTab === 'tavole' ? "bg-indigo-50 text-indigo-700 font-bold" : "hover:bg-neutral-100 text-neutral-700"
+              }`}
+            >
+              <Layers size={14} />
+              <span>Tavole</span>
+            </button>
           )}
         </div>
 
-        {categories.map((cat) => (
+        {/* Right side: File IO, Manual, Geco AI */}
+        <div className="flex items-center gap-1.5">
+          <button 
+            onClick={() => { handleGuideClick('Apri'); handleOpenFile(); }}
+            title="Apri file .gecola"
+            className="flex items-center gap-1 px-2 py-1.5 hover:bg-neutral-100 rounded text-neutral-700 text-xs transition"
+          >
+            <FolderOpen size={14} />
+            <span>Apri</span>
+          </button>
+          <button 
+            onClick={() => { handleGuideClick('Salva'); handleSaveAsFile(); }}
+            title="Salva file di lavoro"
+            className="flex items-center gap-1 px-2 py-1.5 hover:bg-neutral-100 rounded text-neutral-700 text-xs transition"
+          >
+            <Save size={14} />
+            <span>Salva</span>
+          </button>
           <button
-            key={cat.name}
+            onClick={async () => {
+              handleGuideClick('Salva');
+              const { exportDXF } = await import("./utils/dxfExport");
+              exportDXF(entities, layers, "disegno.dxf");
+            }}
+            title="Esporta file DXF compatibile con AutoCAD/CAD"
+            className="flex items-center gap-1 px-2.5 py-1.5 bg-blue-50 text-blue-700 hover:bg-blue-100 rounded text-xs font-bold border border-blue-200 transition"
+          >
+            <span className="font-mono text-xs">DXF</span>
+          </button>
+          
+          <button
             onClick={() => {
-              setSelectedCategory(cat.name);
-              // If clicking "Seleziona", immediately activate the Select tool and show properties
-              if (cat.name === "Seleziona") {
-                setSelectedTool("Select");
+              if (activeSidebarTab === 'manuale' && showProperties) {
+                setShowProperties(false);
+                setShowFloatingManual(false);
+              } else {
+                setActiveSidebarTab('manuale');
                 setShowProperties(true);
-              }
-              if (cat.name === "BIM") {
-                setActiveSidebarTab("bim");
-                setShowProperties(true);
+                setShowFloatingManual(true);
               }
             }}
-            className={`px-4 flex flex-col items-center justify-center gap-0.5 ${selectedCategory === cat.name ? "bg-neutral-100" : "hover:bg-neutral-200"}`}
+            className={`flex items-center gap-1 px-2.5 py-1.5 rounded text-xs transition ${
+              showProperties && activeSidebarTab === 'manuale' ? "bg-emerald-50 text-emerald-800 font-bold" : "hover:bg-neutral-100 text-neutral-700"
+            }`}
+            title="Guida rapida e manuale operativo"
           >
-            <cat.icon size={16} />
-            <span className="text-[10px]">{cat.name}</span>
+            <BookOpen size={14} className={showProperties && activeSidebarTab === 'manuale' ? "text-emerald-600" : "text-neutral-500"} />
+            <span>Manuale</span>
           </button>
-        ))}
-        <button
-          onClick={() => setIsFloorManagerOpen(true)}
-          className="flex flex-col items-center justify-center px-4 hover:bg-neutral-200 border-l border-neutral-300 gap-0.5 text-neutral-700"
-          title="Gestione dei piani/livelli di progetto"
-        >
-          <Building size={16} className="text-indigo-600 animate-pulse" />
-          <span className="text-[10px] font-bold">Gestione Piani</span>
-        </button>
 
-        <div className="flex items-center justify-center px-4 gap-3 border-l border-neutral-300 bg-neutral-50/50">
           <button
-            onClick={() => { handleGuideClick('Annulla'); undo(); }}
-            onMouseEnter={() => handleGuideHover('Annulla')}
-            title="Annulla"
-            className="p-1.5 bg-white rounded shadow-sm border border-neutral-200 hover:bg-neutral-100 hover:text-indigo-600 transition-colors text-neutral-600"
+            onClick={() => setIsGecoOpen(!isGecoOpen)}
+            className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded text-xs font-semibold transition ${
+              isGecoOpen ? "bg-emerald-100 text-emerald-800" : "hover:bg-neutral-100 text-emerald-700"
+            }`}
+            title="Assistente Geco AI"
           >
-            <Undo size={16} />
-          </button>
-          <button
-            onClick={() => { handleGuideClick('Ripristina'); redo(); }}
-            onMouseEnter={() => handleGuideHover('Ripristina')}
-            title="Ripristina"
-            className="p-1.5 bg-white rounded shadow-sm border border-neutral-200 hover:bg-neutral-100 hover:text-indigo-600 transition-colors text-neutral-600"
-          >
-            <Redo size={16} />
+            <Bot size={15} className={isGecoOpen ? "text-emerald-600 animate-pulse" : "text-emerald-500"} />
+            <span>Geco AI</span>
           </button>
         </div>
 
-        <button
-          onClick={() => {
-            handleGuideClick('Layers');
-            if (activeSidebarTab === 'layers' && showProperties) {
-              setShowProperties(false);
-            } else {
-              setActiveSidebarTab('layers');
-              setShowProperties(true);
-            }
-          }}
-          onMouseEnter={() => handleGuideHover('Layers')}
-          className={`px-4 flex flex-col items-center justify-center gap-0.5 border-l border-neutral-300 ${showProperties && activeSidebarTab === 'layers' ? "bg-indigo-50 text-indigo-700 font-bold" : "hover:bg-neutral-200 text-neutral-600"}`}
-        >
-          <Layers size={16} />
-          <span className="text-[10px]">Layer</span>
-        </button>
+      </header>
 
-        <button
-          onClick={() => {
-            handleGuideClick('Penne');
-            if (activeSidebarTab === 'penne' && showProperties) {
-              // If we are already in the penne tab, but a specific tool help OR entity is selected,
-              // we reset the state to show the default pen settings instead of closing the menu.
-              if (selectedTool === 'Hatch' || selectedTool === 'Specchio' || selectedTool === 'Dimension' || selectedId) {
-                setSelectedTool('Select');
-                setSelectedId(null);
-              } else {
-                setShowProperties(false);
+      {/* Sub-toolbar (Adaptive depending on Workspace Mode) */}
+      <div className={`h-11 border-b flex items-center px-4 gap-2 transition-colors ${
+        workspaceMode === 'tecnigrafo' 
+          ? 'bg-neutral-900 border-neutral-800 text-neutral-100' 
+          : 'bg-white border-neutral-300'
+      }`}>
+        {workspaceMode === 'tecnigrafo' ? (
+          <TecnigrafoToolbar
+            selectedTool={selectedTool}
+            onSelectTool={(tool) => handleToolClick(tool)}
+            isOffsetAidActive={isOffsetAidActive}
+            isSnapActive={effectiveSnapActive}
+            onToggleSnap={() => setIsSnapActive(!isSnapActive)}
+            orthoMode={effectiveOrthoMode}
+            onToggleOrtho={() => setOrthoMode(!orthoMode)}
+            onUndo={undo}
+            onRedo={redo}
+            onZoomFit={() => cadCanvasRef.current?.zoomFit?.()}
+            defaultLineStyle={defaultLineStyle}
+            onChangeLineStyle={(newStyle) => {
+              setDefaultLineStyle(prev => ({ ...prev, ...newStyle }));
+              if (selectedTool !== 'Line' && selectedTool !== 'Circle' && selectedTool !== 'Rectangle' && selectedTool !== 'Arc') {
+                handleToolClick('Line');
               }
-            } else {
+            }}
+            onOpenPenne={() => {
               setActiveSidebarTab('penne');
               setShowProperties(true);
-              // Ensure we don't carry over a tool that might hide the pen settings
-              if (selectedTool === 'Hatch' || selectedTool === 'Specchio' || selectedTool === 'Dimension') {
-                setSelectedTool('Select');
-              }
-            }
-          }}
-          onMouseEnter={() => handleGuideHover('Penne')}
-          className={`px-4 flex flex-col items-center justify-center gap-0.5 border-l border-neutral-300 ${showProperties && activeSidebarTab === 'penne' ? "bg-neutral-100 text-indigo-600 font-bold" : "hover:bg-neutral-200"}`}
-        >
-          <Pen size={16} />
-          <span className="text-[10px]">Penne</span>
-        </button>
-        <button
-          onClick={() => {
-            handleGuideClick('Testo');
-            if (activeSidebarTab === 'testo' && showProperties) {
-              setShowProperties(false);
-            } else {
-              setActiveSidebarTab('testo');
-              setShowProperties(true);
-            }
-          }}
-          onMouseEnter={() => handleGuideHover('Testo')}
-          className={`px-4 flex flex-col items-center justify-center gap-0.5 border-l border-neutral-300 ${showProperties && activeSidebarTab === 'testo' ? "bg-neutral-100 text-indigo-600 font-bold" : "hover:bg-neutral-200"}`}
-        >
-          <Type size={16} />
-          <span className="text-[10px]">Testo</span>
-        </button>
-        <button
-          onClick={() => {
-            handleGuideClick('BIM');
-            if (activeSidebarTab === 'bim' && showProperties) {
-              setShowProperties(false);
-            } else {
-              setActiveSidebarTab('bim');
-              setSelectedCategory('BIM');
-              setShowProperties(true);
-            }
-          }}
-          onMouseEnter={() => handleGuideHover('BIM')}
-          className={`px-4 flex flex-col items-center justify-center gap-0.5 border-l border-neutral-300 ${showProperties && activeSidebarTab === 'bim' ? "bg-cyan-50 text-cyan-800 font-bold border-x border-cyan-200" : "hover:bg-neutral-200 text-neutral-600"}`}
-        >
-          <Building size={16} className={showProperties && activeSidebarTab === 'bim' ? "text-cyan-600 animate-pulse" : "text-cyan-600"} />
-          <span className="text-[10px] font-bold">BIM</span>
-        </button>
-        <button
-          onClick={() => {
-            setIsPrezzarioOpen(!isPrezzarioOpen);
-          }}
-          className={`px-4 flex flex-col items-center justify-center gap-0.5 border-l border-neutral-300 ${isPrezzarioOpen ? "bg-amber-50 text-amber-950 font-bold border-x border-amber-200" : "hover:bg-neutral-200 text-neutral-600"}`}
-          title="Apri Prezzario & Computo Metrico Gecola"
-        >
-          <Clipboard size={16} className={isPrezzarioOpen ? "text-amber-500 animate-pulse" : "text-amber-500"} />
-          <span className="text-[10px] font-bold">Computo Gecola</span>
-        </button>
-        <div className="flex-1"></div>
-        <button
-          onClick={() => {
-            if (activeSidebarTab === 'manuale' && showProperties) {
-              setShowProperties(false);
-              setShowFloatingManual(false);
-            } else {
-              setActiveSidebarTab('manuale');
-              setShowProperties(true);
-              setShowFloatingManual(true);
-            }
-          }}
-          className={`px-5 py-1.5 flex flex-col items-center justify-center gap-0.5 border-l border-neutral-300 relative select-none h-full min-w-[76px] ${showProperties && activeSidebarTab === 'manuale' ? "bg-emerald-50 text-emerald-950 font-bold border-x border-emerald-200" : "hover:bg-neutral-200 text-neutral-600"}`}
-        >
-          {/* Spuntatura interattiva in alto a destra */}
-          <div 
-            className="absolute top-1 right-1 flex items-center justify-center z-20 p-0.5 rounded cursor-pointer hover:bg-neutral-300/40"
-            onClick={(e) => {
-              e.stopPropagation(); // Evita l'apertura del pannello laterale quando si clicca solo la spunta
-              setShowFloatingManual(!showFloatingManual);
             }}
-            title={showFloatingManual ? "Help in linea ATTIVO - Ogni volta che tocchi uno strumento avrai la guida rapida pop-up (Clicca la spunta per disattivare)" : "Help in linea DISATTIVATO - Le spiegazioni automatiche non si apriranno in pop-up per non appesantire (Clicca la spunta per attivare)"}
-          >
-            <input
-              type="checkbox"
-              checked={showFloatingManual}
-              onChange={() => {}} // Gestito interamente da onClick per compatibilità stopPropagation
-              className="w-3 h-3 cursor-pointer accent-emerald-600 border border-neutral-300 rounded transition-all focus:ring-0"
-            />
-          </div>
-
-          <BookOpen size={16} className={showProperties && activeSidebarTab === 'manuale' ? "text-emerald-600 animate-pulse" : "text-neutral-500"} />
-          <span className="text-[10px] font-bold">Manuale</span>
-        </button>
-
-        <div className="flex items-center gap-1.5 px-2 border-l border-neutral-300 bg-neutral-50 h-full">
-           <button onClick={() => { handleGuideClick('Apri'); handleOpenFile(); }} onMouseEnter={() => handleGuideHover('Apri')} title="Apri File" className="flex flex-col items-center justify-center p-1.5 hover:bg-neutral-200 text-neutral-600 rounded gap-0.5">
-             <FolderOpen size={16} />
-             <span className="text-[10px]">Apri</span>
-           </button>
-           <button onClick={() => { handleGuideClick('Salva'); handleSaveAsFile(); }} onMouseEnter={() => handleGuideHover('Salva')} title={fileHandle ? "Salva con nome" : "Salva"} className="flex flex-col items-center justify-center p-1.5 hover:bg-neutral-200 text-neutral-600 rounded gap-0.5">
-             <Save size={16} />
-             <span className="text-[10px]">Salva</span>
-           </button>
-           <button onClick={() => { handleGuideClick('Importa'); importInputRef.current?.click(); }} onMouseEnter={() => handleGuideHover('Importa')} title="Importa file .dxf o .dwg" className="flex flex-col items-center justify-center p-1.5 hover:bg-emerald-100 text-emerald-600 hover:text-emerald-700 rounded gap-0.5 border-l border-neutral-200 pl-2 transition-colors">
-             <FileUp size={16} />
-             <span className="text-[10px] font-bold">Importa</span>
-           </button>
-           <button onClick={() => { handleGuideClick('Lettore DXF'); setIsDXFTextReaderOpen(true); }} onMouseEnter={() => handleGuideHover('Lettore DXF')} title="Genera disegno da testo/codice DXF" className="flex flex-col items-center justify-center p-1.5 hover:bg-teal-50 text-teal-600 hover:text-teal-700 rounded gap-0.5 border-l border-neutral-200 pl-2 transition-colors">
-             <Code size={16} />
-             <span className="text-[10px] font-bold">Lettore DXF</span>
-           </button>
-        </div>
-        <button
-          onClick={() => {
-            handleGuideClick('Tavole CAD');
-            if (activeSidebarTab === 'tavole' && showProperties) {
-              setShowProperties(false);
-            } else {
-              setActiveSidebarTab('tavole');
-              setShowProperties(true);
-            }
-          }}
-          onMouseEnter={() => handleGuideHover('Tavole CAD')}
-          className={`px-4 flex flex-col items-center justify-center gap-0.5 ${showProperties && activeSidebarTab === 'tavole' ? "bg-indigo-50 border-x border-indigo-200" : "hover:bg-neutral-200 border-l border-neutral-300"}`}
-        >
-          <Layers size={16} className={`${activeSidebarTab === 'tavole' && showProperties ? "text-indigo-600 animate-pulse" : "text-neutral-500"}`} />
-          <span className={`text-[10px] font-bold ${activeSidebarTab === 'tavole' && showProperties ? "text-indigo-700" : "text-neutral-600"}`}>Tavole CAD</span>
-        </button>
-        <button
-          onClick={async () => {
-            handleGuideClick('Salva');
-            const { exportDXF } = await import("./utils/dxfExport");
-            exportDXF(entities, layers, "disegno.dxf");
-          }}
-          onMouseEnter={() => handleGuideHover('Salva')}
-          className="px-4 flex flex-col items-center justify-center gap-0.5 hover:bg-neutral-200 text-blue-600 border-l border-neutral-300"
-        >
-          <span className="font-bold text-sm">DXF</span>
-          <span className="text-[10px] font-bold">Salva CAD</span>
-        </button>
-      </header>
-      <div className="h-8 bg-white border-b border-neutral-300 flex items-center px-4 gap-2">
-        {selectedCategory === "BIM" ? (
+          />
+        ) : workspaceMode === 'bim' || selectedCategory === "BIM" ? (
           <BIMTopBarControls
             selectedTool={selectedTool}
             setSelectedTool={setSelectedTool}
@@ -2682,6 +2996,33 @@ const MASONRY_TYPES = [
             isStratifiedView={isStratifiedView}
             setIsStratifiedView={setIsStratifiedView}
           />
+        ) : workspaceMode === 'computo' ? (
+          <div className="flex items-center justify-between w-full text-xs">
+            <div className="flex items-center gap-3">
+              <span className="flex items-center gap-1.5 font-bold text-emerald-700 bg-emerald-50 px-2.5 py-1 rounded border border-emerald-200">
+                <Clipboard size={14} />
+                Ambiente Computo Metrico & Prezzario Attivo
+              </span>
+              <span className="text-neutral-500">
+                Disegna muri, finestre e quote per calcolare automaticamente il computo estimativo in tempo reale.
+              </span>
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => setIsAnalyzerOpen(true)}
+                className="flex items-center gap-1 px-2.5 py-1 bg-indigo-50 text-indigo-700 hover:bg-indigo-100 rounded border border-indigo-200 font-semibold"
+              >
+                <FileSearch size={13} />
+                <span>Carica Listino / Dati</span>
+              </button>
+              <button
+                onClick={() => setIsPrezzarioOpen(true)}
+                className="flex items-center gap-1 px-3 py-1 bg-emerald-600 hover:bg-emerald-500 text-white rounded font-bold shadow-xs"
+              >
+                <span>Visualizza Computo</span>
+              </button>
+            </div>
+          </div>
         ) : (
           selectedCategoryTools.map((tool) => (
             <button
@@ -2705,7 +3046,6 @@ const MASONRY_TYPES = [
                   ? "bg-indigo-100 text-indigo-900 border border-indigo-300 font-bold shadow-xs" 
                   : "hover:bg-neutral-200"
               }`}
-              title="Trascina e rilascia nel foglio per creare un menu speciale preferiti!"
             >
               <tool.icon size={12} />
               {tool.name}
@@ -2866,10 +3206,10 @@ const MASONRY_TYPES = [
               // SE CLICCO SU BLOC FN DEVE SEMPRE ATTIVARSI LA LINEA
               if (next) {
                 setOrthoMode(true);
-                setSelectedTool('Line');
-                setSelectedCategory("Disegno");
-                handleToolClick("Line");
               }
+              setSelectedTool('Line');
+              setSelectedCategory("Disegno");
+              handleToolClick("Line");
               setCancelTrigger(prev => prev + 1);
             }}
             className={`px-2 py-0.5 rounded flex items-center gap-1 text-xs transition-all ${
@@ -2883,7 +3223,84 @@ const MASONRY_TYPES = [
             <span className="font-bold">BLOC FN</span>
             <span className="text-[9px] opacity-60">Polilinea</span>
           </button>
-          <div className="flex gap-1 rounded bg-neutral-200 p-0.5">
+          <div className="flex gap-1 rounded bg-neutral-200 p-0.5 items-center">
+            <div className="flex items-center gap-1 border-r border-neutral-300 pr-2 mr-1">
+                <span className="text-[9px] font-bold text-neutral-400">Quick:</span>
+                <input
+                    type="number"
+                    className="w-16 h-6 rounded text-[10px] font-bold text-center border border-neutral-300 focus:outline-none focus:border-indigo-500"
+                    placeholder="Val"
+                    value={lastInsertedParameter?.value || ''}
+                    onChange={(e) => {
+                        const val = parseFloat(e.target.value);
+                        if (!isNaN(val) && lastInsertedParameter) {
+                            handleSetLastInsertedParameter({...lastInsertedParameter, value: val, isLocked: true});
+                            if (selectedId) {
+                                updateEntityParameter(selectedId, lastInsertedParameter.type as any, val);
+                            }
+                        }
+                    }}
+                />
+                <span className="text-[9px] font-bold text-neutral-400">{lastInsertedParameter?.type || '-'}</span>
+                
+                <div className="relative inline-block text-left">
+                  <button
+                    type="button"
+                    onClick={() => setShowHistoryDropdown(!showHistoryDropdown)}
+                    className="bg-neutral-300 hover:bg-neutral-400 text-neutral-800 px-2 py-1 rounded text-[9px] font-bold flex items-center gap-1 transition-colors"
+                    title="Elenco a cascata misure memorizzate"
+                  >
+                    <span>Misure ▾</span>
+                  </button>
+                  {showHistoryDropdown && (
+                    <div className="absolute left-0 top-full mt-1 w-36 bg-white border border-neutral-300 rounded-lg shadow-xl py-1 z-[99999] max-h-48 overflow-y-auto">
+                      <div className="px-2 py-1 text-[9px] font-bold text-neutral-400 border-b border-neutral-200">
+                        Cronologia Misure
+                      </div>
+                      {insertedParameterHistory.map((histVal, idx) => (
+                        <button
+                          key={idx}
+                          type="button"
+                          onClick={() => {
+                            handleSetLastInsertedParameter({
+                              type: lastInsertedParameter?.type || 'length',
+                              value: histVal,
+                              isLocked: true
+                            });
+                            setShowHistoryDropdown(false);
+                          }}
+                          className={`w-full text-left px-3 py-1.5 text-xs font-mono hover:bg-indigo-600 hover:text-white transition-colors flex items-center justify-between ${
+                            lastInsertedParameter && Math.abs(lastInsertedParameter.value - histVal) < 0.001 ? 'bg-indigo-50 text-indigo-700 font-bold' : 'text-neutral-700'
+                          }`}
+                        >
+                          <span>{histVal}</span>
+                          <span className="text-[8px] opacity-60">cm</span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (lastInsertedParameter) {
+                      handleSetLastInsertedParameter({
+                        ...lastInsertedParameter,
+                        isLocked: !lastInsertedParameter.isLocked
+                      });
+                    }
+                  }}
+                  className={`px-1.5 py-0.5 rounded text-[9px] font-bold flex items-center gap-0.5 transition-colors ${
+                    lastInsertedParameter?.isLocked 
+                      ? 'bg-amber-500 text-slate-950 shadow-sm' 
+                      : 'bg-neutral-300 text-neutral-600 hover:bg-neutral-400'
+                  }`}
+                  title={lastInsertedParameter?.isLocked ? "Snap uguali bloccato (clicca per sbloccare)" : "Snap uguali automatico (clicca per bloccare)"}
+                >
+                  {lastInsertedParameter?.isLocked ? '🔒 Bloccato' : '🔓 Libero'}
+                </button>
+            </div>
             <button
               onClick={() => {
                 handleGuideClick("Penne");
@@ -3022,162 +3439,75 @@ const MASONRY_TYPES = [
               </div>
             </div>
           )}
-          <CADCanvas
-            ref={cadCanvasRef}
-            entities={entities}
-            activeTool={selectedTool}
-            setActiveTool={setSelectedTool}
-            setEntities={updateEntitiesWithHistory}
-            setEntitiesSilent={updateEntitiesSilent}
-            liveMirrorAxis={liveMirrorAxis}
-            onUpdateLiveMirrorAxis={handleUpdateLiveMirrorAxis}
-            selectedLine={selectedLine}
-            referenceLine={referenceLine}
-            defaultTextStyle={defaultTextStyle}
-            setDefaultTextStyle={setDefaultTextStyle}
-            onCommitHistory={commitToHistory}
-            onOpenPenneSidebar={() => {
-              setActiveSidebarTab('penne');
-              setShowProperties(true);
-            }}
-            showFloatingManual={showFloatingManual}
-            onSelect={(id, entity, clickPoint) => {
-              setSelectedId(id);
-              if (id) {
-                const ent = entity || entities.find(e => e.id === id);
-                if (ent && ent.type === 'line') {
-                    const lineEnt = ent as LineEntity;
-                    
-                    // Build adjacency graph for lines to determine if they are "linked" (e.g. part of same shape)
-                    const pointsEqual = (p1: Point, p2: Point) => Math.hypot(p1.x - p2.x, p1.y - p2.y) < 0.1;
-                    const adjacency = new Map<string, string[]>();
-                    const lineEntities = entities.filter(e => e.type === 'line') as LineEntity[];
-                    for (let i = 0; i < lineEntities.length; i++) {
-                        for (let j = i + 1; j < lineEntities.length; j++) {
-                            const l1 = lineEntities[i];
-                            const l2 = lineEntities[j];
-                            if (pointsEqual(l1.start, l2.start) || pointsEqual(l1.start, l2.end) || 
-                                pointsEqual(l1.end, l2.start) || pointsEqual(l1.end, l2.end)) {
-                                if (!adjacency.has(l1.id)) adjacency.set(l1.id, []);
-                                if (!adjacency.has(l2.id)) adjacency.set(l2.id, []);
-                                adjacency.get(l1.id)!.push(l2.id);
-                                adjacency.get(l2.id)!.push(l1.id);
+           <div className="relative w-full h-full">
+              {isParameterInputOpen && lastInsertedParameter && parameterInputPos && (
+                 <ParameterInputOverlay 
+                    type={lastInsertedParameter.type} 
+                    value={lastInsertedParameter.value}
+                    position={parameterInputPos}
+                    onValueChange={(val) => {
+                        if (selectedId) updateEntityParameter(selectedId, lastInsertedParameter.type as any, val);
+                        handleSetLastInsertedParameter({ ...lastInsertedParameter, value: val, isLocked: true });
+                    }}
+                    onClose={() => setIsParameterInputOpen(false)}
+                 />
+              )}
+              <CADCanvas
+                ref={cadCanvasRef}
+                entities={entities}
+                activeTool={selectedTool}
+                setActiveTool={setSelectedTool}
+                setEntities={updateEntitiesWithHistory}
+                setEntitiesSilent={updateEntitiesSilent}
+                liveMirrorAxis={liveMirrorAxis}
+                onUpdateLiveMirrorAxis={handleUpdateLiveMirrorAxis}
+                selectedLine={selectedLine}
+                selectedLineClickPoint={selectedLineClickPoint}
+                referenceLine={referenceLine}
+                defaultTextStyle={defaultTextStyle}
+                setDefaultTextStyle={setDefaultTextStyle}
+                onCommitHistory={commitToHistory}
+                onOpenPenneSidebar={() => {
+                  setActiveSidebarTab('penne');
+                  setShowProperties(true);
+                }}
+             onContextMenu={handleRightClickShortcut}
+                   lastInsertedParameter={lastInsertedParameter}
+                onLastParameterChange={(param) => {
+                  handleSetLastInsertedParameter(param);
+                }}
+                onSelect={(id, entity, clickPoint) => {
+                  setSelectedId(id);
+                  if (id) {
+                    const ent = entity || entities.find(e => e.id === id);
+                    if (ent) {
+                        console.log("Entity found:", ent.id, ent.type);
+                        if (ent.type === 'line') {
+                            const line = ent as any; 
+                            const len = Math.hypot(line.end.x - line.start.x, line.end.y - line.start.y) / 100;
+                            handleSetLastInsertedParameter({ type: 'length', value: parseFloat(len.toFixed(2)) });
+                        } else if (ent.type === 'circle') {
+                            const circ = ent as any;
+                            handleSetLastInsertedParameter({ type: 'radius', value: parseFloat((circ.radius / 100).toFixed(2)) });
+                        }
+                        if (clickPoint) {
+                            setParameterInputPos({ x: clickPoint.x, y: clickPoint.y });
+                        } else {
+                            let pos: Point | null = null;
+                            if (ent.type === 'line') {
+                                const line = ent as any;
+                                pos = line.start;
+                            } else if (ent.type === 'circle') {
+                                const circ = ent as any;
+                                pos = { x: circ.x, y: circ.y };
+                            }
+                            if (pos) {
+                                setParameterInputPos({ x: pos.x, y: pos.y });
                             }
                         }
                     }
-
-                    const areLinked = (id1: string, id2: string) => {
-                        const visited = new Set<string>();
-                        const queue = [id1];
-                        visited.add(id1);
-                        let head = 0;
-                        while (head < queue.length) {
-                            const curr = queue[head++];
-                            if (curr === id2) return true;
-                            const neighbors = adjacency.get(curr) || [];
-                            for (const n of neighbors) {
-                                if (!visited.has(n)) {
-                                    visited.add(n);
-                                    queue.push(n);
-                                }
-                            }
-                        }
-                        return false;
-                    };
-
-                    let bestLinkedFacingDist = Infinity;
-                    let bestLinkedFacing: LineEntity | null = null;
-
-                    let bestUnlinkedFacingDist = Infinity;
-                    let bestUnlinkedFacing: LineEntity | null = null;
-                    
-                    let bestLinkedGeneralDist = Infinity;
-                    let bestLinkedGeneral: LineEntity | null = null;
-
-                    let bestUnlinkedGeneralDist = Infinity;
-                    let bestUnlinkedGeneral: LineEntity | null = null;
-                    
-                    entities.forEach(other => {
-                        if (other.type === 'line' && other.id !== lineEnt.id) {
-                            const angle1 = Math.atan2(lineEnt.end.y - lineEnt.start.y, lineEnt.end.x - lineEnt.start.x);
-                            const angle2 = Math.atan2(other.end.y - other.start.y, other.end.x - other.start.x);
-                            
-                            // Check if they are parallel
-                            if (Math.abs(Math.sin(angle1 - angle2)) < 0.1) {
-                                const A = other.start.y - other.end.y;
-                                const B = other.end.x - other.start.x;
-                                const C = other.start.x * other.end.y - other.end.x * other.start.y;
-                                const lenSq = A*A + B*B;
-                                const len = Math.hypot(A, B);
-                                
-                                if (len > 0) {
-                                    // Distance from click point (or midpoint) to the other infinite line
-                                    const refX = clickPoint ? clickPoint.x : (lineEnt.start.x + lineEnt.end.x) / 2;
-                                    const refY = clickPoint ? clickPoint.y : (lineEnt.start.y + lineEnt.end.y) / 2;
-                                    
-                                    const dist = Math.abs(A * refX + B * refY + C) / len;
-                                    
-                                    // Make sure distance is not near zero (don't snap to itself or collinear segments)
-                                    if (dist > 0.001) {
-                                        // Find projection of ref point onto the other line
-                                        const projX = (B * (B * refX - A * refY) - A * C) / lenSq;
-                                        const projY = (A * (-B * refX + A * refY) - B * C) / lenSq;
-                                        
-                                        // Check if projection is within the bounds of the other segment
-                                        const t = Math.abs(other.end.x - other.start.x) > Math.abs(other.end.y - other.start.y) 
-                                            ? (projX - other.start.x) / (other.end.x - other.start.x)
-                                            : (projY - other.start.y) / (other.end.y - other.start.y);
-                                            
-                                        const isStrictlyFacing = t >= -0.05 && t <= 1.05;
-                                        const isLinkedLine = areLinked(lineEnt.id, other.id);
-
-                                        if (isStrictlyFacing) {
-                                            if (isLinkedLine && dist < bestLinkedFacingDist) {
-                                                bestLinkedFacingDist = dist;
-                                                bestLinkedFacing = other as LineEntity;
-                                            } else if (!isLinkedLine && dist < bestUnlinkedFacingDist) {
-                                                bestUnlinkedFacingDist = dist;
-                                                bestUnlinkedFacing = other as LineEntity;
-                                            }
-                                        }
-                                        
-                                        if (isLinkedLine && dist < bestLinkedGeneralDist) {
-                                            bestLinkedGeneralDist = dist;
-                                            bestLinkedGeneral = other as LineEntity;
-                                        } else if (!isLinkedLine && dist < bestUnlinkedGeneralDist) {
-                                            bestUnlinkedGeneralDist = dist;
-                                            bestUnlinkedGeneral = other as LineEntity;
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    });
-                    
-                    const finalOppositeLine = bestLinkedFacing || bestUnlinkedFacing || bestLinkedGeneral || bestUnlinkedGeneral;
-                    
-                    setSelectedLine(lineEnt);
-                    setSelectedLineClickPoint(clickPoint || null);
-                    setOriginalLine(lineEnt);
-                    setReferenceLine(finalOppositeLine);
-                    setIsLineEditorOpen(true);
-                }
-                
-                setShowProperties(true);
-                if (ent && ent.type === 'text') {
-                  setActiveSidebarTab('testo');
-                } else if (ent && ent.isBIM) {
-                  setActiveSidebarTab('bim');
-                } else {
-                  setActiveSidebarTab('penne');
-                }
-              } else {
-                setSelectedLine(null);
-                setSelectedLineClickPoint(null);
-                setIsLineEditorOpen(false);
-              }
-            }}
-            onContextMenu={handleRightClickShortcut}
+                  }
+                }}
             activeLayerId={activeLayerId}
             layers={layers}
             defaultLineStyle={defaultLineStyle}
@@ -3224,6 +3554,7 @@ const MASONRY_TYPES = [
             isContinuousMode={isContinuousMode}
             cancelTrigger={cancelTrigger}
             parallelTrigger={parallelTrigger}
+            isOffsetAidActive={isOffsetAidActive}
             tavole={tavole}
             onUpdateTavole={setTavole}
             onDoubleClickTavola={setDoubleClickedTavolaId}
@@ -3256,6 +3587,7 @@ const MASONRY_TYPES = [
                 setIsRotateScaleOpen(true);
             }}
           />
+           </div>
 
           {(() => {
             const rotationTargetEntity = entities.find(e => e.id === rotationEntityId);
@@ -7005,6 +7337,7 @@ const MASONRY_TYPES = [
                 setIsLineEditorOpen(false);
                 setSelectedLine(null);
                 setOriginalLine(null);
+                cadCanvasRef.current?.alignCursorToLineEndpoint(updatedLine);
             }}
           />
       )}
@@ -7026,6 +7359,7 @@ const MASONRY_TYPES = [
             <button 
               onClick={() => {
                 setInitialSelectedIds(quickActions.ids);
+                setIsOffsetAidActive(true);
                 setSelectedTool('Move');
                 setQuickActions(null);
               }}
@@ -7039,6 +7373,7 @@ const MASONRY_TYPES = [
             <button 
               onClick={() => {
                 setInitialSelectedIds(quickActions.ids);
+                setIsOffsetAidActive(true);
                 setSelectedTool('Copy');
                 setQuickActions(null);
               }}
@@ -7132,6 +7467,7 @@ const MASONRY_TYPES = [
         floors={floors}
         prezzarioItems={dynamicPrezzario}
         onOpenImporter={() => setPriceListImporterTargetFamily('GLOBAL')}
+        isWorkspaceMode={workspaceMode === 'computo'}
       />
 
       <PriceListImporter 
@@ -7140,6 +7476,47 @@ const MASONRY_TYPES = [
         onClose={() => setPriceListImporterTargetFamily(null)}
         onImport={handleImportPriceList}
       />
+
+      <GecoAssistant
+        activeTool={selectedTool}
+        setActiveTool={setSelectedTool}
+        entitiesCount={entities.length}
+        lastInsertedParameter={lastInsertedParameter}
+        onUpdateParameter={handleSetLastInsertedParameter}
+        isOpen={isGecoOpen}
+        onToggle={() => setIsGecoOpen(!isGecoOpen)}
+      />
+
+      {/* Welcome & Workspace Switcher Hub Modal */}
+      <WorkspaceModeModal
+        isOpen={isWorkspaceModalOpen}
+        onClose={() => setIsWorkspaceModalOpen(false)}
+        currentMode={workspaceMode}
+        onSelectMode={handleSelectWorkspaceMode}
+      />
+
+      {/* Tecnigrafo Quick Context Menu on Right Click */}
+      {contextMenuPos && (
+        <TecnigrafoContextMenu
+          x={contextMenuPos.x}
+          y={contextMenuPos.y}
+          onClose={() => setContextMenuPos(null)}
+          onSelectTool={(tool) => {
+            handleToolClick(tool);
+            setContextMenuPos(null);
+          }}
+          selectedTool={selectedTool}
+          isSnapActive={effectiveSnapActive}
+          onToggleSnap={() => setIsSnapActive(!isSnapActive)}
+          orthoMode={effectiveOrthoMode}
+          onToggleOrtho={() => setOrthoMode(!orthoMode)}
+          onUndo={undo}
+          onRedo={redo}
+          onZoomFit={() => cadCanvasRef.current?.zoomFit?.()}
+          onSwitchWorkspace={handleSelectWorkspaceMode}
+          currentMode={workspaceMode}
+        />
+      )}
 
       {/* BIM Dialog Submenus were removed and redesigned in the inline top bars for higher efficiency */}
     </div>
