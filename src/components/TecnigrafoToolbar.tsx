@@ -13,7 +13,9 @@ import {
   Maximize2,
   Compass,
   Grid,
-  Move
+  Move,
+  Type,
+  Lightbulb
 } from "lucide-react";
 
 const ParallelIcon = ({ size = 16, className = "" }: { size?: number; className?: string }) => (
@@ -62,6 +64,8 @@ interface TecnigrafoToolbarProps {
   onUndo: () => void;
   onRedo: () => void;
   onZoomFit?: () => void;
+  isPencilVisible?: boolean;
+  onTogglePencilVisibility?: () => void;
   defaultLineStyle: {
     color: string;
     lineWidth: number;
@@ -88,6 +92,8 @@ export const TecnigrafoToolbar: React.FC<TecnigrafoToolbarProps> = ({
   onUndo,
   onRedo,
   onZoomFit,
+  isPencilVisible = true,
+  onTogglePencilVisibility,
   defaultLineStyle,
   onChangeLineStyle,
   onOpenPenne
@@ -126,6 +132,13 @@ export const TecnigrafoToolbar: React.FC<TecnigrafoToolbarProps> = ({
       label: "Misure",
       shortcut: "D",
       icon: Ruler,
+      isCore: true
+    },
+    {
+      id: "Testo",
+      label: "Testo",
+      shortcut: "T",
+      icon: Type,
       isCore: true
     },
     {
@@ -241,37 +254,67 @@ export const TecnigrafoToolbar: React.FC<TecnigrafoToolbarProps> = ({
 
       {/* Traditional & CAD Pen Switcher (Matita | China | CAD) */}
       <div className="flex items-center gap-1 bg-neutral-950/90 p-0.5 rounded-lg border border-neutral-700/80">
-        <button
-          onClick={() => {
-            onChangeLineStyle?.({
-              mode: 'pencil',
-              color: defaultLineStyle.mode === 'pencil'
-                ? (defaultLineStyle.color === '#bbbbbb' ? '#444444' : defaultLineStyle.color === '#444444' ? '#111111' : '#bbbbbb')
-                : '#444444',
-              lineWidth: defaultLineStyle.mode === 'pencil'
-                ? (defaultLineStyle.color === '#bbbbbb' ? 2 : defaultLineStyle.color === '#444444' ? 3 : 1)
-                : 2,
-              dashed: false
-            });
-          }}
-          className={`flex items-center gap-1 px-2 py-1 rounded-md text-[10px] font-bold transition-all ${
-            defaultLineStyle.mode === 'pencil'
-              ? "bg-amber-500/25 text-amber-300 border border-amber-400/60 shadow-sm"
-              : "text-neutral-400 hover:text-neutral-200 hover:bg-neutral-800"
-          }`}
-          title="Matita Grafite Tradizionale (Clicca per cambiare mina: 2H / HB / 2B)"
-        >
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" className="shrink-0">
-            <path d="M3 21L5.5 14.5L16.5 3.5C17.3 2.7 18.7 2.7 19.5 3.5L20.5 4.5C21.3 5.3 21.3 6.7 20.5 7.5L9.5 18.5L3 21Z" stroke="currentColor" strokeWidth="2" strokeLinejoin="round"/>
-            <path d="M3 21L6.5 19.5L4.5 17.5L3 21Z" fill="currentColor"/>
-          </svg>
-          <span>Matita</span>
-          {defaultLineStyle.mode === 'pencil' && (
-            <span className="text-[9px] font-mono bg-amber-500 text-neutral-950 px-1 rounded font-black">
-              {defaultLineStyle.color === '#bbbbbb' ? '2H' : defaultLineStyle.color === '#444444' ? 'HB' : '2B'}
-            </span>
-          )}
-        </button>
+        {/* Matita + Lampadina Costruzioni */}
+        <div className="flex items-center">
+          <button
+            onClick={() => {
+              onChangeLineStyle?.({
+                mode: 'pencil',
+                color: defaultLineStyle.mode === 'pencil'
+                  ? (defaultLineStyle.color === '#bbbbbb' ? '#444444' : defaultLineStyle.color === '#444444' ? '#111111' : '#bbbbbb')
+                  : '#444444',
+                lineWidth: defaultLineStyle.mode === 'pencil'
+                  ? (defaultLineStyle.color === '#bbbbbb' ? 2 : defaultLineStyle.color === '#444444' ? 3 : 1)
+                  : 2,
+                dashed: false
+              });
+            }}
+            className={`flex items-center gap-1 px-2 py-1 rounded-l-md text-[10px] font-bold transition-all ${
+              defaultLineStyle.mode === 'pencil'
+                ? "bg-amber-500/25 text-amber-300 border-y border-l border-amber-400/60 shadow-sm"
+                : "text-neutral-400 hover:text-neutral-200 hover:bg-neutral-800"
+            }`}
+            title="Matita Grafite Tradizionale (Clicca per cambiare mina: 2H / HB / 2B)"
+          >
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" className="shrink-0">
+              <path d="M3 21L5.5 14.5L16.5 3.5C17.3 2.7 18.7 2.7 19.5 3.5L20.5 4.5C21.3 5.3 21.3 6.7 20.5 7.5L9.5 18.5L3 21Z" stroke="currentColor" strokeWidth="2" strokeLinejoin="round"/>
+              <path d="M3 21L6.5 19.5L4.5 17.5L3 21Z" fill="currentColor"/>
+            </svg>
+            <span>Matita</span>
+            {defaultLineStyle.mode === 'pencil' && (
+              <span className="text-[9px] font-mono bg-amber-500 text-neutral-950 px-1 rounded font-black">
+                {defaultLineStyle.color === '#bbbbbb' ? '2H' : defaultLineStyle.color === '#444444' ? 'HB' : '2B'}
+              </span>
+            )}
+          </button>
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              onTogglePencilVisibility?.();
+            }}
+            className={`px-1.5 py-1 rounded-r-md transition-all border-l border-neutral-700/60 flex items-center justify-center ${
+              defaultLineStyle.mode === 'pencil' ? "border-y border-r border-amber-400/60" : ""
+            } ${
+              isPencilVisible
+                ? "bg-amber-500/20 text-amber-300 hover:bg-amber-500/35"
+                : "bg-neutral-900/90 text-neutral-600 hover:text-neutral-400 hover:bg-neutral-800"
+            }`}
+            title={
+              isPencilVisible
+                ? "💡 Lampadina ACCESA: Linee di costruzione a matita VISIBILI (Clicca per nasconderle e pulire il disegno)"
+                : "💡 Lampadina SPENTA: Linee di costruzione a matita NASCOSTE (Clicca per renderle visibili)"
+            }
+          >
+            <Lightbulb
+              size={13}
+              className={
+                isPencilVisible
+                  ? "fill-amber-400 text-amber-400 drop-shadow-[0_0_6px_rgba(251,191,36,0.9)]"
+                  : "text-neutral-500 opacity-50"
+              }
+            />
+          </button>
+        </div>
 
         <button
           onClick={() => {

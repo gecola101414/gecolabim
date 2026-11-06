@@ -466,10 +466,16 @@ export default function App() {
   useEffect(() => {
     appEntitiesRef.current = entities;
   }, [entities]);
+  const [isPencilVisible, setIsPencilVisible] = useState<boolean>(() => {
+    const saved = localStorage.getItem('isPencilVisible');
+    return saved !== null ? saved === 'true' : true;
+  });
+
   const [layers, setLayers] = useState<Layer[]>(() => {
     const saved = localStorage.getItem('layers');
-    return saved ? JSON.parse(saved) : [
+    const defaultLayers: Layer[] = [
       { id: "0", name: "0", visible: true, frozen: false },
+      { id: "Costruzioni", name: "Costruzioni (Matita)", visible: true, frozen: false },
       { id: "p1", name: "p1", visible: true, frozen: false },
       { id: "p2", name: "p2", visible: true, frozen: false },
       { id: "p4", name: "p4", visible: true, frozen: false },
@@ -478,7 +484,39 @@ export default function App() {
       { id: "Spessori", name: "Spessori", visible: true, frozen: false },
       { id: "Hatch", name: "Hatch", visible: true, frozen: false },
     ];
+    if (!saved) return defaultLayers;
+    try {
+      const parsed: Layer[] = JSON.parse(saved);
+      if (!parsed.some(l => l.id === 'Costruzioni' || l.id === 'Matita')) {
+        parsed.splice(1, 0, { id: "Costruzioni", name: "Costruzioni (Matita)", visible: true, frozen: false });
+      }
+      return parsed;
+    } catch {
+      return defaultLayers;
+    }
   });
+
+  const togglePencilVisibility = () => {
+    setIsPencilVisible(prev => {
+      const next = !prev;
+      localStorage.setItem('isPencilVisible', String(next));
+      setLayers(curr => {
+        let found = false;
+        const updated = curr.map(l => {
+          if (l.id === 'Costruzioni' || l.id === 'Matita') {
+            found = true;
+            return { ...l, visible: next };
+          }
+          return l;
+        });
+        if (!found) {
+          updated.push({ id: 'Costruzioni', name: 'Costruzioni (Matita)', visible: next, frozen: false });
+        }
+        return updated;
+      });
+      return next;
+    });
+  };
   const [activeLayerId, setActiveLayerId] = useState<string>(() => localStorage.getItem('activeLayerId') || "0");
   const [defaultLineStyle, setDefaultLineStyle] = useState<{
     color: string;
@@ -540,7 +578,7 @@ export default function App() {
     }
     return [
       { id: "fav-left", tools: ["Orto", "Tecnigrafo", "Polilinea"], x: 10, y: 150, isDocked: 'left' },
-      { id: "fav-right", tools: ["SNAP", "Line", "Trim", "Eraser", "Cancella", "Move", "Copy", "Join"], x: 1200, y: 150, isDocked: 'right' },
+      { id: "fav-right", tools: ["SNAP", "Line", "Testo", "Trim", "Eraser", "Cancella", "Move", "Copy", "Join"], x: 1200, y: 150, isDocked: 'right' },
       { id: "fav-top", tools: ["Specchio", "Hatch", "Raccordo"], x: 450, y: 80, isDocked: 'top' }
     ];
   });
@@ -2054,9 +2092,9 @@ const MASONRY_TYPES = [
         }
     }
 
-    // Mostra SEMPRE il menu rapido contestuale del Tecnigrafo al puntatore del mouse
+    // Menu contestuale temporaneamente bloccato per evitare aperture casuali durante il disegno
     e.preventDefault();
-    setContextMenuPos({ x: e.clientX, y: e.clientY });
+    // setContextMenuPos({ x: e.clientX, y: e.clientY });
   };
 
   const handleToolClick = (tool: string) => {
@@ -2137,21 +2175,22 @@ const MASONRY_TYPES = [
       }
       setCancelTrigger(prev => prev + 1);
     } else {
-      setIsOffsetAidActive(tool === "Move" || tool === "Copy");
-      setSelectedTool(tool);
-      if (['Line', 'Muro', 'Filo', 'Rectangle'].includes(tool)) {
+      const activeToolName = tool === 'Text' ? 'Testo' : tool;
+      setIsOffsetAidActive(activeToolName === "Move" || activeToolName === "Copy");
+      setSelectedTool(activeToolName);
+      if (['Line', 'Muro', 'Filo', 'Rectangle'].includes(activeToolName)) {
         handleSetLastInsertedParameter(prev => prev ? { ...prev, type: 'length' } : { type: 'length', value: 1.0 });
-      } else if (tool === 'Circle') {
+      } else if (activeToolName === 'Circle') {
         handleSetLastInsertedParameter(prev => prev ? { ...prev, type: 'radius' } : { type: 'radius', value: 0.5 });
       }
       // Ensure the correct sidebar tab opens for specific tools as requested
-      if (tool === 'Hatch' || tool === 'Line' || tool === 'Circle' || tool === 'Muro' || tool === 'Gomma') {
+      if (activeToolName === 'Hatch' || activeToolName === 'Line' || activeToolName === 'Circle' || activeToolName === 'Muro' || activeToolName === 'Gomma') {
         setActiveSidebarTab('penne');
         setShowProperties(true);
-      } else if (tool === 'Testo') {
+      } else if (activeToolName === 'Testo') {
         setActiveSidebarTab('testo');
         setShowProperties(true);
-      } else if (tool === 'Dimension' || tool === 'Specchio') {
+      } else if (activeToolName === 'Dimension' || activeToolName === 'Specchio') {
         setActiveSidebarTab('penne');
         setShowProperties(true);
       } else {
@@ -2547,8 +2586,9 @@ const MASONRY_TYPES = [
         } else if (key === 't') {
           e.preventDefault();
           setIsOffsetAidActive(false);
-          setSelectedTool("Trim");
-          setShortcutToast("Strumento: Forbice / Taglia ✂️ (T)");
+          handleToolClick("Testo");
+          setSelectedTool("Testo");
+          setShortcutToast("Strumento: Testo 🔤 (T)");
           setTimeout(() => setShortcutToast(null), 1200);
         } else if (key === 'g') {
           e.preventDefault();
@@ -2949,6 +2989,8 @@ const MASONRY_TYPES = [
             onUndo={undo}
             onRedo={redo}
             onZoomFit={() => cadCanvasRef.current?.zoomFit?.()}
+            isPencilVisible={isPencilVisible}
+            onTogglePencilVisibility={togglePencilVisibility}
             defaultLineStyle={defaultLineStyle}
             onChangeLineStyle={(newStyle) => {
               setDefaultLineStyle(prev => ({ ...prev, ...newStyle }));
@@ -3439,6 +3481,99 @@ const MASONRY_TYPES = [
               </div>
             </div>
           )}
+          {selectedTool === 'Dimension' && (
+            <div className="absolute top-4 left-1/2 -translate-x-1/2 z-30 bg-slate-950/95 backdrop-blur-md border border-slate-800 text-slate-100 px-3 py-1.5 rounded-2xl shadow-2xl flex items-center gap-2.5 animate-in fade-in slide-in-from-top-2 duration-150">
+              <div className="flex bg-slate-900 rounded-xl p-0.5 border border-slate-800">
+                <button
+                  type="button"
+                  onClick={() => setSelectionMode('manual')}
+                  className={`px-3 py-1.5 text-xs font-bold rounded-lg transition-all flex items-center gap-1.5 ${
+                    selectionMode === 'manual'
+                      ? 'bg-emerald-500 text-slate-950 shadow-md font-black'
+                      : 'text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  <Ruler className="w-3.5 h-3.5" />
+                  <span>2 Punti</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setSelectionMode('object')}
+                  className={`px-3 py-1.5 text-xs font-bold rounded-lg transition-all flex items-center gap-1.5 ${
+                    selectionMode === 'object'
+                      ? 'bg-emerald-500 text-slate-950 shadow-md font-black'
+                      : 'text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  <Target className="w-3.5 h-3.5" />
+                  <span>Ad Oggetto</span>
+                </button>
+              </div>
+
+              <div className="h-5 w-px bg-slate-800" />
+
+              {selectionMode === 'object' ? (
+                <div className="flex items-center gap-2 px-2 py-1 text-xs font-bold text-emerald-400">
+                  <span className="text-emerald-300 font-mono text-sm">↗</span>
+                  <span>Misura Obliqua / Reale dell'Elemento</span>
+                  <span className="text-[9px] bg-emerald-950/80 border border-emerald-800/60 px-1.5 py-0.5 rounded text-emerald-300 font-mono">
+                    Allineata Auto
+                  </span>
+                </div>
+              ) : (
+                <div className="flex items-center gap-1">
+                  <button
+                    type="button"
+                    onClick={() => setDimensionStyle('horizontal')}
+                    className={`px-2.5 py-1 text-xs font-bold rounded-lg transition-all flex items-center gap-1 border ${
+                      dimensionStyle === 'horizontal'
+                        ? 'bg-emerald-500 text-slate-950 border-emerald-400 font-black shadow-sm'
+                        : 'bg-slate-900/80 text-slate-300 border-slate-800 hover:border-slate-700 hover:text-white'
+                    }`}
+                    title="Quota Orizzontale (distanza ΔX)"
+                  >
+                    <span>↔</span> Orizzontale
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setDimensionStyle('vertical')}
+                    className={`px-2.5 py-1 text-xs font-bold rounded-lg transition-all flex items-center gap-1 border ${
+                      dimensionStyle === 'vertical'
+                        ? 'bg-emerald-500 text-slate-950 border-emerald-400 font-black shadow-sm'
+                        : 'bg-slate-900/80 text-slate-300 border-slate-800 hover:border-slate-700 hover:text-white'
+                    }`}
+                    title="Quota Verticale (distanza ΔY)"
+                  >
+                    <span>↕</span> Verticale
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setDimensionStyle('aligned')}
+                    className={`px-2.5 py-1 text-xs font-bold rounded-lg transition-all flex items-center gap-1 border ${
+                      dimensionStyle === 'aligned'
+                        ? 'bg-emerald-500 text-slate-950 border-emerald-400 font-black shadow-sm'
+                        : 'bg-slate-900/80 text-slate-300 border-slate-800 hover:border-slate-700 hover:text-white'
+                    }`}
+                    title="Quota Obliqua / Allineata (distanza diretta tra i punti)"
+                  >
+                    <span>↗</span> Obliqua
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setDimensionStyle('auto-ortho')}
+                    className={`px-2.5 py-1 text-xs font-bold rounded-lg transition-all flex items-center gap-1 border ${
+                      dimensionStyle === 'auto-ortho' || dimensionStyle === 'linear'
+                        ? 'bg-emerald-500 text-slate-950 border-emerald-400 font-black shadow-sm'
+                        : 'bg-slate-900/80 text-slate-300 border-slate-800 hover:border-slate-700 hover:text-white'
+                    }`}
+                    title="Auto Orto: orizzontale o verticale in base allo spostamento del mouse"
+                  >
+                    <span>⚡</span> Auto Orto
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
            <div className="relative w-full h-full">
               {isParameterInputOpen && lastInsertedParameter && parameterInputPos && (
                  <ParameterInputOverlay 
@@ -3471,7 +3606,8 @@ const MASONRY_TYPES = [
                   setActiveSidebarTab('penne');
                   setShowProperties(true);
                 }}
-             onContextMenu={handleRightClickShortcut}
+                isPencilVisible={isPencilVisible}
+                onContextMenu={handleRightClickShortcut}
                    lastInsertedParameter={lastInsertedParameter}
                 onLastParameterChange={(param) => {
                   handleSetLastInsertedParameter(param);
@@ -4906,7 +5042,7 @@ const MASONRY_TYPES = [
                       <input
                         type="range"
                         min="0.1"
-                        max="5.0"
+                        max="10.0"
                         step="0.1"
                         value={dimensionScale}
                         onChange={(e) => setDimensionScale(parseFloat(e.target.value))}
@@ -4915,38 +5051,100 @@ const MASONRY_TYPES = [
                     </div>
 
                     {/* SELECTS ROW */}
-                    <div className="grid grid-cols-2 gap-3.5">
-                      {/* DIMENSION MODE */}
+                    <div className="space-y-3.5">
+                      {/* DIMENSION MODE (2 Punti vs Catena) */}
                       <div className="space-y-1.5">
                         <label className="text-[10px] font-black uppercase text-slate-400 tracking-widest block">
-                          Modalità
+                          Sequenza Quote
                         </label>
-                        <select
-                          value={dimensionMode}
-                          onChange={(e) => setDimensionMode(e.target.value as 'two-points' | 'chain')}
-                          className="w-full bg-slate-900 border border-slate-800 rounded-lg p-2.5 text-xs font-bold text-slate-200 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none"
-                        >
-                          <option value="two-points" className="bg-slate-950 text-slate-200">2 Punti</option>
-                          <option value="chain" className="bg-slate-950 text-slate-200">Catena</option>
-                        </select>
+                        <div className="flex bg-slate-900 p-1 rounded-xl border border-slate-800">
+                          <button
+                            type="button"
+                            onClick={() => setDimensionMode('two-points')}
+                            className={`flex-1 py-1.5 text-xs font-bold rounded-lg transition-all ${
+                              dimensionMode === 'two-points'
+                                ? 'bg-emerald-500 text-slate-950 font-black shadow-sm'
+                                : 'text-slate-400 hover:text-slate-200'
+                            }`}
+                          >
+                            2 Punti Singola
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setDimensionMode('chain')}
+                            className={`flex-1 py-1.5 text-xs font-bold rounded-lg transition-all ${
+                              dimensionMode === 'chain'
+                                ? 'bg-emerald-500 text-slate-950 font-black shadow-sm'
+                                : 'text-slate-400 hover:text-slate-200'
+                            }`}
+                          >
+                            In Catena
+                          </button>
+                        </div>
                       </div>
 
-                      {/* DIMENSION STYLE */}
+                      {/* DIMENSION ORIENTATION / STYLE */}
                       <div className="space-y-1.5">
                         <label className="text-[10px] font-black uppercase text-slate-400 tracking-widest block">
-                          Tipo Stile
+                          {selectionMode === 'object' ? "Orientamento Quota (Ad Oggetto)" : "Orientamento Quota (2 Punti)"}
                         </label>
-                        <select
-                          value={dimensionStyle}
-                          onChange={(e) => setDimensionStyle(e.target.value as any)}
-                          className="w-full bg-slate-900 border border-slate-800 rounded-lg p-2.5 text-xs font-bold text-slate-200 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none"
-                        >
-                          <option value="linear" className="bg-slate-950 text-slate-200">Lineare (Auto)</option>
-                          <option value="aligned" className="bg-slate-950 text-slate-200">Allineata</option>
-                          <option value="horizontal" className="bg-slate-950 text-slate-200">Orto Orizzontale</option>
-                          <option value="vertical" className="bg-slate-950 text-slate-200">Orto Verticale</option>
-                          <option value="auto-ortho" className="bg-slate-950 text-slate-200">Auto Orto</option>
-                        </select>
+                        {selectionMode === 'object' ? (
+                          <div className="bg-emerald-950/40 border border-emerald-600/40 rounded-xl p-2.5 text-xs font-bold text-emerald-300 flex items-center justify-between">
+                            <span className="flex items-center gap-1.5">
+                              <span className="text-emerald-400">↗</span> Misura Reale Allineata / Obliqua
+                            </span>
+                            <span className="text-[9px] px-2 py-0.5 bg-emerald-500/20 text-emerald-300 font-mono rounded uppercase tracking-wider">
+                              Automatica
+                            </span>
+                          </div>
+                        ) : (
+                          <div className="grid grid-cols-2 gap-1.5">
+                            <button
+                              type="button"
+                              onClick={() => setDimensionStyle('horizontal')}
+                              className={`py-2 px-2.5 text-xs font-bold rounded-lg transition-all border flex items-center justify-center gap-1.5 ${
+                                dimensionStyle === 'horizontal'
+                                  ? 'bg-emerald-500 text-slate-950 border-emerald-400 font-black shadow-sm'
+                                  : 'bg-slate-900 text-slate-300 border-slate-800 hover:border-slate-700 hover:text-white'
+                              }`}
+                            >
+                              <span>↔</span> Orizzontale
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setDimensionStyle('vertical')}
+                              className={`py-2 px-2.5 text-xs font-bold rounded-lg transition-all border flex items-center justify-center gap-1.5 ${
+                                dimensionStyle === 'vertical'
+                                  ? 'bg-emerald-500 text-slate-950 border-emerald-400 font-black shadow-sm'
+                                  : 'bg-slate-900 text-slate-300 border-slate-800 hover:border-slate-700 hover:text-white'
+                              }`}
+                            >
+                              <span>↕</span> Verticale
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setDimensionStyle('aligned')}
+                              className={`py-2 px-2.5 text-xs font-bold rounded-lg transition-all border flex items-center justify-center gap-1.5 ${
+                                dimensionStyle === 'aligned'
+                                  ? 'bg-emerald-500 text-slate-950 border-emerald-400 font-black shadow-sm'
+                                  : 'bg-slate-900 text-slate-300 border-slate-800 hover:border-slate-700 hover:text-white'
+                              }`}
+                            >
+                              <span>↗</span> Obliqua (Allineata)
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setDimensionStyle('auto-ortho')}
+                              className={`py-2 px-2.5 text-xs font-bold rounded-lg transition-all border flex items-center justify-center gap-1.5 ${
+                                dimensionStyle === 'auto-ortho' || dimensionStyle === 'linear'
+                                  ? 'bg-emerald-500 text-slate-950 border-emerald-400 font-black shadow-sm'
+                                  : 'bg-slate-900 text-slate-300 border-slate-800 hover:border-slate-700 hover:text-white'
+                              }`}
+                            >
+                              <span>⚡</span> Auto Orto (Mouse)
+                            </button>
+                          </div>
+                        )}
                       </div>
                     </div>
 
@@ -4972,14 +5170,14 @@ const MASONRY_TYPES = [
                   {/* INFO FEEDBACK ACCORDING TO SELECTION MODE */}
                   <div className="p-3 bg-emerald-950/20 border border-emerald-900/30 rounded-xl space-y-1.5 text-xs">
                     <span className="font-bold text-emerald-400 block tracking-wide uppercase text-[10px]">
-                      {selectionMode === 'manual' ? "📌 GUIDA 2 PUNTI" : "🎯 GUIDA AD OGGETTO"}
+                      {selectionMode === 'manual' ? "📌 GUIDA 2 PUNTI (ORIZZONTALE / VERTICALE / OBLIQUA)" : "🎯 GUIDA AD OGGETTO (MISURA REALE ED OBLIQUA)"}
                     </span>
                     <p className="text-slate-400 leading-relaxed text-[11px]">
                       {selectionMode === 'manual' 
                         ? (dimensionMode === 'chain' 
-                           ? "Clicca il primo punto, poi il secondo per tracciare la prima misura. Successivamente clicca altri punti per posizionare le altre misure in catena adiacente."
-                           : "Traccia la linea di misura facendo clic sul primo punto e poi sul secondo. Sposta il cursore per regolare l'altezza dell'allineamento e fai clic per fissarla.")
-                        : "Sposta il mouse e fai clic su un segmento/linea o sul lato di un rettangolo. Il segmento selezionato lampeggerà in verde, poi potrai muovere il mouse per posizionare la misura."
+                           ? "Clicca il 1° punto e poi il 2°. Successivamente clicca altri punti per posizionare quote in catena continua. Puoi impostare l'orientamento (Orizzontale, Verticale, Obliqua o Auto Orto)."
+                           : "Clicca il primo punto e poi il secondo. Puoi scegliere se tracciare una quota Orizzontale (↔), Verticale (↕), Obliqua / Allineata (↗) o Auto Orto (⚡) in base a dove muovi il mouse per posizionare l'offset.")
+                        : "Passa sopra un segmento o lato: la logica a forbici individua il tratto tra le intersezioni. Clicca per quotarlo: la quota segue sempre l'orientamento reale dell'elemento (se obliquo, traccia la misura obliqua/allineata) e ti permette di posizionarne l'offset a piacere."
                       }
                     </p>
                   </div>
@@ -5976,7 +6174,7 @@ const MASONRY_TYPES = [
                             <input
                               type="range"
                               min="0.1"
-                              max="5.0"
+                              max="10.0"
                               step="0.1"
                               value={(selectedEntity as any).scale ?? 1.0}
                               onChange={(e) =>
@@ -6512,9 +6710,24 @@ const MASONRY_TYPES = [
                           </div>
 
                           <div className="space-y-2">
-                            <label className="text-[10px] font-black uppercase text-neutral-400 tracking-widest flex items-center gap-2">
-                               <Pencil size={10} /> Matite di Grafite
-                            </label>
+                            <div className="flex items-center justify-between">
+                              <label className="text-[10px] font-black uppercase text-neutral-400 tracking-widest flex items-center gap-2">
+                                 <Pencil size={10} /> Matite di Grafite (Costruzioni)
+                              </label>
+                              <button
+                                type="button"
+                                onClick={togglePencilVisibility}
+                                className={`flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-bold transition-all border ${
+                                  isPencilVisible
+                                    ? "bg-amber-500/20 text-amber-300 border-amber-500/50 shadow-sm"
+                                    : "bg-neutral-800 text-neutral-400 border-neutral-700 hover:text-neutral-200"
+                                }`}
+                                title={isPencilVisible ? "Lampadina Accesa: Linee di costruzione visibili (Clicca per nasconderle)" : "Lampadina Spenta: Linee di costruzione nascoste (Clicca per renderle visibili)"}
+                              >
+                                <Lightbulb size={12} className={isPencilVisible ? "fill-amber-400 text-amber-400" : "text-neutral-500"} />
+                                <span>{isPencilVisible ? "Visibili" : "Nascoste"}</span>
+                              </button>
+                            </div>
                             <div className="grid grid-cols-3 gap-2">
                               {['2H', 'HB', '2B'].map(m => {
                                 const color = m === '2H' ? '#bbbbbb' : (m === 'HB' ? '#444444' : '#111111');
